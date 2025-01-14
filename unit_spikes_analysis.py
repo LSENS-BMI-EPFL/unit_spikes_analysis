@@ -12,6 +12,7 @@ import os
 import pandas as pd
 import NWB_reader_functions as nwb_reader
 
+from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from waveform_utils import assign_rsu_vs_fsu
 
@@ -46,12 +47,13 @@ if __name__ == '__main__':
     # Select mice to do based on available NWB files
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_mwb_mice)]
     subject_ids = [s for s in subject_ids if int(s[2:]) in [50,51,52,54,56,58,59,68,72,73,74,75,76,77,78,79,80,81,82,83,85,86,87,92,93,94,95,96,97,100,101,102,103,104,105,106,107]]
-    subject_ids.extend(['AB{}'.format(i) for i in range(116,132)])
-    subject_ids = ['AB125', 'AB126', 'AB127', 'AB128', 'AB129', 'AB130', 'AB131']
-    subject_ids = ['AB125']
+    subject_ids.extend(['AB{}'.format(i) for i in range(82,132)])
+    subject_ids.extend(['AB{}'.format(i) for i in range(116,151)])
+    subject_ids = ['AB082']
 
-    analyses_to_do = ['unit_psth', 'rsu_vs_fsu']
+    analyses_to_do = ['unit_raster', 'roc_analysis', 'xcorr_analysis', 'rsu_vs_fsu']
     analyses_to_do = ['roc_analysis']
+    analyses_to_do = ['xcorr_analysis']
 
     # Init. list of NWB files with neural data for analyses requiring multiple mice
     nwb_neural_files = []
@@ -99,8 +101,11 @@ if __name__ == '__main__':
         for nwb_file, output_path in subject_nwb_neural_files:
 
             if 'unit_raster' in analyses_to_do:
-                # TODO: function to plot unit raster
-                continue
+                results_path = os.path.join(output_path, 'unit_raster')
+                if not os.path.exists(results_path):
+                    os.makedirs(results_path)
+
+                plot_rasters(nwb_file, results_path)
 
             if 'roc_analysis' in analyses_to_do:
                 results_path = os.path.join(output_path, 'roc_analysis')
@@ -109,10 +114,12 @@ if __name__ == '__main__':
 
                 roc_analysis(nwb_file, results_path)
 
-
-
             if 'xcorr_analysis' in analyses_to_do:
-                # TODO: perform cross-correlation analysis for this NWB file
+                results_path = os.path.join(output_path, 'xcorr_analysis')
+                if not os.path.exists(results_path):
+                    os.makedirs(results_path)
+
+                xcorr_analysis(nwb_file, results_path)
                 continue
 
     ### ------------------------------------------

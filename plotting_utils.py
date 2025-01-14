@@ -10,6 +10,13 @@
 # Imports
 import os
 
+
+def remove_top_right_frame(ax):
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    return
+
+
 def save_figure_with_options(figure, file_formats, filename, output_dir='', dark_background=False):
     # Make transparent for dark background
     if dark_background:

@@ -11,6 +11,8 @@ import os
 import pathlib
 import numpy as np
 import pandas as pd
+import multiprocessing
+from functools import partial
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.utils.class_weight import compute_sample_weight
@@ -20,7 +22,7 @@ import NWB_reader_functions as nwb_reader
 def process_nwb_tables(nwb_file):
     """
     Process unit and trial table from a NWB file.
-    :param nwb_file:
+    :param nwb_file: path to NWB file
     :return:
     """
     # Convert NWB units and trials tables into Pandas DataFrames
@@ -42,13 +44,17 @@ def process_nwb_tables(nwb_file):
     units['unit_id'] = units.index
     units.reset_index(drop=True, inplace=True)
 
-
-    # Separate passive trials from pre vs post trials
-    trials_mid_index = len(trials) // 2  # find middle of session
-    trials['context'] = trials.apply(lambda row:
-                                     'active' if row['context'] == 'active' else
-                                     ('passive_pre' if row['context'] == 'passive' and row.name < trials_mid_index else
-                                      'passive_post'), axis=1)
+    # If context is only NaNs, set to 'active' for all trials
+    if trials['context'].isnull().all():
+        trials['context'] = 'active'
+    # Mouse with passive and active periods
+    else:    
+        # Separate passive trials from pre vs post trials
+        trials_mid_index = len(trials) // 2  # find middle of session
+        trials['context'] = trials.apply(lambda row:
+                                         'active' if row['context'] == 'active' else
+                                         ('passive_pre' if row['context'] == 'passive' and row.name < trials_mid_index else
+                                          'passive_post'), axis=1)
     return units, trials
 
 
@@ -85,7 +91,7 @@ def filter_lick_times(lick_times, interval=1, **stimuli):
 
     return filtered
 
-def filtered_lick_times(nwbfile, interval=1):
+def get_filtered_lick_times(nwbfile, interval=1):
     """ Extract and filter piezo lick times from NWB data. """
     behavior = nwbfile.processing['behavior']
     events = behavior.data_interfaces['BehavioralEvents']
@@ -111,7 +117,7 @@ def extract_event_times(nwb_file, event_type='whisker', context='passive', has_c
     _, trials = process_nwb_tables(nwb_file)
 
     if event_type == 'spontaneous_licks':
-        event_times = filtered_lick_times(nwb_file)
+        event_times = get_filtered_lick_times(nwb_file)
     else:
         condition = trials[event_type + '_stim'] == 1
         if has_context:
@@ -160,18 +166,6 @@ def process_spike_data(nwb_file):
         # Initialize columns #TODO: improve this and table format
         if event_type == 'spontaneous_licks':
             contexts = [''] # context irrelevant for spontaneous licks
-#
-        #    #if event_type + '_pre_spikes' not in unit_table.columns:
-        #    #    unit_table[event_type + '_pre_spikes'] = [[] for _ in range(len(unit_table))]
-        #    #if event_type + '_post_spikes' not in unit_table.columns:
-        #    #    unit_table[event_type + '_post_spikes'] = [[] for _ in range(len(unit_table))]
-#
-        #else:
-        #    for context in contexts:
-        #        if event_type + "_" + context + '_pre_spikes' not in unit_table.columns:
-        #            unit_table[event_type + "_" + context + '_pre_spikes'] = [[] for _ in range(len(unit_table))]
-        #        if event_type + "_" + context + '_post_spikes' not in unit_table.columns:
-        #            unit_table[event_type + "_" + context + '_post_spikes'] = [[] for _ in range(len(unit_table))]
 
         # Get count data for each unit
         for context in contexts:
@@ -197,32 +191,25 @@ def process_spike_data(nwb_file):
                 unit['post_spikes'] = post_counts
                 proc_unit_table.append(unit)
 
-                #proc_unit_table.at[idx, 'event'] = event_type
-                #proc_unit_table.at[idx, 'context'] = context
-                #proc_unit_table.at[idx, 'pre_spikes'] = pre_counts
-                #proc_unit_table.at[idx, 'post_spikes'] = post_counts
-
-                # Add count data to unit table #TODO: reformat to have only categorical columns
-                # TODO: would this allow easier comparison of different counts?
-                #col_prefix = f"{event_type}_{context}".strip('_')
-                #unit_table.at[idx, f'{col_prefix}_pre_spikes'] = pre_counts
-                #unit_table.at[idx, f'{col_prefix}_post_spikes'] = post_counts
-
     # Convert to DataFrame
     proc_unit_table = pd.DataFrame(proc_unit_table)
 
     return proc_unit_table
 
-def calculate_roc(class_1_counts, class_2_counts):
+def calculate_roc(class_1_counts, class_2_counts, shuffle=False):
     """
     Calculate receiver operating characteristic its area under the curve, between spike counts for two classes.
     :param class_1_counts: list of spike counts for class 1 for each event, e.g. pre-stim spikes
     :param class_2_counts: list of spike counts for class 2 for each event, e.g. post-stim spikes
+    :param shuffle: whether to shuffle class labels
     :return:
     """
     # Combine spike count data and class labels
     spike_counts = np.concatenate([class_1_counts, class_2_counts])
     labels = np.concatenate([np.zeros(len(class_1_counts)), np.ones(len(class_2_counts))])
+
+    if shuffle:
+        labels = np.random.permutation(labels)
 
     # Balance classes using sample weights inversely proportional to class frequency
     sample_weights = compute_sample_weight('balanced', labels)
@@ -232,8 +219,9 @@ def calculate_roc(class_1_counts, class_2_counts):
         return None, None, None, np.nan  # return NaN for ROC AUC or another default
 
     # Compute the ROC curve and area under the curve
-    fpr, tpr, thresholds = roc_curve(labels, spike_counts, sample_weight=sample_weights)
+    fpr, tpr, thresholds = roc_curve(labels, spike_counts, sample_weight=sample_weights, drop_intermediate=True)
     roc_auc = roc_auc_score(labels, spike_counts)
+
     return fpr, tpr, thresholds, roc_auc
 
 def select_spike_counts(unit_data, analysis_type):
@@ -287,6 +275,96 @@ def select_spike_counts(unit_data, analysis_type):
 
     return spikes_counts_1, spikes_counts_2
 
+
+def process_unit(unit_id, proc_unit_table, analysis_type):
+    """
+    Perform ROC analysis for a single unit and analysis type in a multiprocessing context.
+    """
+    print(f"Processing unit {unit_id} for analysis type {analysis_type}")
+    unit_table = proc_unit_table[proc_unit_table['unit_id'] == unit_id]
+    mouse_id = unit_table['mouse_id'].values[0]
+    area = unit_table['ccf_parent_acronym'].values[0]
+
+    # Keep relevant columns for results
+    cols_to_keep = ['mouse_id', 'unit_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
+                    'ccf_parent_acronym', 'ccf_parent_id', 'ccf_parent_name']
+    res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
+    res_dict.update({'analysis_type': analysis_type, 'unit_id': unit_id, 'mouse_id': mouse_id, 'area': area})
+
+    # Select adequate spike counts and compute ROC
+    spikes_1, spikes_2 = select_spike_counts(unit_table, analysis_type)
+    fpr, tpr, thresholds, roc_auc = calculate_roc(spikes_1, spikes_2)
+    selectivity_index = 2 * roc_auc - 1
+
+    res_dict.update({'auc': roc_auc})
+    res_dict.update({'selectivity': selectivity_index})
+    res_dict.update({'fpr': fpr})
+    res_dict.update({'tpr': tpr})
+    res_dict.update({'thresholds': thresholds})
+
+    # Perform class-label permutations to obtain a null distribution for significance
+    n_permutations = 100
+    permuted_aucs = []
+    for _ in range(n_permutations):
+        _, _, _, roc_auc_permut = calculate_roc(spikes_1, spikes_2, shuffle=True)
+        permuted_aucs.append(roc_auc_permut)
+    permuted_aucs = np.array(permuted_aucs)
+
+    # Calculate p-values as proportion of permuted AUCs greater than or equal to the observed AUC
+    p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed test: AUC greater than chance
+    p_value_neg = np.sum(permuted_aucs <= roc_auc) / n_permutations
+
+    # Determine significance and direction of signifiance based on p-values and analysis type
+    if 'wh_vs_aud' in analysis_type:
+        directions = ['whisker', 'auditory']
+    else:
+        directions = ['positive', 'negative']
+
+    if p_value_pos < 0.05:
+        is_significant = True
+        res_dict.update({'significant': is_significant, 'direction': directions[0], 'p_value': p_value_pos, 'p_value_to_show': p_value_pos})
+    elif p_value_neg < 0.05:
+        is_significant = True
+        res_dict.update({'significant': is_significant, 'direction': directions[1], 'p_value': p_value_neg, 'p_value_to_show': p_value_neg})
+    else:
+        is_significant = False
+        res_dict.update({'significant': is_significant, 'direction': np.nan, 'p_value': p_value_pos, 'p_value_to_show': p_value_pos}) # here only p-value for positive direction is kept
+
+    debug = True
+    print(is_significant)
+    if debug and is_significant: #TODO: make is a separate function in using res_dict as input?
+
+        # Subplots: 1. ROC curve 2. Histogram of permutted AUCs
+        fig, axs = plt.subplots(1, 2, figsize=(12, 6))
+        for ax in axs:
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            ax.tick_params(axis='both', which='major', labelsize=15)
+
+        pval = res_dict['p_value_to_show']
+        suptitle_text = f'ROC Analysis for mouse {mouse_id} unit {unit_id} ({area}) ({analysis_type})\n'
+        suptitle_text += f'AUC = {roc_auc:.2f}, selectivity = {selectivity_index:.2f}, p-value = {pval:.3f}'
+        fig.suptitle(suptitle_text)
+
+        axs[0].plot(fpr, tpr, color='indianred', lw=2)
+        axs[0].plot([0, 1], [0, 1], linestyle='--', color='k', lw=2)
+        axs[0].set_xlabel('False positive rate', fontsize=15)
+        axs[0].set_ylabel('True positive rate', fontsize=15)
+        axs[0].set_title(f'ROC curve', fontsize=15)
+
+        axs[1].hist(permuted_aucs, bins=30, color='grey', edgecolor='white')
+        axs[1].axvline(roc_auc, color='r', linestyle='--', lw=2, label=f'Observed AUC = {roc_auc:.2f}')
+        axs[1].set_xlabel('AUC', fontsize=15)
+        axs[1].set_ylabel('Frequency', fontsize=15)
+        axs[1].set_title(f'Permuted AUCs', fontsize=15)
+        axs[1].legend(frameon=False, loc='upper right')
+
+        # Show
+        fig.tight_layout()
+        plt.show()
+
+    return res_dict
+
 def roc_analysis(nwb_file, results_path):
     """
     Perform ROC analysis on spike data from a NWB file.
@@ -294,62 +372,50 @@ def roc_analysis(nwb_file, results_path):
     :param results_path: path to save results
     :return:
     """
-    print('Starting ROC analysis for NWB file:', nwb_file)
+    print('Starting ROC analysis for file:', nwb_file)
 
     # Process spike data
     proc_unit_table = process_spike_data(nwb_file)
+    mouse_id = proc_unit_table['mouse_id'].values[0]
 
-    # Save processed unit table #TODO: remove?
-    if 'electrode_group' in proc_unit_table.columns: # drop problematic column
-        proc_unit_table = proc_unit_table.drop(columns=['electrode_group'])
+    # Select ROC analyses based on available data
+    if int(mouse_id[3:5]) < 115:
+        analyses_to_do = ['whisker_active', 'auditory_active',
+                          'wh_vs_aud_active', 'spontaneous_licks']
+    else:
+        analyses_to_do = ['whisker_passive_pre', # comparing pre vs post whisker stim activity in passive pre-learning trials
+                          'whisker_passive_post', # comparing pre vs post whisker stim activity in passive post-learning trials
+                          'whisker_active', # comparing pre vs post whisker stim activity in active hit trials
+                          'whisker_pre_vs_post_learning', # comparing post whisker stim activity in passive pre vs post-learning trials
+                          'auditory_passive_pre', # idem for auditory stim
+                          'auditory_passive_post',
+                          'auditory_active',
+                          'auditory_pre_vs_post_learning',
+                          'wh_vs_aud_passive_pre',  # comparing whisker vs auditory post stim activity in passive pre-learning trials
+                          'wh_vs_aud_passive_post', # comparing whisker vs auditory post stim activity in passive post-learning trials
+                          'wh_vs_aud_active', # comparing whisker vs auditory post stim activity in active hit trials
+                          'wh_vs_aud_pre_vs_post_learning', # comparing whisker vs auditory post stim activity in passive pre vs post-learning trials
+                          'spontaneous_licks' # comparing pre vs post spontaneous lick activity
+                          ]
 
-    # Create and save individual mouse data to a parquet file
-    mouse_name = proc_unit_table['mouse_id'].values[0]
-    proc_unit_table.to_parquet(f'{results_path}/{mouse_name}_processed_data.parquet', index=False)
 
-    # Perform ROC analysis
-    analyses_to_do = ['whisker_passive_pre', # comparing pre vs post whisker stim activity in passive pre-learning trials
-                      'whisker_passive_post', # comparing pre vs post whisker stim activity in passive post-learning trials
-                      'whisker_active', # comparing pre vs post whisker stim activity in active hit trials
-                      'whisker_pre_vs_post_learning', # comparing post whisker stim activity in passive pre vs post-learning trials
-                      'auditory_passive_pre', # idem for auditory stim
-                      'auditory_passive_post',
-                      'auditory_active',
-                      'auditory_pre_vs_post_learning',
-                      'wh_vs_aud_passive_pre',  # comparing whisker vs auditory post stim activity in passive pre-learning trials
-                      'wh_vs_aud_passive_post', # comparing whisker vs auditory post stim activity in passive post-learning trials
-                      'wh_vs_aud_active', # comparing whisker vs auditory post stim activity in active hit trials
-                      'wh_vs_aud_pre_vs_post_learning', # comparing whisker vs auditory post stim activity in passive pre vs post-learning trials
-                      'spontaneous_licks' # comparing pre vs post spontaneous lick activity
-                      ]
     # Init. global results
     results = []
 
     for analysis_type in analyses_to_do:
 
-        for unit_id in proc_unit_table['unit_id'].unique():
-            unit_table = proc_unit_table[proc_unit_table['unit_id'] == unit_id]
+        # Use multiprocessing to process each unit_id in parallel
+        unit_ids = proc_unit_table['unit_id'].unique()
 
-            # Keep relevant columns for results
-            cols_to_keep = ['mouse_id', 'unit_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name', 'ccf_parent_acronym', 'ccf_parent_id', 'ccf_parent_name']
-            res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
-            res_dict.update({'analysis_type': analysis_type})
-
-            # Select adequate spike counts and compute ROC
-            spikes_1, spikes_2 = select_spike_counts(unit_table, analysis_type)
-            fpr, tpr, thresholds, roc_auc = calculate_roc(spikes_1, spikes_2)
-
-            res_dict.update({'auc': roc_auc})
-            res_dict.update({'selectivity': 2*roc_auc - 1})
-            res_dict.update({'fpr': fpr})
-            res_dict.update({'tpr': tpr})
-            res_dict.update({'thresholds': thresholds})
-
-            results.append(res_dict)
+        with multiprocessing.Pool(os.cpu_count()-2) as pool:
+            func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type)
+            analysis_results = pool.map(func, unit_ids)
+            results.extend(analysis_results)
 
     # Create and save individual mouse data to a parquet file
     results_table = pd.DataFrame(results)
     mouse_name = results_table['mouse_id'].values[0]
+    os.makedirs(results_path, exist_ok=True)
     results_table.to_parquet(f'{results_path}/{mouse_name}_roc_results.parquet', index=False)
 
     return
