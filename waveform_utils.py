@@ -189,7 +189,7 @@ def assign_rsu_vs_fsu(nwb_files, output_path):
             print('Could not find root/AP duration threshold in range 0.2-0.8 ms. Skipping...')
 
         # Plot results
-        debug = True
+        debug = False
         if debug:
             color_dict = {'rsu':'#ff8783', 'fsu':'#83b1ff'}
             fig,ax=plt.subplots(1,1,figsize=(5,5),dpi=300)

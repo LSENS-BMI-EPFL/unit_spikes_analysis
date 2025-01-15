@@ -15,6 +15,7 @@ import NWB_reader_functions as nwb_reader
 from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from waveform_utils import assign_rsu_vs_fsu
+from xcorr_utils import xcorr_analysis
 
 if __name__ == '__main__':
 

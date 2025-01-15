@@ -14,131 +14,131 @@ from elephant import statistics, kernels
 import matplotlib.pyplot as plt
 import seaborn as sns
 import pandas as pd 
-from viziphant.rasterplot import rasterplot_rates, eventplot
-from viziphant.spike_train_correlation import plot_cross_correlation_histogram
-from viziphant.statistics import plot_instantaneous_rates_colormesh
-from viziphant.events import add_event
+#from viziphant.rasterplot import rasterplot_rates, eventplot
+#from viziphant.spike_train_correlation import plot_cross_correlation_histogram
+#from viziphant.statistics import plot_instantaneous_rates_colormesh
+#from viziphant.events import add_event
 from elephant.conversion import BinnedSpikeTrain
 from elephant.spike_train_correlation import cross_correlation_histogram
 from elephant.spike_train_surrogates import dither_spikes, jitter_spikes
 from elephant.statistics import mean_firing_rate, isi
 
-import utils
+import plotting_utils
 import os
 
 
 
 
-def calculate_cch(bst1: BinnedSpikeTrain, 
-                  bst2: BinnedSpikeTrain, 
-                  window: int):
-    """Calculate cross-correlation histogram for a pair of binned spike trains."""
+def calculate_cch(bst1: BinnedSpikeTrain, bst2: BinnedSpikeTrain, window: int):
+    """
+    Calculate the cross-correlation histogram (CCH) between two binned spike trains using Elephant.
+    :param bst1: BinnedSpikeTrain object for the first spike train
+    :param bst2: BinnedSpikeTrain object for the second spike train
+    :param window: Maximum absolute lag in number of bins
+    :return:
+    """
     window_range = [-window, window]
-    
-    # window range is in number of bins 
     cch_results = cross_correlation_histogram(bst1, bst2, window=window_range)
-    
     return np.array(cch_results[0]).flatten(), np.array(cch_results[1]).flatten()
 
 
-def calculate_jitter_cch(bst1: BinnedSpikeTrain, 
-                         spiketrain: neo.SpikeTrain, 
-                         jitter_window: pq.Quantity, 
-                         lag_window: int,
-                         num_surrogates: int) -> np.ndarray:
+def calculate_jitter_cch(bst1: BinnedSpikeTrain, spiketrain: neo.SpikeTrain, jitter_window: pq.Quantity, lag_window: int, num_surrogates: int) -> np.ndarray:
     """
-    Calculate the mean cross-correlation histogram (CCH) from jittered spike trains.
-    
-    Args:
-        bst1 (BinnedSpikeTrain): The first binned spike train.
-        spiketrain (neo.SpikeTrain): The second spike train to jitter.
-        jitter_window (pq.Quantity): The jitter window size.
-        lag_window (int): The lag window size for CCH calculation.
-        num_surrogates (int): Number of surrogate (jittered) spike trains to generate.
-    
-    Returns:
-        np.ndarray: The mean jitter-corrected CCH.
-    """
-    
-    # Generate jittered versions of spike_train2
-    """
-    #jittered_trains = jitter_spikes(spiketrain, 
-    #                                bin_size=jitter_window,
-    #                                n_surrogates=num_surrogates)
+    Calculate the mean cross-correlation histogram (CCH) between a binned spike train and jittered surrogates.
+    :param bst1: BinnedSpikeTrain object for the first spike train
+    :param spiketrain: Neo SpikeTrain object for the second spike train
+    :param jitter_window: Window for jittering the spike train
+    :param lag_window: Maximum absolute lag in number of bins
+    :param num_surrogates: Number of jittered surrogates to generate
+    :return:
     """
 
-    jittered_trains = dither_spikes(spiketrain, 
-                                    dither=jitter_window,
-                                    n_surrogates=num_surrogates)
-    
-    # Convert jittered_trains to a list if it's an iterator for multiple passes
-    jittered_trains = list(jittered_trains)
+    # Generate jittered surrogate spike trains
+    jittered_trains = list(dither_spikes(spiketrain, dither=jitter_window, n_surrogates=num_surrogates))
 
     if len(jittered_trains) != num_surrogates:
         raise ValueError(f"Expected {num_surrogates} jittered trains, but got {len(jittered_trains)}.")
 
-    # Process the first jittered train to determine the length of CCH
-    first_jittered_train = jittered_trains[0]
-    binned_jittered_train = BinnedSpikeTrain(first_jittered_train, bin_size=bst1.bin_size)
-    cch_first = calculate_cch(bst1, binned_jittered_train, lag_window)
-    cch_length = len(cch_first[0])
+    # Init. storage
+    cch_length = None
+    jittered_cchs = []
 
-    # Pre-allocate a NumPy array to store all jittered CCHs
-    jittered_cchs = np.empty((num_surrogates, cch_length), dtype=np.float64)
-
-    # Assign the first CCH
-    jittered_cchs[0, :] = cch_first[0]
-
-    # Iterate over the remaining jittered trains and fill the pre-allocated array
-    for i in range(1, num_surrogates):
-        jittered_train = jittered_trains[i]
+    # Compute CCH for each jittered train
+    for i, jittered_train in enumerate(jittered_trains):
         binned_jittered_train = BinnedSpikeTrain(jittered_train, bin_size=bst1.bin_size)
-        cch = calculate_cch(bst1, binned_jittered_train, lag_window)
-        jittered_cchs[i, :] = cch[0]
+        cch, _ = calculate_cch(bst1, binned_jittered_train, lag_window)
 
-    # Calculate the mean of jittered CCHs
+        if cch_length is None:
+            cch_length = len(cch)  # Determine the length from the first CCH
+
+        jittered_cchs.append(cch)
+
+    # Calculate mean CCH across surrogates
+    jittered_cchs = np.array(jittered_cchs, dtype=np.float64)
+    print(jittered_cchs.shape)
     mean_jittered_cch = np.mean(jittered_cchs, axis=0)
-
     return mean_jittered_cch
 
 
-def find_interactions(cch: np.ndarray, threshold: float = 7.0, lag_window: int = 10):
-    # Define lag parameters
-    total_lags = len(cch)
-    zero_lag_index = total_lags // 2  # 100
+def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10):
+    """
+    Identify significant interactions in the cross-correlation histogram (CCH).
+    :param cch: Cross-correlation histogram, typically the corrected CCH
+    :param threshold: Number of standard deviations above the mean to consider as significant
+    :param window: Number of bins to serach for significant interactions after zero lag
+    :return:
+    """
 
-    flank_start_neg = zero_lag_index - 100  # 0
-    flank_end_neg = zero_lag_index - 50     # 50
-    flank_start_pos = zero_lag_index + 51    # 151
-    flank_end_pos = zero_lag_index + 101     # 201
+    # Calculate the standard deviation of the flanks, defined as the first and last 50 bins
+    flank_sd = np.std(np.concatenate((cch[:50], cch[-50:])))
+    sig_threshold = sig_level * flank_sd
 
-    # Calculate flank SD
-    negative_flanks = cch[flank_start_neg:flank_end_neg]
-    positive_flanks = cch[flank_start_pos:flank_end_pos]
-    flank_values = np.concatenate((negative_flanks, positive_flanks))
-    flank_sd = np.std(flank_values)
+    # Define the search window as [1ms, + window ms] after zero lag
+    zero_lag_index = len(cch) // 2  # 100
+    search_range = slice(zero_lag_index + 1, zero_lag_index + 1 + window)
+    cch_window = cch[search_range]
 
-    window = cch[zero_lag_index - lag_window:zero_lag_index + lag_window + 1]
-    
-    # Find the absolute maximum value and its index
-    abs_max = np.max(np.abs(window))
-    abs_max_idx = np.argmax(np.abs(window))
+    # Calculate upper and lower thresholds
+    upper_bound = cch_window + sig_threshold
+    lower_bound = cch_window - sig_threshold
 
-    # Get the actual value at the peak (not absolute)
-    max_value = window[abs_max_idx]
-    
-    # Calculate the lag relative to zero
-    max_peak_lag = abs_max_idx - lag_window
+    # Initialize results
+    significant_result = {
+        'flank_sd': flank_sd,
+        'significant': False,
+        'lag_index': None,
+        'cch_value': None,
+        'int_type': None,
+    }
 
-    # Calculate significance threshold
-    significance_threshold = threshold * flank_sd
-    
-    # Check if interaction is significant:
-    # 1. Peak must exceed threshold
-    # 2. Peak must not be at zero lag (max_peak_lag != 0)
-    is_significant = (abs_max > significance_threshold) and (max_peak_lag != 0)
-    
-    return is_significant, flank_sd, max_value, max_peak_lag
+    # Look for significant interactions above the upper bound
+    above_indices = np.where(cch_window > upper_bound)[0]
+    below_indices = np.where(cch_window < lower_bound)[0]
+
+    # Combine both above and below indices, labeling their direction
+    significant_indices = []
+    if len(above_indices) > 0:
+        significant_indices.append((above_indices[0], 'excitatory'))
+    if len(below_indices) > 0:
+        significant_indices.append((below_indices[0], 'inhibitory'))
+
+    # If no significant interactions exist, return the default result
+    if not significant_indices:
+        return significant_result
+
+    # Sort indices to determine the first crossing (whether above or below)
+    significant_indices.sort(key=lambda x: x[0])
+    first_index, direction = significant_indices[0]
+
+    # Update the result with the first crossing
+    significant_result.update({
+        'significant': True,
+        'lag_index': zero_lag_index + 1 + first_index,
+        'cch_value': cch_window[first_index],
+        'int_type': direction
+    })
+
+    return significant_result
 
 
 def plot_cross_correlation_histogram(
@@ -664,7 +664,7 @@ def plot_cortical_area_interactions(significant_interactions_df: pd.DataFrame, f
         folder_name (str): Directory to save the plot
     """
     # Get cortical areas and filter DataFrame
-    cortical_areas = utils.get_cortical_areas()
+    cortical_areas = plotting_utils.get_cortical_areas()
     cortical_df = significant_interactions_df[
         (significant_interactions_df['source_ccf_parent'].isin(cortical_areas)) &
         (significant_interactions_df['target_ccf_parent'].isin(cortical_areas))

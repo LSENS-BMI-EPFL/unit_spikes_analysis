@@ -10,7 +10,7 @@
 import os
 import time
 import pathlib
-import tqdm
+from tqdm import tqdm
 from itertools import combinations
 from multiprocessing import Pool
 
@@ -21,17 +21,19 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
+from plotting_utils import get_excluded_areas
 import NWB_reader_functions as nwb_reader
 import cch_utils
 from elephant.conversion import BinnedSpikeTrain
+
 from elephant.spike_train_correlation import cross_correlation_histogram
 from elephant.spike_train_surrogates import jitter_spikes
 
 # Declare constants globally
 LAG_WINDOW = 100
-PEAK_WINDOW = 13
+PEAK_WINDOW_MAX = 13
 NUM_PROCESSES = 10
-BIN_SIZE = 1 * pq.ms
+BIN_SIZE = 1
 JITTER_WINDOW = 10 * pq.ms
 NUM_SURROGATES = 10
 SAMPLING_RATE = 1000 * pq.Hz
@@ -59,11 +61,10 @@ def convert_electrode_group_object_to_columns(data):
 def extract_unit_data(unit_table, unit_id):
     unit_row = unit_table[unit_table['unit_id'] == unit_id]
     spike_times = unit_row['spike_times'].iloc[0]
-    last_spike_time = spike_times.iloc[-1]
     unit_data = {
         'id': unit_id,
         't_start': 0,
-        't_end': last_spike_time, # 10000 or last spike overall?
+        't_end': 1e5, #arbitrary long time
         'spike_times': spike_times,
         'ccf_acronym': unit_row['ccf_acronym'].iloc[0],
         'ccf_parent_acronym': unit_row['ccf_parent_acronym'].iloc[0],
@@ -72,6 +73,33 @@ def extract_unit_data(unit_table, unit_id):
     return unit_data
 
 def process_pair(unit_pair):
+    """
+    Process a pair of units to compute cross-correlation histograms (CCH) and identify significant interactions.
+    :param unit_pair: tuple of two unit data dictionaries, from unit_table pd.DataFrame
+    """
+    def create_interaction_result(source, target, cch, jittered_cch, corrected_cch, interaction_result, flipped=False):
+        """ Helper function to create interaction result dictionary."""
+        return {
+            'source_id': source['id'],
+            'target_id': target['id'],
+            'source_ccf': source['ccf_acronym'],
+            'target_ccf': target['ccf_acronym'],
+            'source_ccf_parent': source['ccf_parent_acronym'],
+            'target_ccf_parent': target['ccf_parent_acronym'],
+            'source_fr': source['firing_rate'],
+            'target_fr': target['firing_rate'],
+            'cch': np.flip(cch) if flipped else cch,
+            'bin_size_ms': BIN_SIZE,
+            'jittered_cch': np.flip(jittered_cch) if flipped else jittered_cch,
+            'corrected_cch': np.flip(corrected_cch) if flipped else corrected_cch,
+            # 'source_waveform_type': source.get('waveform_type'),  # Uncomment if needed
+            # 'target_waveform_type': target.get('waveform_type'),
+            'flank_sd': interaction_result['flank_sd'],
+            'significant': interaction_result['significant'],
+            'lag_index': interaction_result['lag_index'],
+            'cch_value': interaction_result['cch_value'],
+            'int_type': interaction_result['int_type']
+        }
 
     unit1_data, unit2_data = unit_pair
 
@@ -81,75 +109,35 @@ def process_pair(unit_pair):
         t_start=unit1_data['t_start'] * pq.s,
         t_stop=unit1_data['t_end'] * pq.s
     )
-
     spike_train2 = neo.SpikeTrain(
         unit2_data['spike_times'] * pq.s,
         t_start=unit2_data['t_start'] * pq.s,
         t_stop=unit2_data['t_end'] * pq.s
     )
 
-    # Convert to BinnedSpikeTrain
-    binned_spike_train_1 = BinnedSpikeTrain(spike_train1, BIN_SIZE)
-    binned_spike_train_2 = BinnedSpikeTrain(spike_train2, BIN_SIZE)
+    # Binarize spike trains
+    binned_spike_train1 = BinnedSpikeTrain(spike_train1, BIN_SIZE * pq.ms)
+    binned_spike_train2 = BinnedSpikeTrain(spike_train2, BIN_SIZE * pq.ms)
 
-    # Compute CCH
-    cch = cch_utils.calculate_cch(binned_spike_train_1, binned_spike_train_2, LAG_WINDOW)
-
-    # Compute jitter-corrected CCH
-    jittered_cch = cch_utils.calculate_jitter_cch(
-        binned_spike_train_1,
-        spike_train2,
-        JITTER_WINDOW,
-        LAG_WINDOW,
-        NUM_SURROGATES
-    )
+    # Compute CCH and jitter-corrected CCH
+    cch_result = cch_utils.calculate_cch(binned_spike_train1, binned_spike_train2, LAG_WINDOW)
+    jittered_cch = cch_utils.calculate_jitter_cch(binned_spike_train1, spike_train2, JITTER_WINDOW, LAG_WINDOW, NUM_SURROGATES)
 
     # Calculate corrected CCH
-    corrected_cch = cch[0] - jittered_cch
+    corrected_cch = cch_result[0] - jittered_cch
 
-    # Find significant interactions
-    is_significant, flank_sd, max_value, peak_lag = cch_utils.find_interactions(corrected_cch, THRESHOLD,
-
-                                                                                PEAK_WINDOW)  # list of dictionaries for peak informations
+    # Process significant interactions for both directions
     results = []
 
-    # Plot and save figures for significant interactions
-    if is_significant:
-        #TODO: determine location of save_path
-        # TODO: file name
+    # Direction: unit1 -> unit2
+    interaction_result = cch_utils.find_interactions(corrected_cch, THRESHOLD, PEAK_WINDOW_MAX)
+    results.append(create_interaction_result(unit1_data, unit2_data, cch_result[0], jittered_cch, corrected_cch, interaction_result))
 
-        #plot_filename = f"./{FOLDER_NAME}/plots/cch_unit{unit1_data['id']}_unit{unit2_data['id']}.png"
-        cch_utils.plot_cch_correction(
-            cch=cch[0],
-            mean_jittered_cch=jittered_cch,
-            corrected_cch=corrected_cch,
-            peak_value=max_value,
-            peak_lag=peak_lag,
-            flank_sd=flank_sd,
-            save_path=plot_filename,
-            bin_size=BIN_SIZE,
-            maxlag=LAG_WINDOW,
-            lag_window=PEAK_WINDOW,
-            title=f'CCH unit{unit1_data["id"]}({unit1_data["ccf_acronym"]}) - unit{unit2_data["id"]}({unit2_data["ccf_acronym"]})'
-        )
-    # TODO: this could have potentially several interactions
-    interaction_results = {
-        'source_id': unit1_data['id'],
-        'target_id': unit2_data['id'],
-        'source_ccf': unit1_data['ccf_acronym'],
-        'target_ccf': unit2_data['ccf_acronym'],
-        'source_ccf_parent': unit1_data['ccf_parent_acronym'],
-        'target_ccf_parent': unit2_data['ccf_parent_acronym'],
-        'source_fr': unit1_data['firing_rate'],
-        'target_fr': unit2_data['firing_rate'],
-        'source_waveform_type': unit1_data['waveform_type'],
-        'target_waveform_type': unit2_data['waveform_type'],
-        'is_significant': is_significant,
-        'cch_max_peak_value': max_value,
-        'cch_max_peak_lag': peak_lag
-        }
+    # Direction: unit2 -> unit1
+    corrected_cch_flipped = np.flip(corrected_cch)
+    interaction_result = cch_utils.find_interactions(corrected_cch_flipped, THRESHOLD, PEAK_WINDOW_MAX)
+    results.append(create_interaction_result(unit2_data, unit1_data, cch_result[0], jittered_cch, corrected_cch, interaction_result, flipped=True))
 
-    results.append(interaction_results)
     return results
 
 
@@ -165,24 +153,28 @@ def xcorr_analysis(nwb_file, results_path):
     nwb_file_path = pathlib.Path(nwb_file)
     mouse_name = nwb_file_path.name[:5]
     unit_table = nwb_reader.get_unit_table(nwb_file)
-    trial_table = nwb_reader.get_trial_table(nwb_file)
 
     # Keep well-isolated unit_table with a valid brain region label
-    unit_table = unit_table[(unit_table['bc_label'] == 'good') & (unit_table['ccf_acronym'].str.contains('[A-Z]'))]
+
+    unit_table = unit_table[(unit_table['bc_label'] == 'good') & (~unit_table['ccf_acronym'].isin(get_excluded_areas()))]
     unit_table['mouse_id'] = mouse_name
     unit_table = convert_electrode_group_object_to_columns(unit_table)
     unit_table.drop('electrode_group', axis=1, inplace=True)
 
-    # Get all single-unit pairs
+    # Use index as new column named "unit_id", then reset
+    unit_table['unit_id'] = unit_table.index
+    unit_table.reset_index(drop=True, inplace=True)
+
+    # Get all unique pairs of single units
     unit_ids = unit_table['unit_id'].unique()
     unit_data = {unit_id: extract_unit_data(unit_table, unit_id)
                  for unit_id in unit_ids}
     unit_pairs = [(unit_data[id1], unit_data[id2])
-                  for id1, id2 in combinations(unit_ids, 2)]
-
+                  for id1, id2 in combinations(unit_ids, 2)][0:50] #TODO: remove slicing
+    print('Number of unit pairs:', len(unit_pairs))
     start_time_total = time.perf_counter()
 
-    with Pool(processes=os.cpu_count()-1) as pool:
+    with Pool(processes=2) as pool:
         results_with_durations = list(tqdm(pool.imap(process_pair, unit_pairs), total=len(unit_pairs)))
 
     end_time_total = time.perf_counter()
@@ -193,5 +185,39 @@ def xcorr_analysis(nwb_file, results_path):
     xcorr_list = [item for sublist in results_with_durations for item in sublist]
     xcorr_df = pd.DataFrame(xcorr_list)
     xcorr_df.to_parquet(os.path.join(results_path, f'{mouse_name}_xcorr_df.parquet'), index=False)
+    xcorr_df.to_csv(os.path.join(results_path, f'{mouse_name}_xcorr_df.csv'), index=False) #TODO: after testing, remove csv export
+
+    # Then, plot significant interactions
+    xcorr_sig_df = xcorr_df[xcorr_df['significant'] == True]
+    # Iterate over significant interactions
+    for idx, row in xcorr_sig_df.iterrows():
+        source_id = row['source_id']
+        target_id = row['target_id']
+        source_ccf = row['source_ccf']
+        target_ccf = row['target_ccf']
+        source_ccf_parent = row['source_ccf_parent']
+        target_ccf_parent = row['target_ccf_parent']
+        cch = row['cch']
+        jittered_cch = row['jittered_cch']
+        corrected_cch = row['corrected_cch']
+        flank_sd = row['flank_sd']
+        lag_index = row['lag_index']
+        cch_value = row['cch_value']
+        int_type = row['int_type']
+
+        # Plot CCH
+        plt.figure(figsize=(5, 5))
+        plt.plot(LAGS, cch, color='black', label='CCH')
+        plt.plot(LAGS, jittered_cch, color='red', label='Jittered CCH')
+        plt.plot(LAGS, corrected_cch, color='blue', label='Corrected CCH')
+        plt.axhspan(corrected_cch-flank_sd, corrected_cch+flank_sd, color='gray', alpha=0.5, label='Flank SD')
+        plt.axvline(lag_index, color='green', linestyle='--', label='Lag index')
+        plt.title(f'CCH: {source_ccf} -> {target_ccf}')
+        plt.xlabel('Time lag [ms]')
+        plt.ylabel('Spike count')
+        plt.legend(frameon=False)
+        plt.savefig(os.path.join(results_path, f'{mouse_name}_{source_id}_{target_id}_cch.png'))
+        plt.close()
+
 
     return
