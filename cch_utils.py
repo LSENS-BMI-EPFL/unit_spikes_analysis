@@ -65,7 +65,7 @@ def calculate_jitter_cch(bst1: BinnedSpikeTrain, spiketrain: neo.SpikeTrain, jit
 
     # Compute CCH for each jittered train
     for i, jittered_train in enumerate(jittered_trains):
-        binned_jittered_train = BinnedSpikeTrain(jittered_train, bin_size=bst1.bin_size)
+        binned_jittered_train = BinnedSpikeTrain(jittered_train, bin_size=bst1.bin_size, tolerance=None)
         cch, _ = calculate_cch(bst1, binned_jittered_train, lag_window)
 
         if cch_length is None:
@@ -75,7 +75,6 @@ def calculate_jitter_cch(bst1: BinnedSpikeTrain, spiketrain: neo.SpikeTrain, jit
 
     # Calculate mean CCH across surrogates
     jittered_cchs = np.array(jittered_cchs, dtype=np.float64)
-    print(jittered_cchs.shape)
     mean_jittered_cch = np.mean(jittered_cchs, axis=0)
     return mean_jittered_cch
 
@@ -107,7 +106,7 @@ def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10)
         'flank_sd': flank_sd,
         'significant': False,
         'lag_index': None,
-        'cch_value': None,
+        'cch_peak_value': None,
         'int_type': None,
     }
 
@@ -132,9 +131,10 @@ def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10)
 
     # Update the result with the first crossing
     significant_result.update({
+        'flank_sd': flank_sd,
         'significant': True,
         'lag_index': zero_lag_index + 1 + first_index,
-        'cch_value': cch_window[first_index],
+        'cch_peak_value': cch_window[first_index],
         'int_type': direction
     })
 
