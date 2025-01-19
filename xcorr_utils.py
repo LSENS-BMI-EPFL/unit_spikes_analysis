@@ -254,8 +254,10 @@ def xcorr_analysis_mpi(nwb_file, results_path):
 
             # Plot shaded area between corrected CCH +/- flank_sd
             axs[1].plot(LAGS, corrected_cch, color='k', lw=1.5, label='Corrected CCH')
-            axs[1].axhline(THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
-            axs[1].axhline(THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
+            if int_type == 'excitatory':
+                axs[1].axhline(THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
+            elif int_type == 'inhibitory':
+                axs[1].axhline(-THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
             axs[1].legend(frameon=False, loc='upper right')
             axs[1].set_xlim(-50, 50)
             axs[1].axvspan(-PEAK_WINDOW_MAX, +PEAK_WINDOW_MAX, color='dimgrey', alpha=0.2, zorder=0)
