@@ -32,11 +32,10 @@ from elephant.spike_train_surrogates import jitter_spikes
 
 # Declare constants globally
 LAG_WINDOW = 100
-PEAK_WINDOW_MAX = 13
-NUM_PROCESSES = 10
+PEAK_WINDOW_MAX = 10
 BIN_SIZE = 1
 JITTER_WINDOW = 10 * pq.ms
-NUM_SURROGATES = 10
+NUM_SURROGATES = 50
 SAMPLING_RATE = 1000 * pq.Hz
 THRESHOLD = 7.0
 LAGS = np.arange(-100, 101, 1) * pq.ms
@@ -164,7 +163,13 @@ def xcorr_analysis_mpi(nwb_file, results_path):
         unit_table = nwb_reader.get_unit_table(nwb_file)
 
         # Filter units
-        unit_table = unit_table[(unit_table['bc_label'] == 'good') & (~unit_table['ccf_acronym'].isin(get_excluded_areas()))]
+        # Format firing rate as float
+        unit_table['firing_rate'] = unit_table['firing_rate'].astype(float)
+        unit_table = unit_table[
+            (unit_table['bc_label'] == 'good')
+                                & (~unit_table['ccf_acronym'].isin(get_excluded_areas()))
+                                & (unit_table['firing_rate'] > 1.0)
+                                ]
         unit_table['unit_id'] = unit_table.index
         unit_data = {unit_id: extract_unit_data(unit_table, unit_id) for unit_id in unit_table['unit_id'].unique()}
         unit_pairs = [(unit_data[id1], unit_data[id2]) for id1, id2 in combinations(unit_data.keys(), 2)]
@@ -227,7 +232,7 @@ def xcorr_analysis_mpi(nwb_file, results_path):
             corrected_cch = row['corrected_cch']
             flank_sd = row['flank_sd']
             lag_index = row['lag_index']
-            cch_value = row['cch_value']
+            cch_peak_value = row['cch_peak_value']
             int_type = row['int_type']
 
             # Plot CCH
@@ -238,18 +243,22 @@ def xcorr_analysis_mpi(nwb_file, results_path):
             for ax in axs:
                 remove_top_right_frame(ax)
                 ax.tick_params(axis='both', which='major', labelsize=15)
-                ax.axvline(0, color='k', linestyle='--')
+                ax.axvline(0, color='dimgrey', linestyle='--')
                 ax.set_xlabel('Time lag [ms]', fontsize=15)
                 ax.set_ylabel('Spike count', fontsize=15)
                 ax.legend(frameon=False, loc='upper right')
 
             axs[0].plot(LAGS, cch, color='k', lw=1.5, label='CCH')
-            axs[0].plot(LAGS, jittered_cch, color='peru', lw=1.5, label='Jittered CCH')
+            axs[0].plot(LAGS, jittered_cch, color='royalblue', lw=1.5, label='Jittered CCH')
+            axs[0].legend(frameon=False, loc='upper right')
 
-            axs[1].plot(LAGS, corrected_cch, color='k', lw=1.5, label='Corrected CCH')
             # Plot shaded area between corrected CCH +/- flank_sd
-            axs[1].fill_between(LAGS, corrected_cch - flank_sd, corrected_cch + flank_sd, color='indianred',
-                                edgecolor=None, alpha=0.4)
+            axs[1].plot(LAGS, corrected_cch, color='k', lw=1.5, label='Corrected CCH')
+            axs[1].axhline(THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
+            axs[1].axhline(THRESHOLD*flank_sd, color='royalblue', linestyle='--', lw=1)
+            axs[1].legend(frameon=False, loc='upper right')
+            axs[1].set_xlim(-50, 50)
+            axs[1].axvspan(-PEAK_WINDOW_MAX, +PEAK_WINDOW_MAX, color='dimgrey', alpha=0.2, zorder=0)
 
             fig.tight_layout()
 

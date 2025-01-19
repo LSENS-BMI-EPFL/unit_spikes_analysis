@@ -94,12 +94,8 @@ def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10)
 
     # Define the search window as [1ms, + window ms] after zero lag
     zero_lag_index = len(cch) // 2  # 100
-    search_range = slice(zero_lag_index + 1, zero_lag_index + 1 + window)
+    search_range = slice(zero_lag_index + 2, zero_lag_index + 1 + window)
     cch_window = cch[search_range]
-
-    # Calculate upper and lower thresholds
-    upper_bound = cch_window + sig_threshold
-    lower_bound = cch_window - sig_threshold
 
     # Initialize results
     significant_result = {
@@ -111,8 +107,8 @@ def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10)
     }
 
     # Look for significant interactions above the upper bound
-    above_indices = np.where(cch_window > upper_bound)[0]
-    below_indices = np.where(cch_window < lower_bound)[0]
+    above_indices = np.where(cch_window > sig_threshold)[0]
+    below_indices = np.where(cch_window < -sig_threshold)[0]
 
     # Combine both above and below indices, labeling their direction
     significant_indices = []
@@ -124,19 +120,20 @@ def find_interactions(cch: np.ndarray, sig_level: float = 7.0, window: int = 10)
     # If no significant interactions exist, return the default result
     if not significant_indices:
         return significant_result
+    else:
 
-    # Sort indices to determine the first crossing (whether above or below)
-    significant_indices.sort(key=lambda x: x[0])
-    first_index, direction = significant_indices[0]
+        # Sort indices to determine the first crossing (whether above or below)
+        significant_indices.sort(key=lambda x: x[0])
+        first_index, direction = significant_indices[0]
 
-    # Update the result with the first crossing
-    significant_result.update({
-        'flank_sd': flank_sd,
-        'significant': True,
-        'lag_index': zero_lag_index + 1 + first_index,
-        'cch_peak_value': cch_window[first_index],
-        'int_type': direction
-    })
+        # Create result with the first crossing
+        significant_result = {
+            'flank_sd': flank_sd,
+            'significant': True,
+            'lag_index': zero_lag_index + 1 + first_index,
+            'cch_peak_value': cch_window[first_index],
+            'int_type': direction
+        }
 
     return significant_result
 

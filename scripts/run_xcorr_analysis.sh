@@ -4,10 +4,9 @@
 #SBATCH --error=/home/%u/logs/xcorr_analysis_%j.err   # Error log file
 #SBATCH --time=7-24:00:00                 # Max runtime (adjust based on expected runtime)
 #SBATCH --qos=parallel                    # QOS
-#SBATCH --nodes=32                       # Single node
-#SBATCH --ntasks=74                      # Single task
+#SBATCH --nodes=4                       # Single node
+#SBATCH --ntasks-per-node=72                      # Single task
 #SBATCH --cpus-per-task=1               # Use 8 CPU cores (adjust as needed)
-#SBATCH --mem=32G                       # Allocate 16GB memory (adjust as needed)
 #SBATCH --mail-type=END,FAIL            # Email notifications for job completion or failure
 #SBATCH --mail-user=axel.bisi@epfl.ch  # Replace with your email address
 
@@ -34,7 +33,7 @@ mkdir -p "$RESULTS_PATH"
 echo "Starting xcorr_analysis for NWB file: $NWB_FILE"
 start_time=$(date +%s)
 
-srun -N 32 -n 74 -q parallel python3 xcorr_utils.py "$NWB_FILE" "$RESULTS_PATH"
+srun -N 4 -n 72 -q parallel python3 xcorr_utils.py "$NWB_FILE" "$RESULTS_PATH"
 
 #python3 -c "
 #import sys
