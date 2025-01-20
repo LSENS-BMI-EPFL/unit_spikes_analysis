@@ -105,7 +105,6 @@ def process_pair(unit_pair):
         }
 
     unit1_data, unit2_data = unit_pair
-    print(f"Pair: {unit1_data['id']} - {unit2_data['id']}")
 
 
     # Create Neo SpikeTrain objects
