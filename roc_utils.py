@@ -163,7 +163,7 @@ def process_spike_data(nwb_file):
 
         contexts = ['active', 'passive_pre', 'passive_post'] if has_context else ['active']
 
-        # Initialize columns #TODO: improve this and table format
+        # Initialize columns
         if event_type == 'spontaneous_licks':
             contexts = [''] # context irrelevant for spontaneous licks
 
@@ -330,9 +330,8 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
         is_significant = False
         res_dict.update({'significant': is_significant, 'direction': np.nan, 'p_value': p_value_pos, 'p_value_to_show': p_value_pos}) # here only p-value for positive direction is kept
 
-    debug = True
-    print(is_significant)
-    if debug and is_significant: #TODO: make is a separate function in using res_dict as input?
+    debug = False
+    if debug and is_significant:
 
         # Subplots: 1. ROC curve 2. Histogram of permutted AUCs
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
@@ -361,7 +360,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
 
         # Show
         fig.tight_layout()
-        plt.show()
+        plt.close()
 
     return res_dict
 
