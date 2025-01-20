@@ -99,16 +99,16 @@ def get_filtered_lick_times(nwbfile, interval=1):
     # Get piezo lick times
     piezo_lick_times = events.time_series['piezo_lick_times'].data[:]
 
-    # Get stimulus times
-    stim_times = {
-        'auditory_hit': events.time_series['auditory_hit_trial'].data[:],
-        'auditory_miss': events.time_series['auditory_miss_trial'].data[:],
-        'whisker_hit': events.time_series['whisker_hit_trial'].data[:],
-        'whisker_miss': events.time_series['whisker_miss_trial'].data[:]
-    }
+    # Check available event types
+    # Note: some may be missing, e.g. auditory_miss_trial (or whisker_hit_trial)
+    # Gather all that are present in events as time_series
+    stim_time_series = [key for key in events.time_series.keys() if 'trial' in key]
+    stim_time_series = [key for key in stim_time_series if 'auditory' in key or 'whisker' in key]
+    stim_times = {key: events.time_series[key].data[:] for key in stim_time_series}
 
     # Remove lick times within interval of stimulus events
     filtered_lick_times = filter_lick_times(piezo_lick_times, interval, **stim_times)
+
     return filtered_lick_times
 
 
@@ -280,7 +280,6 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
     """
     Perform ROC analysis for a single unit and analysis type in a multiprocessing context.
     """
-    print(f"Processing unit {unit_id} for analysis type {analysis_type}")
     unit_table = proc_unit_table[proc_unit_table['unit_id'] == unit_id]
     mouse_id = unit_table['mouse_id'].values[0]
     area = unit_table['ccf_parent_acronym'].values[0]
@@ -415,6 +414,6 @@ def roc_analysis(nwb_file, results_path):
     results_table = pd.DataFrame(results)
     mouse_name = results_table['mouse_id'].values[0]
     os.makedirs(results_path, exist_ok=True)
-    results_table.to_parquet(f'{results_path}/{mouse_name}_roc_results.parquet', index=False)
+    results_table.to_csv(f'{results_path}/{mouse_name}_roc_results.csv', index=False)
 
     return
