@@ -18,7 +18,7 @@ from matplotlib import gridspec
 
 import NWB_reader_functions as nwb_reader
 
-from plotting_utils import remove_top_right_frame, save_figure_with_options
+from plotting_utils import remove_top_right_frame, remove_bottom_right_frame, save_figure_with_options
 from roc_utils import filter_lick_times
 
 def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
@@ -50,12 +50,17 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
         event_times = np.concatenate(event_times)
         n_events = len(event_times)
 
-        event_type_dict = {'false_alarm_trial': 'k',
-                            'correct_rejection_trial': 'grey',
-                            'auditory_hit_trial': 'mediumblue',
-                            'auditory_miss_trial': 'deepskyblue',
-                            'whisker_hit_trial': 'forestgreen',
-                            'whisker_miss_trial': 'crimson',
+        event_type_dict = {
+            'auditory_passive_post': 'mediumblue',
+            'whisker_passive_post': 'forestgreen',
+            'false_alarm_trial': 'k',
+            'correct_rejection_trial': 'grey',
+            'auditory_hit_trial': 'mediumblue',
+            'auditory_miss_trial': 'deepskyblue',
+            'whisker_hit_trial': 'forestgreen',
+            'whisker_miss_trial': 'crimson',
+            'whisker_passive_pre':'forestgreen',
+            'auditory_passive_pre':'mediumblue',
                            }
 
 
@@ -68,11 +73,12 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
 
     trial_ticks = np.arange(0, n_events, 100)
     ft_size = 13
-    #line_prop = dict(joinstyle='miter')
 
     # Make figure
     fig, ax = plt.subplots(1, 1, figsize=(3, 3), dpi=300)
-    remove_top_right_frame(ax)
+    remove_bottom_right_frame(ax)
+    ax.xaxis.set_ticks_position('top')
+    ax.xaxis.set_label_position('top')
 
     if align_event == 'trial_start':
         ax.set_ylabel('Trials', fontsize=ft_size - 4)
@@ -85,12 +91,14 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
         ax.set_title(title_str, fontsize=ft_size / 2)
 
     ax.set_xlabel('Time [s]', fontsize=ft_size - 4)
-    ax.set_yticks(ticks=trial_ticks, labels=trial_ticks, fontsize=ft_size - 4)
+    ax.set_yticks(ticks=trial_ticks, labels=trial_ticks[::-1], fontsize=ft_size - 4)
     ax.set_xticks(ticks=time_ticks, labels=time_ticks_labels, fontsize=ft_size - 4)
     ax.tick_params(axis='both', which='major', labelsize=ft_size - 4)
     trial_type_delimiters = []
 
     # Iterate over trial types
+    len_passive_pre = len(event_times_dict['whisker_passive_pre']) + len(event_times_dict['auditory_passive_pre'])
+    len_passive_post = len(event_times_dict['whisker_passive_post']) + len(event_times_dict['auditory_passive_post'])
     for idx, (event_type, event_color) in enumerate(event_type_dict.items()):
 
         # Get event times for this condition
@@ -118,6 +126,10 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
                      linelengths=2,
                      colors=[event_color] * len(spike_times_aligned),
                      )
+        if 'post' in event_type:
+            ax.axhspan(ymin=0, ymax=len_passive_post, color='navajowhite', alpha=0.3)
+        elif 'whisker_passive_pre' in event_type:
+            ax.axhspan(ymin=offset_start, ymax=offset_start+len_passive_pre, color='navajowhite', alpha=0.5)
     ax.axvline(x=0, lw=1, ls='--', c='k', zorder=0)
     ax.set_ylim(0, n_events)
     ax.set_xlim(-pre_event_win, post_event_win)
@@ -130,8 +142,7 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
         file_name = f'{mouse_id}_unit{unit_id}_raster_trial_starts'
     elif align_event == 'piezo_lick_times':
         file_name = f'{mouse_id}_unit{unit_id}_raster_piezo_lick_times'
-    save_figure_with_options(fig, ['png','svg'], file_name,
-                             results_path, dark_background=False)
+    #save_figure_with_options(fig, ['png','svg'], file_name,  results_path, dark_background=False)
 
 
     return
@@ -154,6 +165,8 @@ def plot_rasters(nwb_file, results_path):
     unit_table = unit_table[(unit_table['bc_label'] == 'good')
                             &
                             (unit_table['ccf_acronym'].str.contains('[A-Z]'))]
+    unit_table['firing_rate'] = unit_table['firing_rate'].astype(float)
+    unit_table = unit_table[unit_table['firing_rate'] > 5]  # keep units with FR > 1 Hz
     unit_table['mouse_id'] = mouse_name
 
     # Use index as new column named "unit_id", then reset
@@ -176,11 +189,25 @@ def plot_rasters(nwb_file, results_path):
     # Get session event_times for alignment
     event_time_dict = nwb_reader.get_behavioral_events(nwb_file)
 
+    passive_whisker_pre = trial_table[(trial_table.context == 'passive_pre')
+    & (trial_table.whisker_stim==1)]['start_time'].values
+    passive_whisker_post = trial_table[(trial_table.context == 'passive_post')
+    & (trial_table.whisker_stim==1)]['start_time'].values
+    passive_auditory_pre = trial_table[(trial_table.context == 'passive_pre')
+    & (trial_table.auditory_stim==1)]['start_time'].values
+    passive_auditory_post = trial_table[(trial_table.context == 'passive_post')
+    & (trial_table.auditory_stim==1)]['start_time'].values
+    event_time_dict['whisker_passive_pre'] = passive_whisker_pre
+    event_time_dict['whisker_passive_post'] = passive_whisker_post
+    event_time_dict['auditory_passive_pre'] = passive_auditory_pre
+    event_time_dict['auditory_passive_post'] = passive_auditory_post
+    event_time_dict.pop('early_lick_trial')
+
     align_events = ['trial_start', 'piezo_lick_times']
     align_events = ['piezo_lick_times']
 
     # Iterate over units
-    for unit_id in unit_table['unit_id'].unique()[0:10]:
+    for unit_id in unit_table['unit_id'].unique():
 
         for align_event in align_events:
 

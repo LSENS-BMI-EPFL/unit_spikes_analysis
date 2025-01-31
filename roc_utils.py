@@ -154,9 +154,9 @@ def process_spike_data(nwb_file):
 
     event_types = ['whisker', 'auditory', 'spontaneous_licks']
     time_windows = {
-        'pre': (-0.2, 0),
-        'post': (0, 0.2),
-        'spontaneous': (-0.4, -0.2, 0, 0.2)
+        'pre': (-0.1, 0),
+        'post': (0, 0.1),
+        'spontaneous_licks': (-0.4, -0.2, 0, 0.2)
     }
 
     for event_type in event_types:
@@ -178,8 +178,11 @@ def process_spike_data(nwb_file):
                 pre_counts, post_counts = [], []
 
                 for event in event_times:
-                    pre_start, pre_end = time_windows['pre']
-                    post_start, post_end = time_windows['post']
+                    if event_type == 'spontaneous_licks':
+                        pre_start, pre_end, post_start, post_end = time_windows['spontaneous_licks']
+                    else:
+                        pre_start, pre_end = time_windows['pre']
+                        post_start, post_end = time_windows['post']
 
                     pre_counts.append(count_spikes_in_window(spike_times, event + pre_start, event + pre_end))
                     post_counts.append(count_spikes_in_window(spike_times, event + post_start, event + post_end))
@@ -276,9 +279,14 @@ def select_spike_counts(unit_data, analysis_type):
     return spikes_counts_1, spikes_counts_2
 
 
-def process_unit(unit_id, proc_unit_table, analysis_type):
+def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
     """
-    Perform ROC analysis for a single unit and analysis type in a multiprocessing context.
+    Process a single unit for ROC analysis.
+    :param unit_id: unit ID
+    :param proc_unit_table: processed unit table
+    :param analysis_type: type of analysis
+    :param results_path: path to save results
+    :return:
     """
     unit_table = proc_unit_table[proc_unit_table['unit_id'] == unit_id]
     mouse_id = unit_table['mouse_id'].values[0]
@@ -315,7 +323,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
 
     # Determine significance and direction of signifiance based on p-values and analysis type
     if 'wh_vs_aud' in analysis_type:
-        directions = ['whisker', 'auditory']
+        directions = ['auditory', 'whisker'] # auditory is spikes_2!
     else:
         directions = ['positive', 'negative']
 
@@ -329,7 +337,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
         is_significant = False
         res_dict.update({'significant': is_significant, 'direction': np.nan, 'p_value': p_value_pos, 'p_value_to_show': p_value_pos}) # here only p-value for positive direction is kept
 
-    debug = False
+    debug = True
     if debug and is_significant:
 
         # Subplots: 1. ROC curve 2. Histogram of permutted AUCs
@@ -360,6 +368,10 @@ def process_unit(unit_id, proc_unit_table, analysis_type):
         # Show
         fig.tight_layout()
         plt.close()
+        fname = f'{mouse_id}_{unit_id}_{analysis_type}.png'
+        results_path_fig = os.path.join(results_path, 'figures')
+        os.makedirs(results_path_fig, exist_ok=True)
+        fig.savefig(os.path.join(results_path_fig, fname))
 
     return res_dict
 
@@ -377,7 +389,7 @@ def roc_analysis(nwb_file, results_path):
     mouse_id = proc_unit_table['mouse_id'].values[0]
 
     # Select ROC analyses based on available data
-    if int(mouse_id[3:5]) < 115:
+    if int(mouse_id[2:5]) < 115:
         analyses_to_do = ['whisker_active', 'auditory_active',
                           'wh_vs_aud_active', 'spontaneous_licks']
     else:
@@ -396,7 +408,6 @@ def roc_analysis(nwb_file, results_path):
                           'spontaneous_licks' # comparing pre vs post spontaneous lick activity
                           ]
 
-
     # Init. global results
     results = []
 
@@ -406,7 +417,7 @@ def roc_analysis(nwb_file, results_path):
         unit_ids = proc_unit_table['unit_id'].unique()
 
         with multiprocessing.Pool(os.cpu_count()-2) as pool:
-            func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type)
+            func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, unit_ids)
             results.extend(analysis_results)
 
@@ -414,6 +425,7 @@ def roc_analysis(nwb_file, results_path):
     results_table = pd.DataFrame(results)
     mouse_name = results_table['mouse_id'].values[0]
     os.makedirs(results_path, exist_ok=True)
+    print('Saving results to:', results_path)
     results_table.to_csv(f'{results_path}/{mouse_name}_roc_results.csv', index=False)
 
     return
