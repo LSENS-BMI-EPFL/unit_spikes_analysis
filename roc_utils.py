@@ -337,7 +337,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
         is_significant = False
         res_dict.update({'significant': is_significant, 'direction': np.nan, 'p_value': p_value_pos, 'p_value_to_show': p_value_pos}) # here only p-value for positive direction is kept
 
-    debug = True
+    debug = False
     if debug and is_significant:
 
         # Subplots: 1. ROC curve 2. Histogram of permutted AUCs

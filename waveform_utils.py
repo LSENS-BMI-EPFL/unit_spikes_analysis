@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import NWB_reader_functions as nwb_reader
+import allen_utils as allen_utils
 from plotting_utils import save_figure_with_options
 
 from sklearn.mixture import GaussianMixture
@@ -117,24 +118,28 @@ def assign_rsu_vs_fsu(nwb_files, output_path):
             unit_table['mouse_id'] = mouse_id
             unit_table['behaviour'] = beh
             unit_table['day'] = day
+            unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+            unit_table = allen_utils.create_area_custom_column(unit_table)
             unit_data.append(unit_table)
         except:
             continue
     unit_data = pd.concat(unit_data)
 
+    print('Total number of well-isolated "good" neurons', len(unit_data[unit_data['bc_label'] == 'good']))
+
     # Get unique areas
-    unit_data = process_area_acronyms(unit_data)
-    area_list = get_filtered_area_list(unit_data, params={'area_nomenclature': 'area_acronym'})
+    unit_data = unit_data[~unit_data['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+    area_list = unit_data['area_acronym_custom'].unique()
 
     # Iterate over areas
     results = []
     for area in area_list:
         print('Processing area:', area)
-        area_data = unit_data[(unit_data['area_acronym'] == area)
+        area_data = unit_data[(unit_data['area_acronym_custom'] == area)
                                  & (unit_data['bc_label'] == 'good')]
 
-        if area_data.empty or len(area_data) < 45:
-            print(f'No good units found in {area}. Only MUA or non-somatic. Skipping...')
+        if area_data.empty or len(area_data) < 30:
+            print(f'Not enough good units found in {area}. Only MUA or non-somatic. Skipping...')
             continue
 
         area_data['duration'] = area_data['duration'].astype(float)
@@ -189,7 +194,7 @@ def assign_rsu_vs_fsu(nwb_files, output_path):
             print('Could not find root/AP duration threshold in range 0.2-0.8 ms. Skipping...')
 
         # Plot results
-        debug = False
+        debug = True
         if debug:
             color_dict = {'rsu':'#ff8783', 'fsu':'#83b1ff'}
             fig,ax=plt.subplots(1,1,figsize=(5,5),dpi=300)
