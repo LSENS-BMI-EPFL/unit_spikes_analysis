@@ -17,6 +17,7 @@ from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from waveform_utils import assign_rsu_vs_fsu
 from unit_label_utils import unit_label_describe
+from glm_utils import run_unit_glm_pipeline_with_pool
 
 if __name__ == '__main__':
 
@@ -65,10 +66,11 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = []
+    analyses_to_do_single = ['unit_glm']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
+    analyses_to_do_multi = ['unit_labels_processing']
 
     # Init. list of NWB files with neural data for analyses requiring multiple mice
     nwb_neural_files = []
@@ -135,6 +137,9 @@ if __name__ == '__main__':
             if 'xcorr_analysis' in analyses_to_do_single:
                 #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing
                 pass
+
+            if 'unit_glm' in analyses_to_do_single:
+                run_glm_pipeline_with_pool(nwb_file, results_path)
 
     ### ------------------------------------------
     # Analyses aggregating data from multiple mice
