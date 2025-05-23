@@ -307,15 +307,10 @@ def smooth_trace_median(trace, kernel_size=5):
 
 def preprocess_dlc_trace(trace):
     '''Preprocess DLC trace to remove outliers.'''
-    trace = remove_outliers_zscore(trace, threshold=10)
+    trace = remove_outliers_zscore(trace, threshold=20)
     trace = interpolate_nans(trace)
-    i = np.argwhere(np.isnan(trace))
-    assert not np.isnan(trace).any()
-
-    trace = smooth_trace_median(trace, kernel_size=3)
-    assert not np.isnan(trace).any()
-
-    #trace = smooth_trace(trace, sigma=5)
+    #trace = smooth_trace_median(trace, kernel_size=3)
+    trace = smooth_trace(trace, sigma=5)
     #trace = smooth_trace_savgol(trace, window_length=11, polyorder=3)
     return trace
 
@@ -338,8 +333,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         unit_table = unit_table.sample(frac=1)
         unit_table = unit_table[unit_table['bc_label']=='good']
         unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
-        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(0.5)]
-        unit_table = unit_table[:2]
+        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(1.0)]
+        unit_table = unit_table[:1]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
 
         # Use index as new column named "unit_id", then reset
@@ -503,7 +498,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         for short_key, long_key in analog_keys.items():
             data, times = get_series(long_key)
             # Preprocess data to remove outliers
-            data = preprocess_dlc_trace(data)
+            #data = preprocess_dlc_trace(data)
             assert np.isfinite(data.shape).all()
             predictors[short_key] = bin_behavior(data, times)
 
@@ -532,7 +527,7 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
 
     """
     # Fitting parameters, N numbers
-    cv_folds = 2
+    cv_folds = 5
     n_features = X_trainval.shape[0]
     n_bins = X_trainval.shape[2]
 
@@ -582,7 +577,7 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
                     solver='cdfast',
                     cv=cv_folds,
                     tol=1e-4,
-                    verbose=True,
+                    verbose=False,
                     random_state=42)
         glmcv.fit(X_trainval, y_trainval)
         lambda_opt = glmcv.reg_lambda_opt_
@@ -614,10 +609,8 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
     test_score = glm_final.score(X_test, y_test)
 
     # Compute log-likelihoods
-    train_ll = np.sum(y_trainval * np.log(y_trainval_pred) - y_trainval_pred)
-    test_ll = np.sum(y_test * np.log(y_test_pred) - y_test_pred)
-    #train_ll = -np.mean(y_trainval * np.log(glm_final.predict(X_trainval) + 1e-6) - glm_final.predict(X_trainval)) #TODO: not sure it's correct
-    #test_ll = -np.mean(y_test * np.log(y_test_pred + 1e-6) - y_test_pred) #TODO: not sure it's correct, sum instead of mean
+    train_ll = np.sum(y_trainval * np.log(y_trainval_pred + 1e-12) - y_trainval_pred)
+    test_ll = np.sum(y_test * np.log(y_test_pred + 1e-12) - y_test_pred)
 
     # Single-trial correlation (r)
     train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
@@ -733,55 +726,51 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Build design matrix for entire dataset
     X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size)
+    n_features = X.shape[0]
     save_model_input_output(X, spikes, feature_names, output_dir)
 
-    debug=False
-    if debug:
-        plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=6, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_single_trial(X, feature_names, trial_index=6, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=10, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_single_trial(X, feature_names, trial_index=10, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=67, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_single_trial(X, feature_names, trial_index=67, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=86, n_bins=n_bins, bin_size=bin_size)
-        plot_design_matrix_single_trial(X, feature_names, trial_index=86, n_bins=n_bins, bin_size=bin_size)
 
     # ---------------------------------------
     # Train/test data cross-validation splits
     # ---------------------------------------
     model_res_df_outer = []
-    cv_outer_folds = 5
+    cv_outer_folds = 2
     outer_kf = KFold(n_splits=cv_outer_folds, shuffle=True, random_state=42)
     for fold_idx, (trainval_ids, test_ids) in enumerate(outer_kf.split(trials_df.index)):
+        print('Fold', fold_idx)
 
         # Get data splits
         X_trainval, X_test = X[:,trainval_ids,:], X[:,test_ids,:]
         spikes_trainval, spikes_test = spikes[:,trainval_ids,:], spikes[:,test_ids,:]
 
-        # Reshape and keep continuous predictors only
+        # Reshape
         X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
         X_test = X_test.reshape(X_test.shape[0], -1)
-        X_trainval_dlc = X_trainval[:-4,:]
-        X_test_dlc = X_test[:-4,:]
 
-        # Normalize test data using train statistics
-        train_mean = X_trainval_dlc.mean(axis=1, keepdims=True)
-        train_std = X_trainval_dlc.std(axis=1, keepdims=True) + 1e-8  # avoid division by zero
-        X_trainval_dlc_scaled = (X_trainval_dlc - train_mean) / train_std
-        X_test_dlc_scaled = (X_test_dlc - train_mean) / train_std
+        # Standardize DLC features using train statistics, apply on test
+        for dlc_idx in range(n_features-4, n_features):
+            mean = X_trainval[dlc_idx,:].mean()
+            std = X_trainval[dlc_idx,:].std()
+            X_trainval[dlc_idx,:] = (X_trainval[dlc_idx,:] - mean) / std
+            X_test[dlc_idx,:] = (X_test[dlc_idx,:] - mean) / std
 
-        # Update and reshape data
-        X_trainval[:-4,:] = X_trainval_dlc_scaled
-        X_test[:-4,:] = X_test_dlc_scaled
+            X[dlc_idx,:] = (X[dlc_idx,:] - mean) / std # for plotting only
+
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+        debug = False
+        if debug:
+            for test_idx in test_ids[:5]:
+                plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=bin_size)
+                plot_design_matrix_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=bin_size)
 
         # -----------------------------------
         # Fit full GLMs using multiprocessing
         # -----------------------------------
 
         lambdas = np.exp(np.linspace(np.log(0.5), np.log(1e-5), 5)) # regul. strength hyperparam.
-        lambdas = np.array([0.01])
+        #lambdas = np.array([0.001, 0.5])
         start_time = time.time()
         results = parallel_fit_glms(spikes_trainval=spikes_trainval,
                                     X_trainval=X_trainval,
@@ -799,14 +788,16 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df['test_trials'] = [test_ids] * len(model_res_df)
         model_res_df['model_name'] = 'full'
         model_res_df['predictors'] = [feature_names] * len(model_res_df)
-        print(model_res_df.describe())
+        describe_cols = ['neuron_id', 'fold', 'train_score', 'test_score', 'train_corr', 'test_corr',
+                         'train_mi', 'test_mi']
+        print(model_res_df[describe_cols].describe())
         save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), output_dir=output_dir)
 
         # Add to list of model folds
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=True
+        debug=False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
                 plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size)
@@ -851,25 +842,23 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
             results_reduced_df['model_name'] = model_name
             results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+            results_reduced_all.append(results_reduced_df)
 
             # Append reduced model to all models
             model_res_df_outer.append(results_reduced_df)
 
         # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        print(results_reduced_all_df.head())
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold'.format(fold_idx), output_dir=output_dir)
+        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), output_dir=output_dir)
 
         model_res_df_outer.append(results_reduced_all_df)
 
-        # Merge full and reduced results
-        #model_res_df = pd.concat([model_res_df, results_reduced_all], ignore_index=True)
-
-        debug=True
+        debug=False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
-                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id)
-                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='whisker_encoding'], trials_df, neuron_id)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='whisker_encoding'], trials_df, neuron_id, bin_size)
 
 
     # Save all model results in a single file
@@ -880,7 +869,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     neuron_id = 0
     model_res_df_outer_df_sub = model_res_df_outer_df[model_res_df_outer_df['neuron_id'] == neuron_id]
     model_res_df_outer_df_sub = model_res_df_outer_df_sub[model_res_df_outer_df_sub['model_name'] == 'full']
-    print(model_res_df_outer_df_sub.describe())
+    describe_cols = ['neuron_id', 'fold', 'train_score', 'test_score', 'train_corr', 'test_corr',
+                     'train_mi', 'test_mi']
+    print(model_res_df_outer_df_sub[describe_cols].describe())
 
     print('Fitting done.')
     return
