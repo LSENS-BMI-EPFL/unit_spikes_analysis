@@ -20,7 +20,6 @@ import multiprocessing as mp
 from sklearn.model_selection import KFold
 from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from pyglmnet import GLM, GLMCV
-from functools import partial
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 
@@ -31,17 +30,33 @@ import allen_utils
 import plotting_utils as putils
 
 # Set global variables
-BIN_SIZE = 0.05 # seconds
+BIN_SIZE = 0.1 # in seconds
 
 
 def bin_spike_times(spike_times, start_time, end_time, bin_size):
+    """
+    Bins spike times into a histogram with specified bin size.
+
+    :param spike_times: array-like, spike times in seconds
+    :param start_time: float, start time of the binning period in seconds
+    :param end_time: float, end time of the binning period in seconds
+    :param bin_size: float, size of each bin in seconds
+    """
     bins = np.arange(start_time, end_time + bin_size, bin_size)
     binned, _ = np.histogram(spike_times, bins=bins)
     return binned
 
 def bin_behavior(series_time, series_values, trial_start, trial_end, n_bins):
-    bin_edges = np.linspace(trial_start, trial_end, n_bins + 1)
-    binned = np.zeros(n_bins)
+    """
+    Bins a time series into specified number of bins within a trial period, returning the mean value for each bin.
+    :param series_time: array-like, time points of the series in seconds
+    :param series_values: array-like, values corresponding to the time points
+    :param trial_start: float, start time of the trial in seconds
+    :param trial_end: float, end time of the trial in seconds
+    :param n_bins: int, number of bins to create within the trial period
+    """
+    bin_edges = np.linspace(trial_start, trial_end, n_bins + 1) # get bin edges
+    binned = np.zeros(n_bins)    # init.
     digitized = np.digitize(series_time, bin_edges) - 1
     for i in range(n_bins):
         mask = digitized == i
@@ -49,65 +64,34 @@ def bin_behavior(series_time, series_values, trial_start, trial_end, n_bins):
             binned[i] = np.mean(series_values[mask])
     return binned
 
-def expand_event_predictors(predictor_matrix, window, bin_size):
-    start_offset, end_offset = window
-    lag_bins = np.arange(np.floor(start_offset / bin_size),
-                         np.ceil(end_offset / bin_size) + 1).astype(int)
-    n_lags = len(lag_bins)
 
-    n_trials, n_timepoints = predictor_matrix.shape
-    unfolded = np.zeros((n_trials, n_timepoints, n_lags))
-
-    for i, lag in enumerate(lag_bins):
-        if lag < 0:
-            unfolded[:, -lag:, i] = predictor_matrix[:, :n_timepoints + lag]
-        elif lag > 0:
-            unfolded[:, :n_timepoints - lag, i] = predictor_matrix[:, lag:]
-        else:
-            unfolded[:, :, i] = predictor_matrix
-
-    return unfolded
-
-def build_design_matrix_old(predictors, kernel_defs, analog_keys, binary_keys, bin_size):
-    X_parts = []
-    feature_names = []
-
-    for key in kernel_defs:
-        unfolded = expand_event_predictors(kernel_defs[key][0], kernel_defs[key][1], bin_size)
-        X_parts.append(unfolded)
-        lags = unfolded.shape[-1]
-        feature_names += [f"{key}_lag{l}" for l in range(lags)]
-
-    for key in analog_keys + binary_keys:
-        X_parts.append(predictors[key][..., np.newaxis])  # Add singleton feature dim
-        feature_names.append(key)
-
-    X = np.concatenate(X_parts, axis=-1)
-    return X, feature_names
-
-def build_design_matrix(predictors, event_defs, analog_keys, bin_size):
+def build_design_matrix(data_dict, event_defs, analog_keys, bin_size):
     """
-    Builds a design matrix X for GLM using predictor dict and event definitions from
+    Builds a design matrix X for GLM using input data dict and event definitions from
     `load_nwb_spikes_and_predictors`.
-
-    Parameters:
-    - predictors: dict of predictor arrays, each shape (n_trials, n_bins)
-    - event_defs: dict of {name: (event_times, (start_offset, end_offset))}
-    - bin_size: duration of one time bin (s)
-
-    Returns:
-    - X: np.ndarray, shape (n_trials * n_bins, n_features)
+    :param data_dict: dict of predictor arrays, each shape (n_trials, n_bins)
+    :param event_defs: dict of {name: (event_times, (start_offset, end_offset))} for event-based predictors
+    :param analog_keys: dict of analog predictor names to their keys in the predictors dict
+    :param bin_size: duration of one time bin (s)
+    :return: tuple of (X, feature_names) where:
+    - X: np.ndarray, shape (n_trials * n_bins, n_features) input predictors
     - feature_names: list of feature column names
     """
+    # Init. design matrix and new feature names
     design_cols = []
     feature_names = []
 
-    for name, data in predictors.items():
+    # Iterate over predictory data
+    for name, data in data_dict.items():
+
+        # Event-based predictors e.g. lick onset time
         if name in event_defs:
             _, (start_offset, end_offset) = event_defs[name]
+            # Get kernel bin range
             offset_bins_pre = int(np.round(abs(start_offset) / bin_size))
             offset_bins_post = int(np.round(end_offset / bin_size))
 
+            # Temporally expand the predictor within the kernel range
             for shift in range(-offset_bins_pre, offset_bins_post):
                 shifted = np.zeros_like(data)
                 if shift < 0:
@@ -120,28 +104,37 @@ def build_design_matrix(predictors, event_defs, analog_keys, bin_size):
                 col = shifted.flatten()
                 design_cols.append(col)
                 feature_names.append(f"{name}_t{shift * bin_size:+.2f}s")
+
+        # Analog predictors e.g. time series from DeepLabCut
         elif name in analog_keys:
-            # Z-score analog predictors before adding
-            data_reshaped = data.reshape(-1, 1).flatten()
-            #scaler = StandardScaler()
-            #data_reshaped = scaler.fit_transform(data_reshaped).flatten() #TODO: remove that and do trina-test
+            data_reshaped = data.flatten() # just flatten the data, data already processed (z-scored)
             design_cols.append(data_reshaped)
             feature_names.append(name)
 
+        # Binary predictors e.g.
         else:
-            # Binary or static predictors
             design_cols.append(data.flatten())
             feature_names.append(name)
 
-    # Stack and reshape into a tensor
+    # Stack and reshape into a tensor of shape (n_features, n_trials, n_bins)
     X = np.stack(design_cols, axis=1)
     n_trials_bins = X.shape[0]
-    n_trials = len(predictors[list(predictors.keys())[0]])
+    n_trials = len(data_dict[list(data_dict.keys())[0]])
     n_bins = n_trials_bins // n_trials
-    X = X.reshape(n_trials, n_bins, -1).transpose((2, 0, 1)) # ( n_features, n_trials, n_bins)
+    X = X.reshape(n_trials, n_bins, -1).transpose((2, 0, 1)) # (n_features, n_trials, n_bins)
+
     return X, feature_names
 
 def get_reduced_matrix(X_full, predictor_names, predictors_to_remove):
+    """
+    Given a design matrix X_full and a list of predictor names, returns a reduced matrix with those predictors removed.
+    :param X_full: np.ndarray, shape (n_features, n_trials, n_bins) full design matrix
+    :param predictor_names: list of str, ordered names of predictors in X_full
+    :param predictors_to_remove: list of str, names of predictors to remove from X_full
+    :return: tuple of (X_reduced, kept_features) where:
+    - X_reduced: np.ndarray, shape (n_features_kept, n_trials, n_bins) reduced design matrix
+    - kept_features: list of str, names of predictors that were kept in the reduced matrix
+    """
     keep_mask_ids = [i for i, name in enumerate(predictor_names) if name not in predictors_to_remove]
     kept_features = [name for name in predictor_names if name not in predictors_to_remove]
     return X_full[keep_mask_ids, :, :], kept_features
@@ -150,7 +143,9 @@ def compute_mutual_info(y_true, y_pred):
     """
     Compute instant mutual information, in bits per spike, with the spike trains likelihood.
     The gain in predictability provided by the GLM parameters over a homogeneous Poisson process with constant firing intensity.
-
+    :param y_true: np.ndarray, shape (n_bins,) true spike counts in each bin
+    :param y_pred: np.ndarray, shape (n_bins,) predicted spike counts in each bin
+    :return: float, bits per spike, single-spike mutual information
     """
     eps = 1e-12 # to avoid log(0) in case no spikes are predicted
     y_pred = np.clip(y_pred, eps, None)
@@ -169,17 +164,14 @@ def compute_mutual_info(y_true, y_pred):
     return bits_per_spk
 
 
-def plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index, n_bins, bin_size=0.05, cmap='viridis'):
+def plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index, n_bins, bin_size):
     """
-    Plots the design matrix as a heatmap for a single trial.
-
-    Parameters:
-    - X: np.ndarray, shape (n_trials * n_bins, n_features)
-    - feature_names: list of str, feature names
-    - trial_index: int, index of the trial to plot
-    - n_bins: int, number of time bins per trial
-    - bin_size: float, bin size in seconds
-    - cmap: str, matplotlib colormap
+    Plot the design matrix predictors for a single trial as a heatmap.
+    :param X: np.ndarray, shape (n_trials * n_bins, n_features)
+    :param feature_names: list of str, names of features in the design matrix
+    :param trial_index: int, index of the trial to visualize
+    :param n_bins: int, number of bins per trial
+    :param bin_size: float, size of each bin in seconds
     """
     X = X.reshape(X.shape[0], -1).transpose(1,0)  # Flatten the design matrix
     n_trials = X.shape[0] // n_bins
@@ -204,8 +196,6 @@ def plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index, n_bin
     ax.set_xlabel('Time (s)', fontsize=12)
     ax.set_title(f"Design matrix — trial {trial_index}", fontsize=12)
 
-    #cbar = fig.colorbar(im, ax=ax, shrink=0.7, location='bottom', pad=0.15)
-    #cbar.set_label('Feature value', fontsize=12)
     divider = make_axes_locatable(ax)
     cax = divider.append_axes('bottom', size='1%', pad=0.5)
     plt.colorbar(im, cax=cax, label='Feature value', orientation='horizontal')
@@ -215,16 +205,14 @@ def plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index, n_bin
     return
 
 
-def plot_design_matrix_single_trial(X, feature_names, trial_index=0, n_bins=None, bin_size=0.05):
+def plot_design_matrix_vector_single_trial(X, feature_names, trial_index, n_bins, bin_size):
     """
-    Plots the design matrix predictors for a single trial as stacked time series.
-
-    Parameters:
-    - X: np.ndarray, shape (n_trials * n_bins, n_features)
-    - feature_names: list of str, feature names
-    - trial_index: int, index of the trial to visualize
-    - n_bins: int, number of bins per trial (required)
-    - bin_size: float, bin size in seconds
+    Plot the design matrix predictors for a single trial as a vectors.
+    :param X: np.ndarray, shape (n_trials * n_bins, n_features)
+    :param feature_names: list of str, names of features in the design matrix
+    :param trial_index: int, index of the trial to visualize
+    :param n_bins: int, number of bins per trial
+    :param bin_size: float, size of each bin in seconds
     """
     X = X.reshape(X.shape[0], -1).transpose(1,0)  # Flatten the design matrix
     n_trials = X.shape[0] // n_bins
@@ -279,14 +267,14 @@ def plot_design_matrix_single_trial(X, feature_names, trial_index=0, n_bins=None
     return
 
 def remove_outliers_zscore(trace, threshold=10):
-    '''Reaplce outliers with NaNs based on z-score.'''
+    '''Replace outliers with NaNs based on z-score.'''
     trace = np.array(trace)
     z = (trace - np.nanmean(trace)) / np.nanstd(trace)
     trace[np.abs(z) > threshold] = np.nan
     return trace
 
 def interpolate_nans(trace):
-    '''Linearly interpolate NaNs in the trace.'''
+    '''Linearly interpolate NaNs in the trace.''' #TODO: try smooth CubicSpline interpolation
     trace = np.array(trace)
     nans = np.isnan(trace)
     if np.all(nans):
@@ -306,7 +294,7 @@ def smooth_trace_median(trace, kernel_size=5):
     return sp.signal.medfilt(trace, kernel_size=kernel_size)
 
 def preprocess_dlc_trace(trace):
-    '''Preprocess DLC trace to remove outliers.'''
+    '''Preprocess DLC trace to remove statistical outliers.'''
     trace = remove_outliers_zscore(trace, threshold=20)
     trace = interpolate_nans(trace)
     #trace = smooth_trace_median(trace, kernel_size=3)
@@ -314,7 +302,18 @@ def preprocess_dlc_trace(trace):
     #trace = smooth_trace_savgol(trace, window_length=11, polyorder=3)
     return trace
 
-def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
+def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
+    """
+    Loads spike trains from unit table and predictors from an NWB file.
+    :param nwb_path: str, path to the NWB file
+    :param bin_size: float, size of time bin in seconds
+    :return: tuple of (spike_array, predictors, predictor_types, n_bins, bin_size) where
+    - spike_array: np.ndarray, shape (n_neurons, n_trials, n_bins)
+    - predictors: dict, contains predictor arrays
+    - predictor_types: dict, contains types of predictors
+    - n_bins: int, number of bins per trial
+    - bin_size: float, size of time bin in seconds
+    """
     with NWBHDF5IO(nwb_path, mode='r', load_namespaces=True) as io:
         nwbfile = io.read()
 
@@ -333,8 +332,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         unit_table = unit_table.sample(frac=1)
         unit_table = unit_table[unit_table['bc_label']=='good']
         unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
-        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(1.0)]
-        unit_table = unit_table[:1]
+        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
+        unit_table = unit_table[:3]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
 
         # Use index as new column named "unit_id", then reset
@@ -363,9 +362,16 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         predictors = {}
 
         # Binary Predictors
+        # ------------------
+        #TODO: add cumulative reward for whisker and auditory
+        #TODO: add local measure of past performance
+        #TODO: add hit variable joint with stim trials
+
+        # Trial index scaled to total number of trials
         trial_idx_scaled = np.arange(n_trials) / (n_trials-1)
         predictors['trial_index_scaled'] = np.tile(trial_idx_scaled[:, None], (1, n_bins))
 
+        # Previous stim trials rewarded #TODO: update to last stim, not previous sitm?
         stim_type = trials_df['trial_type'].fillna('').values
         trials_df['stimulus'] = trials_df['trial_type'].isin(['whisker_trial', 'auditory_trial'])
         trials_df['rewarded'] = (
@@ -396,20 +402,18 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         # Event-based predictors (rasterized kernels will be applied later)
         def rasterize_event(event_times, first_only=False):
             """
-            Rasterizes event times into a binary trial-by-time-bin matrix.
-
-            Parameters:
-            - event_times (array): 1D array of timestamps (e.g., lick times).
-            - first_only (bool): If True, only the first event per trial is rasterized.
-
-            Returns:
-            - matrix (n_trials, n_bins): Binary matrix with 1s marking event bins.
+            Rasterizes session-wide event times into a binary trial-by-time-bin matrix.
+            :param event_times: array-like, 1D array of timestamps (e.g., lick times)
+            :param first_only: bool, if True, only the first event per trial is rasterized
+            :return: np.ndarray, shape (n_trials, n_bins) binary matrix with 1s marking event bins
             """
             matrix = np.zeros((n_trials, n_bins))
             for i, (start, end) in enumerate(zip(trial_starts, trial_ends)):
                 bins = np.linspace(start, end, n_bins + 1)
+                # Get events occuring within the trial time window
                 trial_events = event_times[(event_times >= start) & (event_times < end)]
 
+                # If first_only, only keep the first event after trial start e.g. for lick onset
                 if first_only:
                     trial_events = [t for t in trial_events if
                                     t >= (start + abs(window_bounds_sec[0]))]  # keep dlc licks after trial start
@@ -418,6 +422,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
                         idx = np.digitize(first_trial_event, bins) - 1
                         if 0 <= idx < n_bins:
                             matrix[i, idx] = 1
+                # Otherwise, rasterize all events within the trial
                 else:
                     if len(trial_events) > 0:
                         idxs = np.digitize(trial_events, bins) - 1
@@ -426,6 +431,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
                                 matrix[i, idx] = 1
             return matrix
 
+        # Get video start time to align to other events
         video_start_time = nwbfile.processing['behavior']['BehavioralTimeSeries'].time_series['whisker_angle'].timestamps[0]
 
         def get_events(key):
@@ -439,18 +445,22 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         jaw_dlc_licks = np.array(list(get_events('jaw_dlc_licks')[1])) / 200 + video_start_time
         tongue_dlc_licks = np.array(list(get_events('tongue_dlc_licks')[1])) / 200 + video_start_time
 
+        # Get available stimulus times
         try:
             auditory_times = list(get_events('auditory_hit_trial')[1]) + list(get_events('auditory_miss_trial')[1])
         except:
             auditory_times = list(get_events('auditory_hit_trial')[1])
         auditory_times = np.array(sorted(auditory_times))
 
-        whisker_times = list(get_events('whisker_hit_trial')[1]) + list(get_events('whisker_miss_trial')[1])
+        try:
+            whisker_times = list(get_events('whisker_hit_trial')[1]) + list(get_events('whisker_miss_trial')[1])
+        except:
+            whisker_times = list(get_events('whisker_hit_trial')[1])
         whisker_times = np.array(sorted(whisker_times))
 
-        # Define kernels for single trial events
+        # Define event kernels for single trial events
         event_defs = {
-            'dlc_lick_onset': (tongue_dlc_licks, (-0.2, 0.5)),
+            'dlc_lick_onset': (tongue_dlc_licks, (-0.2, 0.5)), # in seconds
             'auditory_stim': (auditory_times, (-0.2, 0.5)),
             'whisker_stim': (whisker_times, (-0.2, 0.5)),
         }
@@ -498,8 +508,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         for short_key, long_key in analog_keys.items():
             data, times = get_series(long_key)
             # Preprocess data to remove outliers
-            #data = preprocess_dlc_trace(data)
-            assert np.isfinite(data.shape).all()
+            data = preprocess_dlc_trace(data)
+            assert np.isfinite(data.shape).all() # make sure there are no NaNs or infs
+
             predictors[short_key] = bin_behavior(data, times)
 
         # Compute norm of nose movement
@@ -512,6 +523,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
         predictors.pop('top_nose_dist')
         #predictors.pop('top_nose_vel')
         #TODO: calculate movement rather than distance, for whisker...
+        #TODO: get absolute velocity for vel variables
 
         # Prepare outputs
         predictor_types ={'binary_keys': binary_keys,
@@ -523,6 +535,12 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.05):
 def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, lambdas):
     """
     Fit a GLM to the data for a single neuron, in multiprocessing context.
+    :param neuron_id: int, ID of the neuron to fit
+    :param spikes_trainval: np.ndarray, shape (n_neurons, n_trials, n_bins) spike counts for training and validation
+    :param X_trainval: np.ndarray, shape (n_features, n_trials, n_bins) design matrix for training and validation
+    :param spikes_test: np.ndarray, shape (n_neurons, n_trials, n_bins) spike counts for testing
+    :param X_test: np.ndarray, shape (n_features, n_trials, n_bins) design matrix for testing
+    :param lambdas: float or np.ndarray, regularization parameter(s) for Ridge regression
     :return: dict, results of the GLM fit to be appended in Pool
 
     """
@@ -537,34 +555,6 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
     y_test = spikes_test[neuron_id].reshape(spikes_test.shape[1], -1).flatten()  # (n_trials * n_bins,)
     X_test = X_test.transpose(1,2,0).reshape(-1, n_features) # (n_trials * n_bins, n_predictors)
 
-    #best_lambda = None #Note: CV without warm restart and regularization paths
-    #best_score = -np.inf
-    #kf = KFold(n_splits=folds, shuffle=True, random_state=42)
-    #for lam in lambdas:
-    #    fold_scores = []
-    #    for train_idx, val_idx in kf.split(X_trainval):
-    #        X_train = X_trainval[train_idx]
-    #        y_train = y_trainval[train_idx]
-    #        X_val = X_trainval[val_idx]
-    #        y_val = y_trainval[val_idx]
-#
-    #        glm = GLM(distr='poisson',
-    #                  score_metric='pseudo_R2',
-    #                  fit_intercept=False,
-    #                  alpha=0.0,
-    #                  reg_lambda=lam,
-    #                  solver='cdfast',
-    #                  verbose=False,
-    #                  random_state=42)
-    #        glm.fit(X_train, y_train)
-    #        y_pred = glm.predict(X_val)
-    #        ll = -np.mean(y_val * np.log(y_pred + 1e-6) - y_pred)  # Negative log-likelihood
-    #        fold_scores.append(-ll)
-#
-    #    mean_score = np.mean(fold_scores)
-    #    if mean_score > best_score:
-    #        best_score = mean_score
-    #        best_lambda = lam
 
     # If provided lambdas is an array, cross-validate lambda
     if isinstance(lambdas, np.ndarray):
@@ -714,7 +704,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     trials_df = trials_df[(trials_df['context'] == 'active') &(trials_df['perf'] != 6)].copy()
     trials_df = trials_df.reset_index(drop=True)
 
-    #try:
+    #try: #uncomment when design matrix fixed, so that no need to recompute it
     #    X, spikes, feature_names = load_model_input_output(output_dir)
     #
 
@@ -722,11 +712,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     spikes, predictors, predictor_types, n_bins, bin_size = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE)
     event_defs = predictor_types['event_defs']
     analog_keys = predictor_types['analog_keys']
-    binary_keys = predictor_types['binary_keys']
 
     # Build design matrix for entire dataset
-    X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size)
+    X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
     n_features = X.shape[0]
+
+    # Save input/output data
     save_model_input_output(X, spikes, feature_names, output_dir)
 
 
@@ -734,7 +725,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     # Train/test data cross-validation splits
     # ---------------------------------------
     model_res_df_outer = []
-    cv_outer_folds = 2
+    cv_outer_folds = 5
+
     outer_kf = KFold(n_splits=cv_outer_folds, shuffle=True, random_state=42)
     for fold_idx, (trainval_ids, test_ids) in enumerate(outer_kf.split(trials_df.index)):
         print('Fold', fold_idx)
@@ -754,16 +746,17 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             X_trainval[dlc_idx,:] = (X_trainval[dlc_idx,:] - mean) / std
             X_test[dlc_idx,:] = (X_test[dlc_idx,:] - mean) / std
 
-            X[dlc_idx,:] = (X[dlc_idx,:] - mean) / std # for plotting only
+            X[dlc_idx,:] = (X[dlc_idx,:] - mean) / std # transform original X for plotting single trial input
 
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = False
+        debug = True
         if debug:
             for test_idx in test_ids[:5]:
-                plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=bin_size)
-                plot_design_matrix_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=bin_size)
+                plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
+                plot_design_matrix_vector_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins,
+                                                       bin_size=BIN_SIZE)
 
         # -----------------------------------
         # Fit full GLMs using multiprocessing
@@ -771,6 +764,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         lambdas = np.exp(np.linspace(np.log(0.5), np.log(1e-5), 5)) # regul. strength hyperparam.
         #lambdas = np.array([0.001, 0.5])
+
         start_time = time.time()
         results = parallel_fit_glms(spikes_trainval=spikes_trainval,
                                     X_trainval=X_trainval,
@@ -779,6 +773,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                                     lambdas=lambdas,
                                     n_jobs=n_jobs)
         print('GLM fitting complete in ', time.time() - start_time)
+
         results = sorted(results, key=lambda r: r['neuron_id']) # sort for neuron_id--lambda_opt matching
 
         # Save mouse results for model type and fold index
@@ -793,14 +788,14 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         print(model_res_df[describe_cols].describe())
         save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), output_dir=output_dir)
 
-        # Add to list of model folds
+        # Add to list of global dat
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=False
+        debug=True
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
-                plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size)
+                plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size=BIN_SIZE)
 
 
         # --------------------------------------
@@ -856,9 +851,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         debug=False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
-                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size)
-                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size)
-                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='whisker_encoding'], trials_df, neuron_id, bin_size)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size=BIN_SIZE)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='motor_encoding'], trials_df, neuron_id, bin_size=BIN_SIZE)
+                plot_trial_grid_predictions(results_reduced_all_df[results_reduced_all_df.model_name=='whisker_encoding'], trials_df, neuron_id, bin_size=BIN_SIZE)
 
 
     # Save all model results in a single file
@@ -877,39 +872,15 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     return
 
 
-def plot_single_neuron_predictions(neuron_id, y_test, y_pred, n_bins, n_trials_to_plot=20, trial_spacing=20, bin_size=0.05):
-    # Reshape data to (n_trials, n_bins)
-    n_trials = y_pred.shape[0] // n_bins
-    y_test = y_test.reshape(n_trials, n_bins)
-    y_pred = y_pred.reshape(n_trials, n_bins)
-
-    plt.figure(figsize=(12, 4))
-    current_x = 0
-
-    for i in range(n_trials_to_plot):
-        true_spikes = y_test[i,:]
-        pred_spikes = y_pred[i,:]
-
-        x = np.arange(n_bins) * bin_size + current_x
-
-        plt.plot(x, pred_spikes, color='red', label='Model' if i == 0 else None)
-        plt.step(x, true_spikes, where='mid', color='black', alpha=0.6, label='Data' if i == 0 else None)
-
-        # Move x start position forward, including spacing
-        current_x += (n_bins + trial_spacing) * bin_size
-
-    plt.xlabel('Time (s)')
-    plt.ylabel('Spike count')
-    title_txt = 'Unit ID: {}'.format(neuron_id)
-    plt.title(title_txt)
-    plt.legend()
-    plt.tight_layout()
-    plt.show()
-
-    return
-
 
 def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
+    """
+    Plot predictions for a single neuron across trials in a grid format.
+    :param results_df: DataFrame with model results
+    :param trial_table: DataFrame with trial information
+    :param neuron_id: int, ID of the neuron to plot
+    :param bin_size: float, size of time bin in seconds
+    """
 
     # Plotting params
     n_rows, n_cols = 5, 5
@@ -926,7 +897,7 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     y_test = y_test.reshape(n_trials, n_bins)
     y_pred = y_pred.reshape(n_trials, n_bins)
 
-    # Order trial temporally
+    # Order test trial temporally
     test_trial_ids = results_df_sub['test_trials'].values[0]
     test_trial_id_order = np.argsort(test_trial_ids)
     y_test = y_test[test_trial_id_order,:]
