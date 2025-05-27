@@ -40,6 +40,10 @@ def unit_label_describe(nwb_files, output_path):
             continue
     unit_data = pd.concat(unit_data)
 
+    print('Number of good units after Kilosort', len(unit_data[unit_data['ks_label'] == 'good']))
+    print('Number of good units after Bombcell', len(unit_data[unit_data['bc_label'] == 'good']))
+    return
+
     # Order of categories
     ks_order = ['good', 'mua']
     bc_order = ['good', 'mua', 'non-soma', 'noise']
