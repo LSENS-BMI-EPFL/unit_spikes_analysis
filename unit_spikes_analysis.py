@@ -21,8 +21,8 @@ from glm_utils import run_unit_glm_pipeline_with_pool
 
 if __name__ == '__main__':
 
-    single_mouse = False
-    multiple_mice = True
+    single_mouse = True
+    multiple_mice = False
 
     # Set paths
     experimenter = 'Axel_Bisi'
@@ -58,7 +58,7 @@ if __name__ == '__main__':
     subject_ids = [m for m in subject_ids if m in included_mice]
     subject_ids = [m for m in subject_ids if m not in ['AB104', 'AB107']]
 
-    #subject_ids = ['AB137', 'AB139', 'AB140','AB143']
+    subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
@@ -119,35 +119,38 @@ if __name__ == '__main__':
         # ----------------------------------------
         # Perform analyses for each mouse NWB file
         # ----------------------------------------
+        if single_mouse:
+            for nwb_file, mouse_output_path in subject_nwb_neural_files:
+                for analysis_type in analyses_to_do_single:
 
-        for nwb_file, mouse_output_path in subject_nwb_neural_files:
-            for analysis_type in analyses_to_do_single:
-
-                # Define and create results path
-                results_path = os.path.join(mouse_output_path, analysis_type)
-                os.makedirs(results_path, exist_ok=True)
+                    # Define and create results path
+                    results_path = os.path.join(mouse_output_path, analysis_type)
+                    os.makedirs(results_path, exist_ok=True)
 
 
-            if 'unit_raster' in analyses_to_do_single:
-                plot_rasters(nwb_file, results_path)
+                if 'unit_raster' in analyses_to_do_single:
+                    plot_rasters(nwb_file, results_path)
 
-            if 'roc_analysis' in analyses_to_do_single:
-                roc_analysis(nwb_file, results_path)
+                if 'roc_analysis' in analyses_to_do_single:
+                    roc_analysis(nwb_file, results_path)
 
-            if 'xcorr_analysis' in analyses_to_do_single:
-                #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing
-                pass
+                if 'xcorr_analysis' in analyses_to_do_single:
+                    #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing
+                    pass
 
-            if 'unit_glm' in analyses_to_do_single:
-                run_glm_pipeline_with_pool(nwb_file, results_path)
+                if 'unit_glm' in analyses_to_do_single:
+                    run_unit_glm_pipeline_with_pool(nwb_file, results_path)
 
     ### ------------------------------------------
     # Analyses aggregating data from multiple mice
     ### -------------------------------------------
+    if multiple_mice:
 
-    if 'unit_labels_processing' in analyses_to_do_multi:
-        unit_label_describe(nwb_neural_files, output_path)
+        print('Multi-mouse analyses')
 
-    if 'rsu_vs_fsu' in analyses_to_do_multi:
-        assign_rsu_vs_fsu(nwb_neural_files, output_path)
+        if 'unit_labels_processing' in analyses_to_do_multi:
+            unit_label_describe(nwb_neural_files, output_path)
+
+        if 'rsu_vs_fsu' in analyses_to_do_multi:
+            assign_rsu_vs_fsu(nwb_neural_files, output_path)
 
