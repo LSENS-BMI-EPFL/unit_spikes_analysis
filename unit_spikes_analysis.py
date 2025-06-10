@@ -10,6 +10,8 @@
 # Imports
 import os
 import pandas as pd
+import sys
+sys.path.append('/home/mhamon/Github/NWBreader')
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
@@ -26,11 +28,12 @@ if __name__ == '__main__':
 
     # Set paths
     experimenter = 'Axel_Bisi'
+    analyst = 'Myriam_Hamon'
 
     info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
-    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
+    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', analyst, 'results')
     root_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'NWBFull')
-    proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
+    proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', analyst, 'data', 'processed_data')
     all_nwb_names = os.listdir(root_path)
     all_mwb_mice = [name.split('_')[0] for name in all_nwb_names]
 

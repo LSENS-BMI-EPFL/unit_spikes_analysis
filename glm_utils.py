@@ -695,6 +695,7 @@ def load_model_results(filename, output_dir):
 def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     print('GLM fitting for:', pathlib.Path(nwb_path).name)
 
+
     # -----------------------------------
     # Load and prepare data from NWB file
     # -----------------------------------
