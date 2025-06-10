@@ -10,8 +10,6 @@
 # Imports
 import os
 import pandas as pd
-import sys
-sys.path.append('/home/mhamon/Github/NWBreader')
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
