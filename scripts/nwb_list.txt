@@ -1,0 +1,2 @@
+/home/mhamon/data//AB131_20240905_123601.nwb
+/home/mhamon/data//mice_info

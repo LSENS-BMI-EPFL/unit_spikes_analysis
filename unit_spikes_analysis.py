@@ -26,6 +26,7 @@ if __name__ == '__main__':
 
     # Set paths
     experimenter = 'Axel_Bisi'
+    analyser = 'Myriam_Hamon'
 
     info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
     output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')

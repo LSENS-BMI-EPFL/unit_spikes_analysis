@@ -15,6 +15,10 @@ import pandas as pd
 import scipy as sp
 import pickle
 from pynwb import NWBHDF5IO
+import json
+import sys
+sys.path.append('/home/mhamon/Github/NWB_reader')
+sys.path.append('/home/mhamon/Github/allen_utils')
 
 import multiprocessing as mp
 from sklearn.model_selection import KFold
@@ -675,11 +679,71 @@ def load_model_input_output(output_dir):
     feature_names = data['feature_names']
     return X, spikes, feature_names
 
+def save_model_results2(result_df, filename, output_dir):
+    result_path = pathlib.Path(output_dir, 'models')
+    result_path.mkdir(parents=True, exist_ok=True)
+    if 'coef' in result_df.columns and result_df['coef'].apply(lambda x: isinstance(x, list)).any():
+        result_df['coef'] = result_df['coef'].apply(lambda x: json.dumps(x))
+
+    result_df.to_parquet(os.path.join(result_path, '{}_results.parquet'.format(filename)))
+    print('Saved model results in: ', result_path)
+    return
+    
+
+
+
 def save_model_results(result_df, filename, output_dir):
     result_path = pathlib.Path(output_dir, 'models')
     result_path.mkdir(parents=True, exist_ok=True)
-    result_df.to_parquet(os.path.join(result_path, '{}_results.parquet'.format(filename)))
-    print('Saved model results in: ', result_path)
+
+    print(f"Attempting to save results to: {os.path.join(result_path, '{}_results.parquet'.format(filename))}")
+    print("DataFrame columns and dtypes before saving:")
+    print(result_df.info())
+
+    # Iterate through columns to identify and convert problematic 'object' types
+    for col in result_df.columns:
+        if result_df[col].dtype == 'object':
+            # Check if this object column contains lists or numpy arrays
+            types_in_col = result_df[col].apply(type).value_counts()
+            print(f"Column '{col}' is of object dtype. Types found: \n{types_in_col}")
+
+            # Define a helper function to convert
+            def to_json_if_complex(x):
+                if isinstance(x, (list, np.ndarray)):
+                    try:
+                        return json.dumps(x.tolist() if isinstance(x, np.ndarray) else x)
+                    except TypeError as e:
+                        print(f"Warning: Could not JSON dump an element in column '{col}': {e} - Element type: {type(x)} - Value: {x}")
+                        return str(x) # Fallback to string representation if JSON fails
+                return x # Return as is if not a list or numpy array
+
+            # Apply the conversion to the column
+            # Only apply if there's at least one list or ndarray
+            if (result_df[col].apply(lambda x: isinstance(x, (list, np.ndarray)))).any():
+                print(f"Converting list-like or numpy.ndarray objects in column '{col}' to JSON strings.")
+                result_df[col] = result_df[col].apply(to_json_if_complex)
+                # Verify conversion for debugging (optional, can remove after successful run)
+                # if not result_df[col].apply(lambda x: isinstance(x, str) or pd.isna(x)).all():
+                #     print(f"Warning: Column '{col}' still contains non-string/non-NaN objects after JSON conversion attempt.")
+                #     print("Sample of problematic rows in column '{col}':\n", result_df[result_df[col].apply(lambda x: not (isinstance(x, str) or pd.isna(x)))].head())
+
+
+    try:
+        result_df.to_parquet(os.path.join(result_path, '{}_results.parquet'.format(filename)))
+        print('Saved model results in: ', result_path)
+    except ValueError as e:
+        print(f"Failed to save to parquet: {e}")
+        print("Final DataFrame columns and dtypes before crashing:")
+        print(result_df.info())
+        # Inspect columns that were problematic before crashing
+        for col in ['coef', 'y_test', 'y_pred', 'train_trials', 'test_trials', 'predictors']:
+            if col in result_df.columns:
+                print(f"\nFirst 5 entries of '{col}' column:")
+                print(result_df[col].head(5))
+                print(f"Types of entries in '{col}' column:")
+                print(result_df[col].apply(type).value_counts())
+        raise # Re-raise the exception to propagate the error
+
     return
 
 def load_model_results(filename, output_dir):
@@ -957,36 +1021,36 @@ if __name__ == '__main__':
 
     import argparse
 
-    #parser = argparse.ArgumentParser()
-    #parser.add_argument('--nwb', type=str, required=True)
-    #parser.add_argument('--out', type=str, required=True)
-    #parser.add_argument('--n_jobs', type=int, default=4)
-    #args = parser.parse_args()
-    #run_pipeline_with_pool(args.nwb, args.out, n_jobs=args.n_jobs)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--nwb', type=str, required=True)
+    parser.add_argument('--out', type=str, required=True)
+    parser.add_argument('--n_jobs', type=int, default=4)
+    args = parser.parse_args()
+    run_unit_glm_pipeline_with_pool(args.nwb, args.out, n_jobs=args.n_jobs)
 
-    experimenter = 'Axel_Bisi'
-    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
-    root_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'NWBFull')
+    #experimenter = 'Axel_Bisi'
+    #output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
+    #root_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'NWBFull')
 
-    mouse_ids = ['AB131']
+    #mouse_ids = ['AB131']
 
-    for mouse_id in mouse_ids:
-        nwb_file_list = [f for f in os.listdir(root_path) if mouse_id in f ]
-        nwb_files_to_process = []
+    #for mouse_id in mouse_ids:
+        #nwb_file_list = [f for f in os.listdir(root_path) if mouse_id in f ]
+        #nwb_files_to_process = []
         # Find file with neural recordings
-        if nwb_file_list:
-            for nwb_file in nwb_file_list:
-                nwb_path = os.path.join(root_path, nwb_file)
+        #if nwb_file_list:
+            #for nwb_file in nwb_file_list:
+                #nwb_path = os.path.join(root_path, nwb_file)
                 # Check if NWB content has units
-                units = nwbreader.get_unit_table(nwb_path)
-                if units is not None:
-                    nwb_files_to_process.append(nwb_path)
+                #units = nwbreader.get_unit_table(nwb_path)
+                #if units is not None:
+#                    nwb_files_to_process.append(nwb_path)
 
-        for nwb_file in nwb_files_to_process:
-            nwb_file = pathlib.Path(nwb_file)
-            session_id = nwb_file.stem
-            mouse_output_path = pathlib.Path(output_path, mouse_id, 'whisker_0', 'unit_glm')
-            mouse_output_path.mkdir(parents=True, exist_ok=True)
+#        for nwb_file in nwb_files_to_process:
+#            nwb_file = pathlib.Path(nwb_file)
+#            session_id = nwb_file.stem
+#            mouse_output_path = pathlib.Path(output_path, mouse_id, 'whisker_0', 'unit_glm')
+#            mouse_output_path.mkdir(parents=True, exist_ok=True)
 
-            run_unit_glm_pipeline_with_pool(nwb_file, mouse_output_path, n_jobs=10)
+#            run_unit_glm_pipeline_with_pool(nwb_file, mouse_output_path, n_jobs=10)
 
