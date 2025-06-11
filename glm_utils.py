@@ -18,6 +18,8 @@ from pynwb import NWBHDF5IO
 import json
 import sys
 import ast
+import subprocess
+
 
 sys.path.append('/home/mhamon/Github/NWB_reader')
 sys.path.append('/home/mhamon/Github/allen_utils')
@@ -662,10 +664,11 @@ def parallel_fit_glms(spikes_trainval, X_trainval, spikes_test, X_test, lambdas,
     return results
 
 def save_model_input_output(X, spikes, feature_names, output_dir):
+    commit_hash = get_git_revision_short_hash()
     data_path = pathlib.Path(output_dir, 'data')
     data_path.mkdir(parents=True, exist_ok=True)
-    with open(os.path.join(data_path, 'data.pkl'), 'wb') as f:
-        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names}, f)
+    with open(os.path.join(data_path, commit_hash, 'data.pkl'), 'wb') as f:
+        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names, 'commit_hash' : commit_hash}, f)
 
     print('Saved input predictor data:', X.shape)
     print('Saved neural output spike data:', spikes.shape)
@@ -696,6 +699,7 @@ def save_model_results2(result_df, filename, output_dir):
 def save_model_results(result_df, filename, output_dir):
     result_path = pathlib.Path(output_dir, 'models')
     result_path.mkdir(parents=True, exist_ok=True)
+    commit_hash = get_git_revision_short_hash()
 
     # Iterate through columns to identify and convert problematic 'object' types
     for col in result_df.columns:
@@ -713,18 +717,11 @@ def save_model_results(result_df, filename, output_dir):
                         return str(x) # Fallback to string representation if JSON fails
                 return x # Return as is if not a list or numpy array
 
-            # Apply the conversion to the column
-            # Only apply if there's at least one list or ndarray
             if (result_df[col].apply(lambda x: isinstance(x, (list, np.ndarray)))).any():
                 result_df[col] = result_df[col].apply(to_json_if_complex)
-                # Verify conversion for debugging (optional, can remove after successful run)
-                # if not result_df[col].apply(lambda x: isinstance(x, str) or pd.isna(x)).all():
-                #     print(f"Warning: Column '{col}' still contains non-string/non-NaN objects after JSON conversion attempt.")
-                #     print("Sample of problematic rows in column '{col}':\n", result_df[result_df[col].apply(lambda x: not (isinstance(x, str) or pd.isna(x)))].head())
-
 
     try:
-        result_df.to_parquet(os.path.join(result_path, '{}_results.parquet'.format(filename)))
+        result_df.to_parquet(os.path.join(result_path, commit_hash, '{}_results.parquet'.format(filename)))
         print('Saved model results in: ', result_path)
     except ValueError as e:
         print(f"Failed to save to parquet: {e}")
@@ -846,7 +843,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=False 
+        debug=False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
                 plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size=BIN_SIZE)
@@ -1008,6 +1005,11 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     return
 
 
+def get_git_revision_short_hash():
+    try:
+        return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
+    except Exception:
+        return "unknown"
 
 if __name__ == '__main__':
 
