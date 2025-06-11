@@ -19,7 +19,8 @@ import json
 import sys
 import ast
 import subprocess
-
+from sklearn.exceptions import ConvergenceWarning
+import warnings
 
 sys.path.append('/home/mhamon/Github/NWB_reader')
 sys.path.append('/home/mhamon/Github/allen_utils')
@@ -593,50 +594,60 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
                     tol=1e-4,
                     verbose=False,
                     random_state=42)
-    glm_final.fit(X_trainval, y_trainval)
-    print('Feature weights', glm_final.beta_, glm_final.beta0_)
 
-    # -------------------------------------------
-    # Evaluate final model on train and test sets
-    # -------------------------------------------
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+            glm_final.fit(X_trainval, y_trainval)
 
-    # Train and test scores (pseudo-R2)
-    y_trainval_pred = glm_final.predict(X_trainval)
-    train_score = glm_final.score(X_trainval, y_trainval)
-    y_test_pred = glm_final.predict(X_test)
-    test_score = glm_final.score(X_test, y_test)
 
-    # Compute log-likelihoods
-    train_ll = np.sum(y_trainval * np.log(y_trainval_pred + 1e-12) - y_trainval_pred)
-    test_ll = np.sum(y_test * np.log(y_test_pred + 1e-12) - y_test_pred)
+        print('Feature weights', glm_final.beta_, glm_final.beta0_)
 
-    # Single-trial correlation (r)
-    train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
-    test_corr, _ = sp.stats.pearsonr(y_test, y_test_pred)
+        # -------------------------------------------
+        # Evaluate final model on train and test sets
+        # -------------------------------------------
 
-    # Predictor-spike mutual information (MI)
-    train_mi = compute_mutual_info(y_trainval, y_trainval_pred)
-    test_mi = compute_mutual_info(y_test, y_test_pred)
+        # Train and test scores (pseudo-R2)
+        y_trainval_pred = glm_final.predict(X_trainval)
+        train_score = glm_final.score(X_trainval, y_trainval)
+        y_test_pred = glm_final.predict(X_test)
+        test_score = glm_final.score(X_test, y_test)
 
-    # Format results
-    result = {
-        'neuron_id': neuron_id,
-        'lambda_opt': lambda_opt,
-        'train_ll': train_ll,
-        'train_score': train_score,
-        'train_corr':train_corr,
-        'train_mi': train_mi,
-        'test_ll': test_ll,
-        'test_score': test_score,
-        'coef': glm_final.beta_.copy(),
-        'y_test': y_test,
-        'y_pred': y_test_pred,
-        'test_corr': test_corr,
-        'test_mi': test_mi,
-        'n_bins': n_bins,
-    }
+        # Compute log-likelihoods
+        train_ll = np.sum(y_trainval * np.log(y_trainval_pred + 1e-12) - y_trainval_pred)
+        test_ll = np.sum(y_test * np.log(y_test_pred + 1e-12) - y_test_pred)
 
-    return result
+        # Single-trial correlation (r)
+        train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
+        test_corr, _ = sp.stats.pearsonr(y_test, y_test_pred)
+
+        # Predictor-spike mutual information (MI)
+        train_mi = compute_mutual_info(y_trainval, y_trainval_pred)
+        test_mi = compute_mutual_info(y_test, y_test_pred)
+
+        # Format results
+        result = {
+            'neuron_id': neuron_id,
+            'lambda_opt': lambda_opt,
+            'train_ll': train_ll,
+            'train_score': train_score,
+            'train_corr':train_corr,
+            'train_mi': train_mi,
+            'test_ll': test_ll,
+            'test_score': test_score,
+            'coef': glm_final.beta_.copy(),
+            'y_test': y_test,
+            'y_pred': y_test_pred,
+            'test_corr': test_corr,
+            'test_mi': test_mi,
+            'n_bins': n_bins,
+        }
+        return result
+
+    except Exception as e:
+        print(f"GLM failed to converge: {e}")
+        return None
+
 
 
 def fit_neuron_glm_wrapper(args):
@@ -667,8 +678,9 @@ def parallel_fit_glms(spikes_trainval, X_trainval, spikes_test, X_test, lambdas,
 def save_model_input_output(X, spikes, feature_names, output_dir):
     commit_hash = get_git_revision_short_hash()
     data_path = pathlib.Path(output_dir, 'data')
+    data_path = pathlib.Path(os.path.join(data_path, commit_hash))
     data_path.mkdir(parents=True, exist_ok=True)
-    with open(os.path.join(data_path, commit_hash, 'data.pkl'), 'wb') as f:
+    with open(os.path.join(data_path, 'data.pkl'), 'wb') as f:
         pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names, 'commit_hash' : commit_hash}, f)
 
     print('Saved input predictor data:', X.shape)
@@ -722,7 +734,8 @@ def save_model_results(result_df, filename, output_dir):
                 result_df[col] = result_df[col].apply(to_json_if_complex)
 
     try:
-        result_df.to_parquet(os.path.join(result_path, commit_hash, '{}_results.parquet'.format(filename)))
+
+        result_df.to_parquet(os.path.join(result_path, '{}_{}_results.parquet'.format(commit_hash, filename)))
         print('Saved model results in: ', result_path)
     except ValueError as e:
         print(f"Failed to save to parquet: {e}")
