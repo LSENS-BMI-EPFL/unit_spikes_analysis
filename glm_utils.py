@@ -17,10 +17,6 @@ import pickle
 from pynwb import NWBHDF5IO
 import json
 import sys
-import ast
-import subprocess
-
-
 sys.path.append('/home/mhamon/Github/NWB_reader')
 sys.path.append('/home/mhamon/Github/allen_utils')
 
@@ -339,8 +335,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table = nwbfile.units.to_dataframe()
         unit_table = unit_table.sample(frac=1)
         unit_table = unit_table[unit_table['bc_label']=='good']
-        # unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
+        unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
+       
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
 
         # Use index as new column named "unit_id", then reset
@@ -664,11 +661,10 @@ def parallel_fit_glms(spikes_trainval, X_trainval, spikes_test, X_test, lambdas,
     return results
 
 def save_model_input_output(X, spikes, feature_names, output_dir):
-    commit_hash = get_git_revision_short_hash()
     data_path = pathlib.Path(output_dir, 'data')
     data_path.mkdir(parents=True, exist_ok=True)
-    with open(os.path.join(data_path, commit_hash, 'data.pkl'), 'wb') as f:
-        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names, 'commit_hash' : commit_hash}, f)
+    with open(os.path.join(data_path, 'data.pkl'), 'wb') as f:
+        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names}, f)
 
     print('Saved input predictor data:', X.shape)
     print('Saved neural output spike data:', spikes.shape)
@@ -699,13 +695,17 @@ def save_model_results2(result_df, filename, output_dir):
 def save_model_results(result_df, filename, output_dir):
     result_path = pathlib.Path(output_dir, 'models')
     result_path.mkdir(parents=True, exist_ok=True)
-    commit_hash = get_git_revision_short_hash()
+
+    print(f"Attempting to save results to: {os.path.join(result_path, '{}_results.parquet'.format(filename))}")
+    print("DataFrame columns and dtypes before saving:")
+    print(result_df.info())
 
     # Iterate through columns to identify and convert problematic 'object' types
     for col in result_df.columns:
         if result_df[col].dtype == 'object':
             # Check if this object column contains lists or numpy arrays
             types_in_col = result_df[col].apply(type).value_counts()
+            print(f"Column '{col}' is of object dtype. Types found: \n{types_in_col}")
 
             # Define a helper function to convert
             def to_json_if_complex(x):
@@ -717,20 +717,36 @@ def save_model_results(result_df, filename, output_dir):
                         return str(x) # Fallback to string representation if JSON fails
                 return x # Return as is if not a list or numpy array
 
+            # Apply the conversion to the column
+            # Only apply if there's at least one list or ndarray
             if (result_df[col].apply(lambda x: isinstance(x, (list, np.ndarray)))).any():
+                print(f"Converting list-like or numpy.ndarray objects in column '{col}' to JSON strings.")
                 result_df[col] = result_df[col].apply(to_json_if_complex)
+                # Verify conversion for debugging (optional, can remove after successful run)
+                # if not result_df[col].apply(lambda x: isinstance(x, str) or pd.isna(x)).all():
+                #     print(f"Warning: Column '{col}' still contains non-string/non-NaN objects after JSON conversion attempt.")
+                #     print("Sample of problematic rows in column '{col}':\n", result_df[result_df[col].apply(lambda x: not (isinstance(x, str) or pd.isna(x)))].head())
+
 
     try:
-        result_df.to_parquet(os.path.join(result_path, commit_hash, '{}_results.parquet'.format(filename)))
+        result_df.to_parquet(os.path.join(result_path, '{}_results.parquet'.format(filename)))
         print('Saved model results in: ', result_path)
     except ValueError as e:
         print(f"Failed to save to parquet: {e}")
+        print("Final DataFrame columns and dtypes before crashing:")
+        print(result_df.info())
+        # Inspect columns that were problematic before crashing
+        for col in ['coef', 'y_test', 'y_pred', 'train_trials', 'test_trials', 'predictors']:
+            if col in result_df.columns:
+                print(f"\nFirst 5 entries of '{col}' column:")
+                print(result_df[col].head(5))
+                print(f"Types of entries in '{col}' column:")
+                print(result_df[col].apply(type).value_counts())
         raise # Re-raise the exception to propagate the error
 
     return
 
 def load_model_results(filename, output_dir):
-
     result_path = pathlib.Path(output_dir, 'models')
     file_path = os.path.join(result_path, '{}_results.parquet'.format(filename))
     try:
@@ -743,9 +759,6 @@ def load_model_results(filename, output_dir):
 def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     print('GLM fitting for:', pathlib.Path(nwb_path).name)
 
-    mouse_id = nwbreader.get_mouse_id(nwb_path)
-    mouse_output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
-    mouse_output_path.mkdir(parents=True, exist_ok=True)
     # -----------------------------------
     # Load and prepare data from NWB file
     # -----------------------------------
@@ -802,7 +815,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = False
+        debug = False 
         if debug:
             for test_idx in test_ids[:5]:
                 plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
@@ -843,7 +856,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=False
+        debug= False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
                 plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size=BIN_SIZE)
@@ -942,8 +955,6 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     y_test = results_df_sub['y_test'].values[0]
     y_pred = results_df_sub['y_pred'].values[0]
     n_bins = results_df_sub['n_bins'].values[0]
-    y_test = np.array(ast.literal_eval(y_test))
-    y_pred = np.array(ast.literal_eval(y_pred))
 
     # Format data into (n_trials, n_bins)
     n_trials = y_pred.shape[0] // n_bins
@@ -951,8 +962,8 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     y_pred = y_pred.reshape(n_trials, n_bins)
 
     # Order test trial temporally
-    test_trial_ids =  np.array(ast.literal_eval(results_df_sub['test_trials'].values[0]))
-    test_trial_id_order =  np.argsort(test_trial_ids)
+    test_trial_ids = results_df_sub['test_trials'].values[0]
+    test_trial_id_order = np.argsort(test_trial_ids)
     y_test = y_test[test_trial_id_order,:]
     y_pred = y_pred[test_trial_id_order,:]
 
@@ -1005,11 +1016,6 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     return
 
 
-def get_git_revision_short_hash():
-    try:
-        return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
-    except Exception:
-        return "unknown"
 
 if __name__ == '__main__':
 
