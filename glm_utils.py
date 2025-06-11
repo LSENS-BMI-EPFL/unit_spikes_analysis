@@ -488,8 +488,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             #'jaw_vel': 'jaw_velocity',
             'pupil_area': 'pupil_area',
             #'pupil_area_vel': 'pupil_area_velocity',
-            'whisker_angle': 'whisker_angle',
-            #'whisker_vel': 'whisker_velocity'
+            #'whisker_angle': 'whisker_angle',
+            'whisker_vel': 'whisker_velocity'
         }
 
         def get_series(key):
@@ -524,13 +524,14 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictors['nose_dist'] = np.sqrt(predictors['side_nose_dist']**2 + predictors['top_nose_dist']**2)
         #predictors['nose_vel'] = np.gradient(predictors['nose_dist'], bin_size, axis=1)
         analog_keys['nose_dist'] = 'nose_distance'
+        analog_keys['whisker_vel'] = np.abs( analog_keys['whisker_vel'])
+
         #analog_keys['nose_vel'] = 'nose_velocity'
         predictors.pop('side_nose_dist')
         #predictors.pop('side_nose_vel')
         predictors.pop('top_nose_dist')
         #predictors.pop('top_nose_vel')
-        #TODO: calculate movement rather than distance, for whisker...
-        #TODO: get absolute velocity for vel variables
+
 
         # Prepare outputs
         predictor_types ={'binary_keys': binary_keys,
