@@ -401,10 +401,46 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         predictors['prev_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
         predictors['prev_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
+
+        past_whisker_trials = 0
+        past_whisker_rewards = 0
+        past_auditory_trials = 0
+        past_auditory_rewards = 0
+        prop_past_auditory_rewarded = np.zeros(n_trials)
+        prop_past_whisker_rewarded = np.zeros(n_trials)
+
+        for i in range(1, n_trials):
+            # Whisker trial history
+            if stim_type[i - 1] == 'whisker_trial':
+                past_whisker_trials += 1
+                if rewarded[i - 1] > 0:
+                    past_whisker_rewards += 1
+
+            # Avoid divide-by-zero
+            if past_whisker_trials > 0:
+                prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
+
+            # Auditory trial history
+            if stim_type[i - 1] == 'auditory_trial':
+                past_auditory_trials += 1
+                if rewarded[i - 1] > 0:
+                    past_auditory_rewards += 1
+
+            if past_auditory_trials > 0:
+                prop_past_auditory_rewarded[i] = past_auditory_rewards / past_auditory_trials
+
+        predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+        predictors['prop_past_auditory_rewarded'] = np.tile(prop_past_auditory_rewarded[:, None], (1, n_bins))
+
+
+
+
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
             'prev_whisker_reward':'prev_whisker_reward',
-            'prev_auditory_reward':'prev_auditory_reward'
+            'prev_auditory_reward':'prev_auditory_reward',
+            'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
+            'prop_past_auditory_rewarded':'prop_past_auditory_rewarded'
         }
 
         # Event-based predictors (rasterized kernels will be applied later)
@@ -595,7 +631,7 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
                     verbose=False,
                     random_state=42)
 
-    try:
+    try: #TODO have an actual outputs to failure to keep track
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", category=ConvergenceWarning)
             glm_final.fit(X_trainval, y_trainval)
