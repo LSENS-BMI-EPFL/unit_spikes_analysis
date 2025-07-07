@@ -3,7 +3,7 @@
 #SBATCH --output=/home/%u/logs/single_units_analysis_%A_%a.out
 #SBATCH --error=/home/%u/logs/single_units_analysis_%A_%a.err
 #SBATCH --array=0-9
-#SBATCH --time=24:00:00
+#SBATCH --time=76:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=10
