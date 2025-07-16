@@ -347,6 +347,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         # Use index as new column named "unit_id", then reset
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
+        neurons_ccf = unit_table['ccf_parent_acronym'].values
 
         # ------------------
         # Spike Trains
@@ -379,29 +380,61 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         trial_idx_scaled = np.arange(n_trials) / (n_trials-1)
         predictors['trial_index_scaled'] = np.tile(trial_idx_scaled[:, None], (1, n_bins))
 
+        # This was to get the previous trial (the one immediately before the currrent) and if rewarded or not
         # Previous stim trials rewarded #TODO: update to last stim, not previous sitm?
+        # stim_type = trials_df['trial_type'].fillna('').values
+        # trials_df['stimulus'] = trials_df['trial_type'].isin(['whisker_trial', 'auditory_trial'])
+        # trials_df['rewarded'] = (
+        #     trials_df['stimulus'].astype(int)
+        #     * trials_df['reward_available'].astype(int)
+        #     * trials_df['lick_flag'].astype(int)
+        # )
+        # rewarded = trials_df['rewarded'].fillna(0).values
+        # prev_whisker_reward = np.zeros(n_trials)
+        # prev_auditory_reward = np.zeros(n_trials)
+        #
+        # for i in range(1, n_trials):
+        #     if rewarded[i - 1] > 0:
+        #         if stim_type[i - 1] == 'whisker_trial':
+        #             prev_whisker_reward[i] = 1
+        #         elif stim_type[i - 1] == 'auditory_trial':
+        #             prev_auditory_reward[i] = 1
+        #
+        # predictors['prev_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+        # predictors['prev_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
+
+        # Now this is if the last whisker presented was rewarded or not and same for auditory
         stim_type = trials_df['trial_type'].fillna('').values
-        trials_df['stimulus'] = trials_df['trial_type'].isin(['whisker_trial', 'auditory_trial'])
-        trials_df['rewarded'] = (
-            trials_df['stimulus'].astype(int)
-            * trials_df['reward_available'].astype(int)
-            * trials_df['lick_flag'].astype(int)
-        )
-        rewarded = trials_df['rewarded'].fillna(0).values
+        rewarded = (
+                trials_df['trial_type'].isin(['whisker_trial', 'auditory_trial']).astype(int)
+                * trials_df['reward_available'].astype(int)
+                * trials_df['lick_flag'].astype(int)
+        ).fillna(0).values
 
         prev_whisker_reward = np.zeros(n_trials)
         prev_auditory_reward = np.zeros(n_trials)
 
-        for i in range(1, n_trials):
-            if rewarded[i - 1] > 0:
-                if stim_type[i - 1] == 'whisker_trial':
-                    prev_whisker_reward[i] = 1
-                elif stim_type[i - 1] == 'auditory_trial':
-                    prev_auditory_reward[i] = 1
+        # Running memory for last reward status
+        last_whisker_reward = 0
+        last_auditory_reward = 0
 
-        predictors['prev_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
-        predictors['prev_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
+        for i in range(n_trials):
+            # Store the most recent reward info
+            prev_whisker_reward[i] = last_whisker_reward
+            prev_auditory_reward[i] = last_auditory_reward
 
+            # Update memory if current trial is whisker or auditory
+            if stim_type[i] == 'whisker_trial':
+                last_whisker_reward = rewarded[i]
+            elif stim_type[i] == 'auditory_trial':
+                last_auditory_reward = rewarded[i]
+
+        # Broadcast to bins
+        predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+        predictors['last_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
+
+
+        #  Independent code to get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
         past_whisker_rewards = 0
         past_auditory_trials = 0
@@ -432,15 +465,71 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
         predictors['prop_past_auditory_rewarded'] = np.tile(prop_past_auditory_rewarded[:, None], (1, n_bins))
 
+        # Rolling reward proportion
+        whisker_reward_rate = np.zeros(n_trials)
+        auditory_reward_rate = np.zeros(n_trials)
+
+        for i in range(n_trials):
+            start_idx = max(0, i - 5)
+            recent_trials = stim_type[start_idx:i]
+            recent_rewards = rewarded[start_idx:i]
+            whisker_mask = recent_trials == 'whisker_trial'
+            auditory_mask = recent_trials == 'auditory_trial'
+            if np.sum(whisker_mask) > 0:
+                whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
+            else:
+                whisker_reward_rate[i] = 0
+
+            if np.sum(auditory_mask) > 0:
+                auditory_reward_rate[i] = np.sum(recent_rewards[auditory_mask]) / np.sum(auditory_mask)
+            else:
+                auditory_reward_rate[i] = 0
+
+        predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+        predictors['auditory_reward_rate_5'] = np.tile(auditory_reward_rate[:, None], (1, n_bins))
 
 
+        # Get cumulative rewards per trial type
+        total_whisker_rewards = np.sum((stim_type == 'whisker_trial') & (rewarded > 0))
+        total_auditory_rewards = np.sum((stim_type == 'auditory_trial') & (rewarded > 0))
+        total_whisker_rewards = total_whisker_rewards if total_whisker_rewards > 0 else 1
+        total_auditory_rewards = total_auditory_rewards if total_auditory_rewards > 0 else 1
+        # Initialize cumulative reward arrays
+        cum_whisker_reward = np.zeros(n_trials)
+        cum_auditory_reward = np.zeros(n_trials)
+
+        whisker_reward_so_far = 0
+        auditory_reward_so_far = 0
+
+        for i in range(n_trials):
+            if stim_type[i] == 'whisker_trial':
+                cum_whisker_reward[i] = whisker_reward_so_far / total_whisker_rewards
+                if rewarded[i] > 0:
+                    whisker_reward_so_far += 1
+            else:
+                cum_whisker_reward[i] = whisker_reward_so_far / total_whisker_rewards
+
+            if stim_type[i] == 'auditory_trial':
+                cum_auditory_reward[i] = auditory_reward_so_far / total_auditory_rewards
+                if rewarded[i] > 0:
+                    auditory_reward_so_far += 1
+            else:
+                cum_auditory_reward[i] = auditory_reward_so_far / total_auditory_rewards
+
+        # Add to predictors
+        predictors['sum_whisker_reward_scaled'] = np.tile(cum_whisker_reward[:, None], (1, n_bins))
+        predictors['sum_auditory_reward_scaled'] = np.tile(cum_auditory_reward[:, None], (1, n_bins))
 
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
-            'prev_whisker_reward':'prev_whisker_reward',
-            'prev_auditory_reward':'prev_auditory_reward',
+            'last_whisker_reward':'last_whisker_reward',
+            'last_auditory_reward':'last_auditory_reward',
             'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
-            'prop_past_auditory_rewarded':'prop_past_auditory_rewarded'
+            'prop_past_auditory_rewarded':'prop_past_auditory_rewarded',
+            'whisker_reward_rate_5': 'whisker_reward_rate_5',
+            'auditory_reward_rate_5': 'auditory_reward_rate_5',
+            'sum_whisker_reward_scaled':'sum_whisker_reward_scaled',
+            'sum_auditory_reward_scaled':'sum_auditory_reward_scaled'
         }
 
         # Event-based predictors (rasterized kernels will be applied later)
@@ -574,7 +663,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictor_types ={'binary_keys': binary_keys,
                          'analog_keys': analog_keys,
                          'event_defs': event_defs}
-        return spike_array, predictors, predictor_types, n_bins, bin_size
+        return spike_array, predictors, predictor_types, n_bins, bin_size, neurons_ccf
 
 
 def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, lambdas):
@@ -711,13 +800,13 @@ def parallel_fit_glms(spikes_trainval, X_trainval, spikes_test, X_test, lambdas,
 
     return results
 
-def save_model_input_output(X, spikes, feature_names, output_dir):
+def save_model_input_output(X, spikes, feature_names, output_dir, neuron_ccf):
     commit_hash = get_git_revision_short_hash()
     data_path = pathlib.Path(output_dir, 'data')
     data_path = pathlib.Path(os.path.join(data_path, commit_hash))
     data_path.mkdir(parents=True, exist_ok=True)
     with open(os.path.join(data_path, 'data.pkl'), 'wb') as f:
-        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names, 'commit_hash' : commit_hash}, f)
+        pickle.dump({'input': X, 'output': spikes, 'feature_names': feature_names, 'commit_hash' : commit_hash, 'neurons_id': neuron_ccf}, f)
 
     print('Saved input predictor data:', X.shape)
     print('Saved neural output spike data:', spikes.shape)
@@ -810,7 +899,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     #
 
     #  Get trial table, input and output formatted for GLM, list of predictor types
-    spikes, predictors, predictor_types, n_bins, bin_size = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE)
+    spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE)
     event_defs = predictor_types['event_defs']
     analog_keys = predictor_types['analog_keys']
 
@@ -819,7 +908,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     n_features = X.shape[0]
 
     # Save input/output data
-    save_model_input_output(X, spikes, feature_names, output_dir)
+    save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
 
 
     # ---------------------------------------
@@ -852,12 +941,13 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = False
+        debug = True
         if debug:
-            for test_idx in test_ids[:5]:
+            for test_idx in test_ids[5:10]:
                 plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
                 plot_design_matrix_vector_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins,
                                                        bin_size=BIN_SIZE)
+            return
 
         # -----------------------------------
         # Fit full GLMs using multiprocessing
@@ -887,7 +977,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         describe_cols = ['neuron_id', 'fold', 'train_score', 'test_score', 'train_corr', 'test_corr',
                          'train_mi', 'test_mi']
         print(model_res_df[describe_cols].describe())
-        save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), output_dir=output_dir)
+        save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), output_dir=mouse_output_path)
 
         # Add to list of global dat
         model_res_df_outer.append(model_res_df)
@@ -911,7 +1001,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'auditory_reward_encoding': [f for f in feature_names if 'prev_auditory_reward' in f],
             'lick_onset_encoding': [f for f in feature_names if 'dlc_lick_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-            'session_progress_encoding': ['trial_index_scaled'],
+            'session_progress_encoding': ['trial_index_scaled', 'last_whisker_reward', 'last_auditory_reward','prop_past_whisker_rewarded','prop_past_auditory_rewarded','whisker_reward_rate_5', 'auditory_reward_rate_5'],
         }
 
         # Get full model params for fair comparison
@@ -945,7 +1035,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), output_dir=output_dir)
+        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), output_dir=mouse_output_path)
 
         model_res_df_outer.append(results_reduced_all_df)
 
@@ -1024,10 +1114,10 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
         ax = axs[idx]
         ax.set_title('Trial {}'.format(row['trial_id']), fontsize=10)
         putils.remove_top_right_frame(ax)
-        ax.set_ylim(0, 5)
+        ax.set_ylim(0, 10)
         ax.set_ylabel('Spikes', fontsize=10)
-        ax.set_yticks([0, 5])
-        ax.set_yticklabels([0, 5], fontsize=10)
+        ax.set_yticks([0, 10])
+        ax.set_yticklabels([0, 10], fontsize=10)
         ax.set_xlabel('Time (s)', fontsize=10)
         ax.set_xticks(xticks)
         ax.set_xticklabels(xticklabels, fontsize=10)
