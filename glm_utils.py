@@ -941,7 +941,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = True
+        debug = False
         if debug:
             for test_idx in test_ids[5:10]:
                 plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
@@ -1001,7 +1001,11 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'auditory_reward_encoding': [f for f in feature_names if 'prev_auditory_reward' in f],
             'lick_onset_encoding': [f for f in feature_names if 'dlc_lick_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-            'session_progress_encoding': ['trial_index_scaled', 'last_whisker_reward', 'last_auditory_reward','prop_past_whisker_rewarded','prop_past_auditory_rewarded','whisker_reward_rate_5', 'auditory_reward_rate_5'],
+            'session_progress_encoding': ['trial_index_scaled'],
+            'last_rewards' :['last_whisker_reward', 'last_auditory_reward'],
+            'prop_rewards': ['prop_past_whisker_rewarded','prop_past_auditory_rewarded'],
+            'prop_last_5' : ['whisker_reward_rate_5', 'auditory_reward_rate_5'],
+            'cum_rewards' : ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
         }
 
         # Get full model params for fair comparison
