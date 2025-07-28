@@ -213,13 +213,13 @@ def calculate_roc(class_1_counts, class_2_counts, shuffle=False):
 
     if shuffle:
         labels = np.random.permutation(labels)
-
-    # Balance classes using sample weights inversely proportional to class frequency
-    sample_weights = compute_sample_weight('balanced', labels)
-
     # Check if labels have at least two classes
     if len(np.unique(labels)) < 2:
         return None, None, None, np.nan  # return NaN for ROC AUC or another default
+    # Balance classes using sample weights inversely proportional to class frequency
+    sample_weights = compute_sample_weight('balanced', labels)
+
+
 
     # Compute the ROC curve and area under the curve
     fpr, tpr, thresholds = roc_curve(labels, spike_counts, sample_weight=sample_weights, drop_intermediate=True)
@@ -273,8 +273,12 @@ def select_spike_counts(unit_data, analysis_type):
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
     # Make these into flattened arrays
-    spikes_counts_1 = np.concatenate(spikes_1.values)
-    spikes_counts_2 = np.concatenate(spikes_2.values)
+    try :
+        spikes_counts_1 = np.concatenate(spikes_1.values)
+        spikes_counts_2 = np.concatenate(spikes_2.values)
+    except :
+        spikes_counts_1 = []
+        spikes_counts_2 = []
 
     return spikes_counts_1, spikes_counts_2
 
@@ -389,7 +393,7 @@ def roc_analysis(nwb_file, results_path):
     mouse_id = proc_unit_table['mouse_id'].values[0]
 
     # Select ROC analyses based on available data
-    if int(mouse_id[2:5]) < 115:
+    if int(mouse_id[2:5]) < 115 and mouse_id[:2] =='AB':
         analyses_to_do = ['whisker_active', 'auditory_active',
                           'wh_vs_aud_active', 'spontaneous_licks']
     else:

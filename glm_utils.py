@@ -21,6 +21,9 @@ import ast
 import subprocess
 from sklearn.exceptions import ConvergenceWarning
 import warnings
+from itertools import combinations
+from joblib import Parallel, delayed
+
 
 sys.path.append('/home/mhamon/Github/NWB_reader')
 sys.path.append('/home/mhamon/Github/allen_utils')
@@ -813,7 +816,7 @@ def save_model_input_output(X, spikes, feature_names, output_dir, neuron_ccf):
     return
 
 def load_model_input_output(output_dir):
-    data_path = pathlib.Path(output_dir, 'data')
+    data_path = pathlib.Path(output_dir, 'data', 'ad9dbf2')
     with open(os.path.join(data_path,'data.pkl'), 'rb') as f:
         data = pickle.load(f)
     X = data['input']
@@ -878,6 +881,8 @@ def load_model_results(filename, output_dir):
         print('No model results found in:', file_path)
         return None
     return result_df
+
+
 
 def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     print('GLM fitting for:', pathlib.Path(nwb_path).name)
@@ -995,49 +1000,69 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         # Define reduced encoding model formulations
         reduced_models = {
-            'whisker_encoding': [f for f in feature_names if 'whisker_stim_time' in f],
-            'auditory_encoding': [f for f in feature_names if 'auditory_stim_time' in f],
-            'whisker_reward_encoding': [f for f in feature_names if 'prev_whisker_reward' in f],
-            'auditory_reward_encoding': [f for f in feature_names if 'prev_auditory_reward' in f],
+            'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
+            'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
+            'whisker_reward_encoding': ['prev_whisker_reward'],
+            'auditory_reward_encoding': ['prev_auditory_reward'],
             'lick_onset_encoding': [f for f in feature_names if 'dlc_lick_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
+            'whisker_move': ['whisker_vel'],
             'session_progress_encoding': ['trial_index_scaled'],
-            'last_rewards' :['last_whisker_reward', 'last_auditory_reward'],
-            'prop_rewards': ['prop_past_whisker_rewarded','prop_past_auditory_rewarded'],
-            'prop_last_5' : ['whisker_reward_rate_5', 'auditory_reward_rate_5'],
-            'cum_rewards' : ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
+            'last_rewards_whisker': ['last_whisker_reward'],
+            'last_rewards_auditory': ['last_auditory_reward'],
+            'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
+            'prop_rewards_auditory': ['prop_past_auditory_reward'],
+            'prop_last_5_whisker': ['whisker_reward_rate_5'],
+            'prop_last_5_auditoy': ['auditory_reward_rate_5'],
+            'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
+            'cum_rewards_auditory': ['sum_auditory_reward_scaled'],
+            'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
+                                        'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
+            'all_auditory_progression': ['prev_auditory_reward', 'last_auditory_reward', 'prop_past_auditory_rewarded',
+                                         'auditory_reward_rate_5', 'sum_auditory_reward_scaled'],
+            'all_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
+                                'whisker_reward_rate_5', 'sum_whisker_reward_scaled', 'prev_auditory_reward',
+                                'last_auditory_reward', 'prop_past_auditory_rewarded', 'auditory_reward_rate_5',
+                                'sum_auditory_reward_scaled'],
+            'last_rewards': ['last_whisker_reward', 'last_auditory_reward'],
+            'prop_rewards': ['prop_past_whisker_rewarded', 'prop_past_auditory_rewarded'],
+            'prop_last_5': ['whisker_reward_rate_5', 'auditory_reward_rate_5'],
+            'cum_rewards': ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
         }
 
-        # Get full model params for fair comparison
-        full_optimal_lambdas = {neuron_id:lambda_opt for neuron_id, lambda_opt in zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
-
-        # Iterate over reduced model formulations
-        results_reduced_all = []
-        for model_name, features_to_remove in reduced_models.items():
-
-            # Select subset of feature matrix
+        # Step 4: Define worker for one reduced model
+        def fit_one_reduced_model(combo_name, features_to_remove):
+            # Reduce design matrix
             X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
-            X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
+            X_test_reduced, _ = get_reduced_matrix(X_test, feature_names, features_to_remove)
 
-            # Fit GLM with reduced feature set
-            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                        X_trainval=X_trainval_reduced,
-                                        spikes_test=spikes_test,
-                                        X_test=X_test_reduced,
-                                        lambdas=full_optimal_lambdas,
-                                        n_jobs=n_jobs)
+            # Fit GLM
+            results_reduced = parallel_fit_glms(
+                spikes_trainval=spikes_trainval,
+                X_trainval=X_trainval_reduced,
+                spikes_test=spikes_test,
+                X_test=X_test_reduced,
+                lambdas=full_optimal_lambdas,
+                n_jobs=n_jobs
+            )
+
             results_reduced_df = pd.DataFrame(results_reduced)
             results_reduced_df['fold'] = fold_idx
             results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
             results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-            results_reduced_df['model_name'] = model_name
+            results_reduced_df['model_name'] = combo_name
             results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
-            results_reduced_all.append(results_reduced_df)
+            return results_reduced_df
 
-            # Append reduced model to all models
-            model_res_df_outer.append(results_reduced_df)
+        # Get full model params for fair comparison
+        full_optimal_lambdas = {neuron_id:lambda_opt for neuron_id, lambda_opt in zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
 
-        # Merge results from all reduced models, then save
+
+        results_reduced_all = Parallel(n_jobs=n_jobs)(
+            delayed(fit_one_reduced_model)(model_name, features_to_remove)
+            for combo_name, features_to_remove in reduced_models
+        )
+
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
         save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), output_dir=mouse_output_path)
 
@@ -1065,6 +1090,102 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     print('Fitting done.')
     return
+
+
+
+def fit_reduced_model_worker(nwb_path, output_dir, combo_name, features_to_remove, fold_idx, n_jobs=4):
+    mouse_id = nwbreader.get_mouse_id(nwb_path)
+    output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
+
+    # Load full design matrix and full model results
+    # filename =
+    X, spikes, feature_names = load_model_input_output(output_path)
+    trials_df = nwbreader.get_trial_table(nwb_path)
+    trials_df = trials_df[(trials_df['context'] == 'active') & (trials_df['perf'] != 6)].reset_index(drop=True)
+
+    full_model_df = load_model_results(output_path )
+    full_model_df = full_model_df[full_model_df.model_name == 'full']
+    full_optimal_lambdas = dict(zip(full_model_df['neuron_id'], full_model_df['lambda_opt']))
+
+    # Recompute same folds
+    outer_kf = KFold(n_splits=5, shuffle=True, random_state=42)
+    for idx, (trainval_ids, test_ids) in enumerate(outer_kf.split(trials_df.index)):
+        if idx != fold_idx:
+            continue
+
+        # Preprocess train/test split
+        X_trainval, X_test = X[:, trainval_ids, :], X[:, test_ids, :]
+        spikes_trainval, spikes_test = spikes[:, trainval_ids, :], spikes[:, test_ids, :]
+        X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+        X_test = X_test.reshape(X_test.shape[0], -1)
+
+        # Standardize DLC features
+        for dlc_idx in range(len(feature_names) - 4, len(feature_names)):
+            mean = X_trainval[dlc_idx].mean()
+            std = X_trainval[dlc_idx].std()
+            X_trainval[dlc_idx] = (X_trainval[dlc_idx] - mean) / std
+            X_test[dlc_idx] = (X_test[dlc_idx] - mean) / std
+
+        X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)
+        X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+        # Reduce features
+        X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
+        X_test_reduced, _ = get_reduced_matrix(X_test, feature_names, features_to_remove)
+
+        # Fit reduced GLMs in parallel
+        results = parallel_fit_glms(
+            spikes_trainval=spikes_trainval,
+            X_trainval=X_trainval_reduced,
+            spikes_test=spikes_test,
+            X_test=X_test_reduced,
+            lambdas=full_optimal_lambdas,
+            n_jobs=n_jobs
+        )
+
+        results_df = pd.DataFrame(results)
+        results_df['fold'] = fold_idx
+        results_df['train_trials'] = [trainval_ids] * len(results_df)
+        results_df['test_trials'] = [test_ids] * len(results_df)
+        results_df['model_name'] = combo_name
+        results_df['predictors'] = [list(kept_features)] * len(results_df)
+
+        # Save
+        filename = f'model_{combo_name}_fold{fold_idx}.pkl'
+        save_model_results(results_df, filename=filename, output_dir=output_path)
+
+
+def run_all_combinations_parallel(nwb_path, output_dir, max_combo_size=2, n_jobs=10):
+    save_all_model_combinations(nwb_path, output_dir, max_combo_size=max_combo_size)
+
+    # Load saved combinations
+    mouse_id = nwbreader.get_mouse_id(nwb_path)
+    output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
+    with open(output_path / 'model_combinations.pkl', 'rb') as f:
+        all_combos = pickle.load(f)
+
+    from joblib import Parallel, delayed
+    tasks = []
+    for fold_idx in range(5):  # assuming 5-fold CV
+        for combo in all_combos:
+            tasks.append((combo['name'], combo['features_to_remove'], fold_idx))
+
+    Parallel(n_jobs=n_jobs)(
+        delayed(fit_reduced_model_worker)(
+            nwb_path=nwb_path,
+            output_dir=output_dir,
+            combo_name=combo_name,
+            features_to_remove=features_to_remove,
+            fold_idx=fold_idx,
+            n_jobs=1  # inner parallelism handled per neuron
+        )
+        for combo_name, features_to_remove, fold_idx in tasks
+    )
+
+
+
+
+
 
 
 

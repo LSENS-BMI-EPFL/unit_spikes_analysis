@@ -19,47 +19,69 @@ from waveform_utils import assign_rsu_vs_fsu
 from unit_label_utils import unit_label_describe
 from glm_utils import run_unit_glm_pipeline_with_pool
 
+
+ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
+ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
+                                'NWBFull')
+
+
+
 if __name__ == '__main__':
 
     single_mouse = True
     multiple_mice = False
-
+    joint_analysis = True
+    expert_day = False
     # Set paths
-    experimenter = 'Axel_Bisi'
-    analyst = 'Myriam_Hamon'
+    experimenter = 'Myriam_Hamon'
 
-    info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
-    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', analyst, 'results')
-    root_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'NWBFull')
-    proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', analyst, 'data', 'processed_data')
-    all_nwb_names = os.listdir(root_path)
-    all_mwb_mice = [name.split('_')[0] for name in all_nwb_names]
+    proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
+    all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
+    all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
-    # Load recorded mouse table
-    mouse_info_df = pd.read_excel(os.path.join(info_path, 'mouse_reference_weight.xlsx'))
+
+
+    if joint_analysis:
+        info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
+                                 'dataset_info')
+        output_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
+                                   'combined_results')
+        myriam_nwb_names = os.listdir(ROOT_PATH_AXEL)
+        all_nwb_names.extend(myriam_nwb_names)
+        all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
+        mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
+
+    else:
+        info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
+        output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
+        mouse_info_path = pd.read_excel(os.path.join(info_path, 'mouse_reference_weight.xlsx'))
+
+
+    mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
-    mouse_info_df = mouse_info_df[mouse_info_df['exclude'] == 0] # excluded mice
-    mouse_info_df = mouse_info_df[mouse_info_df['exclude_ephys'] == 0] # excluded mice
-    mouse_info_df = mouse_info_df[mouse_info_df['recording'] == 1]
-    included_mice = mouse_info_df['mouse_id'].unique()
+    # Filter for usable mice
+    mouse_info_df = mouse_info_df[
+        (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
+        (mouse_info_df['recording'] == 1)
+        ]
 
-    # For each reward group, show the number of mice
-    reward_groups = mouse_info_df['reward_group'].unique()
-    for reward_group in reward_groups:
-        group_subjects = mouse_info_df[mouse_info_df['reward_group'] == reward_group]['mouse_id'].unique()
-        print(f"Reward group {reward_group} has {len(mouse_info_df[mouse_info_df['reward_group'] == reward_group])} mice: {group_subjects}.")
+    # Show mouse count per reward group
+    for group in mouse_info_df['reward_group'].unique():
+        count = len(mouse_info_df[mouse_info_df['reward_group'] == group])
+        print(f"Reward group {group} has {count} mice.")
 
-    # Select mice to do based on available NWB files
-    subject_ids = [mouse for mouse in included_mice if any(mouse in name for name in all_mwb_mice)]
-    subject_ids = [s for s in subject_ids if int(s[2:]) in [50,51,52,54,56,58,59,68,72,73,74,75,76,77,78,79,80,81,82,83,85,86,87,92,93,94,95,96,97,100,101,102,103,104,105,106,107]]
-    subject_ids = [s for s in subject_ids if int(s[2:]) in [94,95,96,97,100,101,102,103,104,105,106,107]]
-#    subject_ids.extend(['AB{}'.format(str(i).zfill(3)) for i in range(80,151)])
-    subject_ids = ['AB{}'.format(str(i).zfill(3)) for i in range(80,151)]
+    # Filter by available NWB files
+    subject_ids = mouse_info_df['mouse_id'].unique()
+    subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
-    subject_ids = [m for m in subject_ids if m in included_mice]
-    subject_ids = [m for m in subject_ids if m not in ['AB104', 'AB107']]
+    # Exclude specific mice
+    excluded_mice = ['AB073', 'AB152', 'AB158', 'MH006']  # MH026, MH015
+    subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
-    subject_ids = ['AB131']
+    print(f"Subject IDs to do: {subject_ids}")
+
+    subject_ids = ['MH038', 'MH039']
 
     ### --------------------
     # Define analyses to do
@@ -67,7 +89,7 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = ['unit_glm']
+    analyses_to_do_single = ['roc_analysis']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
@@ -90,23 +112,26 @@ if __name__ == '__main__':
 
         # Get NWB files for the subject
         nwb_names = [name for name in all_nwb_names if subject_id in name]
-        subject_nwb_files = [os.path.join(root_path, name) for name in nwb_names]
+        if subject_id.startswith('AB'):
+            nwb_files = [os.path.join(ROOT_PATH_AXEL, name) for name in nwb_names]
+        elif subject_id.startswith('MH'):
+            nwb_files = [os.path.join(ROOT_PATH_MYRIAM, name) for name in nwb_names]
 
-        if not subject_nwb_files:
+        if not nwb_files:
             print(f"No NWB files found for {subject_id}")
             continue
 
         subject_nwb_neural_files = []
 
         # Keep whisker day 0 files with neural data
-        if experimenter == 'Axel_Bisi':
-            for nwb_file in subject_nwb_files: # keep whisker day 0 only
-                beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
-                if beh=='whisker' and day==0:
-                    unit_table = nwb_reader.get_unit_table(nwb_file)
+        for nwb_file in nwb_files: # keep whisker day 0 only
+            beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+            if beh=='whisker' and day!=0 and expert_day == True or expert_day == False and day==0:
+                unit_table = nwb_reader.get_unit_table(nwb_file)
+
+                if unit_table is not None:
                     unit_table = allen_utils.create_area_custom_column(unit_table)
                     unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
-
                     if unit_table is not None:
 
                         # Collect for aggregated mice analyses
