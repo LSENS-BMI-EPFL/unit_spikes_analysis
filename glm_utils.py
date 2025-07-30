@@ -729,7 +729,6 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
             glm_final.fit(X_trainval, y_trainval)
 
 
-        print('Feature weights', glm_final.beta_, glm_final.beta0_)
 
         # -------------------------------------------
         # Evaluate final model on train and test sets
@@ -882,6 +881,29 @@ def load_model_results(filename, output_dir):
         return None
     return result_df
 
+def fit_one_reduced_model(combo_name, features_to_remove, spikes_trainval, X_trainval, spikes_test, X_test,
+                          feature_names, full_optimal_lambdas, trainval_ids, test_ids, fold_idx, n_jobs):
+    # Reduce design matrix
+    X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
+    X_test_reduced, _ = get_reduced_matrix(X_test, feature_names, features_to_remove)
+
+    # Fit GLM
+    results_reduced = parallel_fit_glms(
+        spikes_trainval=spikes_trainval,
+        X_trainval=X_trainval_reduced,
+        spikes_test=spikes_test,
+        X_test=X_test_reduced,
+        lambdas=full_optimal_lambdas,
+        n_jobs=n_jobs
+    )
+
+    results_reduced_df = pd.DataFrame(results_reduced)
+    results_reduced_df['fold'] = fold_idx
+    results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+    results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+    results_reduced_df['model_name'] = combo_name
+    results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+    return results_reduced_df
 
 
 def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
@@ -1030,37 +1052,18 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'cum_rewards': ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
         }
 
-        # Step 4: Define worker for one reduced model
-        def fit_one_reduced_model(combo_name, features_to_remove):
-            # Reduce design matrix
-            X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
-            X_test_reduced, _ = get_reduced_matrix(X_test, feature_names, features_to_remove)
-
-            # Fit GLM
-            results_reduced = parallel_fit_glms(
-                spikes_trainval=spikes_trainval,
-                X_trainval=X_trainval_reduced,
-                spikes_test=spikes_test,
-                X_test=X_test_reduced,
-                lambdas=full_optimal_lambdas,
-                n_jobs=n_jobs
-            )
-
-            results_reduced_df = pd.DataFrame(results_reduced)
-            results_reduced_df['fold'] = fold_idx
-            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-            results_reduced_df['model_name'] = combo_name
-            results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
-            return results_reduced_df
 
         # Get full model params for fair comparison
         full_optimal_lambdas = {neuron_id:lambda_opt for neuron_id, lambda_opt in zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
 
-
         results_reduced_all = Parallel(n_jobs=n_jobs)(
-            delayed(fit_one_reduced_model)(model_name, features_to_remove)
-            for combo_name, features_to_remove in reduced_models
+            delayed(fit_one_reduced_model)(
+                combo_name, features_to_remove,
+                spikes_trainval, X_trainval, spikes_test, X_test,
+                feature_names, full_optimal_lambdas,
+                trainval_ids, test_ids, fold_idx, n_jobs
+            )
+            for combo_name, features_to_remove in reduced_models.items()
         )
 
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
@@ -1090,102 +1093,6 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     print('Fitting done.')
     return
-
-
-
-def fit_reduced_model_worker(nwb_path, output_dir, combo_name, features_to_remove, fold_idx, n_jobs=4):
-    mouse_id = nwbreader.get_mouse_id(nwb_path)
-    output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
-
-    # Load full design matrix and full model results
-    # filename =
-    X, spikes, feature_names = load_model_input_output(output_path)
-    trials_df = nwbreader.get_trial_table(nwb_path)
-    trials_df = trials_df[(trials_df['context'] == 'active') & (trials_df['perf'] != 6)].reset_index(drop=True)
-
-    full_model_df = load_model_results(output_path )
-    full_model_df = full_model_df[full_model_df.model_name == 'full']
-    full_optimal_lambdas = dict(zip(full_model_df['neuron_id'], full_model_df['lambda_opt']))
-
-    # Recompute same folds
-    outer_kf = KFold(n_splits=5, shuffle=True, random_state=42)
-    for idx, (trainval_ids, test_ids) in enumerate(outer_kf.split(trials_df.index)):
-        if idx != fold_idx:
-            continue
-
-        # Preprocess train/test split
-        X_trainval, X_test = X[:, trainval_ids, :], X[:, test_ids, :]
-        spikes_trainval, spikes_test = spikes[:, trainval_ids, :], spikes[:, test_ids, :]
-        X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-        X_test = X_test.reshape(X_test.shape[0], -1)
-
-        # Standardize DLC features
-        for dlc_idx in range(len(feature_names) - 4, len(feature_names)):
-            mean = X_trainval[dlc_idx].mean()
-            std = X_trainval[dlc_idx].std()
-            X_trainval[dlc_idx] = (X_trainval[dlc_idx] - mean) / std
-            X_test[dlc_idx] = (X_test[dlc_idx] - mean) / std
-
-        X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)
-        X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
-
-        # Reduce features
-        X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
-        X_test_reduced, _ = get_reduced_matrix(X_test, feature_names, features_to_remove)
-
-        # Fit reduced GLMs in parallel
-        results = parallel_fit_glms(
-            spikes_trainval=spikes_trainval,
-            X_trainval=X_trainval_reduced,
-            spikes_test=spikes_test,
-            X_test=X_test_reduced,
-            lambdas=full_optimal_lambdas,
-            n_jobs=n_jobs
-        )
-
-        results_df = pd.DataFrame(results)
-        results_df['fold'] = fold_idx
-        results_df['train_trials'] = [trainval_ids] * len(results_df)
-        results_df['test_trials'] = [test_ids] * len(results_df)
-        results_df['model_name'] = combo_name
-        results_df['predictors'] = [list(kept_features)] * len(results_df)
-
-        # Save
-        filename = f'model_{combo_name}_fold{fold_idx}.pkl'
-        save_model_results(results_df, filename=filename, output_dir=output_path)
-
-
-def run_all_combinations_parallel(nwb_path, output_dir, max_combo_size=2, n_jobs=10):
-    save_all_model_combinations(nwb_path, output_dir, max_combo_size=max_combo_size)
-
-    # Load saved combinations
-    mouse_id = nwbreader.get_mouse_id(nwb_path)
-    output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
-    with open(output_path / 'model_combinations.pkl', 'rb') as f:
-        all_combos = pickle.load(f)
-
-    from joblib import Parallel, delayed
-    tasks = []
-    for fold_idx in range(5):  # assuming 5-fold CV
-        for combo in all_combos:
-            tasks.append((combo['name'], combo['features_to_remove'], fold_idx))
-
-    Parallel(n_jobs=n_jobs)(
-        delayed(fit_reduced_model_worker)(
-            nwb_path=nwb_path,
-            output_dir=output_dir,
-            combo_name=combo_name,
-            features_to_remove=features_to_remove,
-            fold_idx=fold_idx,
-            n_jobs=1  # inner parallelism handled per neuron
-        )
-        for combo_name, features_to_remove, fold_idx in tasks
-    )
-
-
-
-
-
 
 
 
