@@ -344,6 +344,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table = unit_table.sample(frac=1)
         unit_table = unit_table[unit_table['bc_label']=='good']
         # unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
+        # unit_table = unit_table.sample(n=2, random_state=None)
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
 
@@ -1051,23 +1052,39 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'prop_last_5': ['whisker_reward_rate_5', 'auditory_reward_rate_5'],
             'cum_rewards': ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
         }
-
-
         # Get full model params for fair comparison
-        full_optimal_lambdas = {neuron_id:lambda_opt for neuron_id, lambda_opt in zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
+        full_optimal_lambdas = {neuron_id: lambda_opt for neuron_id, lambda_opt in
+                                zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
 
-        results_reduced_all = Parallel(n_jobs=n_jobs)(
-            delayed(fit_one_reduced_model)(
-                combo_name, features_to_remove,
-                spikes_trainval, X_trainval, spikes_test, X_test,
-                feature_names, full_optimal_lambdas,
-                trainval_ids, test_ids, fold_idx, n_jobs
-            )
-            for combo_name, features_to_remove in reduced_models.items()
-        )
+        # Iterate over reduced model formulations
+        results_reduced_all = []
+        for model_name, features_to_remove in reduced_models.items():
+            # Select subset of feature matrix
+            X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
+            X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
 
+            # Fit GLM with reduced feature set
+            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                X_trainval=X_trainval_reduced,
+                                                spikes_test=spikes_test,
+                                                X_test=X_test_reduced,
+                                                lambdas=full_optimal_lambdas,
+                                                n_jobs=n_jobs)
+            results_reduced_df = pd.DataFrame(results_reduced)
+            results_reduced_df['fold'] = fold_idx
+            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+            results_reduced_df['model_name'] = model_name
+            results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+            results_reduced_all.append(results_reduced_df)
+
+            # Append reduced model to all models
+            model_res_df_outer.append(results_reduced_df)
+
+        # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), output_dir=mouse_output_path)
+        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
+                           output_dir=mouse_output_path)
 
         model_res_df_outer.append(results_reduced_all_df)
 
