@@ -9,7 +9,8 @@
 
 # Imports
 import os
-
+import matplotlib.colors as mc
+import colorsys
 
 def remove_top_right_frame(ax):
     ax.spines['top'].set_visible(False)
@@ -42,6 +43,24 @@ def save_figure_with_options(figure, file_formats, filename, output_dir='', dark
         figure.savefig(file_path, transparent=transparent, bbox_inches='tight', dpi='figure')
 
     return
+
+
+def adjust_lightness(color, amount=0.5):
+    """
+    Same as lighten_color but adjusts brightness to lighter color if amount>1 or darker if amount<1.
+    Input can be matplotlib color string, hex string, or RGB tuple.
+    From: https://stackoverflow.com/questions/37765197/darken-or-lighten-a-color-in-matplotlib
+    :param color: Matplotlib color string.
+    :param amount: Number between 0 and 1.
+    :return:
+    """
+
+    try:
+        c = mc.cnames[color]
+    except:
+        c = color
+    c = colorsys.rgb_to_hls(*mc.to_rgb(c))
+    return colorsys.hls_to_rgb(c[0], max(0, min(1, amount * c[1])), c[2])
 
 
 
