@@ -100,12 +100,15 @@ def filter_process_data(data_df, n_units_min=10, min_mice_per_area=3, keep_share
     return filtered_df
 
 
-def compute_prop_significant(roc_df):
+def compute_prop_significant(roc_df, per_subject=True):
     """
     Compute proportions of significant neurons per area, analysis type, reward group, - and direction,
     i.e. over the entire dataset aggregated over mice.
     """
-    default_groups = ['analysis_type', 'reward_group', 'area_acronym_custom']
+    if per_subject:
+        default_groups = ['mouse_id', 'analysis_type', 'reward_group', 'area_acronym_custom']
+    else:
+        default_groups = ['analysis_type', 'reward_group', 'area_acronym_custom']
 
     # Step 1: Total neuron counts per group
     total_neurons_per_group = (
@@ -123,15 +126,27 @@ def compute_prop_significant(roc_df):
     )
 
     # Build all possible group combinations based on unique values in the data
-    all_combinations = pd.MultiIndex.from_product(
-        [
-            roc_df['analysis_type'].unique(),
-            roc_df['reward_group'].unique(),
-            roc_df['area_acronym_custom'].unique(),
-            roc_df['direction'].unique()
-        ],
-        names=default_groups + ['direction']
-    )
+    if per_subject:
+        all_combinations = pd.MultiIndex.from_product(
+            [
+                roc_df['mouse_id'].unique(),
+                roc_df['analysis_type'].unique(),
+                roc_df['reward_group'].unique(),
+                roc_df['area_acronym_custom'].unique(),
+                roc_df['direction'].unique()
+            ],
+            names=default_groups + ['direction']
+        )
+    else:
+        all_combinations = pd.MultiIndex.from_product(
+            [
+                roc_df['analysis_type'].unique(),
+                roc_df['reward_group'].unique(),
+                roc_df['area_acronym_custom'].unique(),
+                roc_df['direction'].unique()
+            ],
+            names=default_groups + ['direction']
+        )
 
     # Reindex the grouped data to include missing combinations (e.g. 0% positively-mod. units), fill them with 0
     selective_counts = (
@@ -155,7 +170,7 @@ def compute_prop_significant(roc_df):
     # Step 5: Merge with total neuron counts to calculate proportions
     roc_df_perc = roc_df_perc.merge(
         total_neurons_per_group,
-        on=['analysis_type', 'reward_group', 'area_acronym_custom']
+        on=default_groups
     )
     #roc_df_perc['proportion'] = (roc_df_perc['count'] / roc_df_perc['total_count']) * 100
     roc_df_perc['proportion'] = np.where(
@@ -169,22 +184,18 @@ def compute_prop_significant(roc_df):
 
     # Subset for ROC significance is positive or negative modulation
     mask_direction = roc_df_perc['direction'].isin(['positive', 'negative'])
-    roc_df_perc.loc[mask_direction, 'proportion_all'] =roc_df_perc.groupby(
-        ['analysis_type', 'reward_group', 'area_acronym_custom']
+    roc_df_perc.loc[mask_direction, 'proportion_all'] =roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_direction].sum())
     mask_direction_non = roc_df_perc['direction'].isin(['non-selective'])
-    roc_df_perc.loc[mask_direction_non, 'proportion_all'] = roc_df_perc.groupby(
-        ['analysis_type', 'reward_group', 'area_acronym_custom']
+    roc_df_perc.loc[mask_direction_non, 'proportion_all'] = roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_direction_non].sum())
 
     # Subset for ROC significance is auditory or whisker trials
     mask_modality = roc_df_perc['direction'].isin(['whisker', 'auditory']) & roc_df_perc['analysis_type'].str.contains('wh_vs_aud')
-    roc_df_perc.loc[mask_modality, 'proportion_all'] = roc_df_perc.groupby(
-        ['analysis_type', 'reward_group', 'area_acronym_custom']
+    roc_df_perc.loc[mask_modality, 'proportion_all'] = roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_modality].sum())
     mask_modality_non = roc_df_perc['direction'].isin(['non-selective']) & roc_df_perc['analysis_type'].str.contains('wh_vs_aud')
-    roc_df_perc.loc[mask_modality_non, 'proportion_all'] = roc_df_perc.groupby(
-        ['analysis_type', 'reward_group', 'area_acronym_custom']
+    roc_df_perc.loc[mask_modality_non, 'proportion_all'] = roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_modality_non].sum())
 
     # Step 7: Create signed proportions for plotting (bar above/below x-axis)
@@ -745,40 +756,62 @@ def main():
     # COMPUTE PROPORTIONS OF SIGNIFICANT UNITS PER AREA
     # -------------------------------------------------
 
-    roc_df_perc = compute_prop_significant(roc_df)
-    roc_df_perc_subjects = compute_prop_significant_subjects(roc_df)
+    roc_df_perc = compute_prop_significant(roc_df, per_subject=False)
+    #roc_df_perc_subjects = compute_prop_significant_subjects(roc_df)
+    roc_df_perc_subjects = compute_prop_significant(roc_df, per_subject=True)
 
-    # ---------------
-    # PERFORM COMPARISONS
-    # ----------------
+    # ----------------------------------------
+    # PERFORM COMPARISONS OF SIGNIFICANT UNITS
+    # ----------------------------------------
 
     figures_to_do =[
-        #'prop_across_areas',
-        #'prop_across_areas_reward_group',
-        #'prop_before_vs_after_across_areas',
+        'prop_across_areas',
+        'prop_across_areas_reward_group',
+        'prop_before_vs_after_across_areas',
         'prop_across_areas_passive_pre_vs_post'
-
-
     ]
 
     if 'prop_across_areas' in figures_to_do:
         output_path = os.path.join(FIGURE_PATH, 'across_areas')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
+
+        # Compare proportions of significant units across areas, for each condition separately
         plot_proportion_across_areas(roc_df_perc, area_order=area_order_shared, area_color_list=area_color_list,
+                                     output_path=output_path)
+
+        output_path = os.path.join(FIGURE_PATH, 'across_areas_per_subjects')
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        # Compare proportions of significant units across areas and per subjects, for each condition separately
+        plot_proportion_across_areas(roc_df_perc_subjects, area_order=area_order_shared, area_color_list=area_color_list,
                                      output_path=output_path)
 
     elif 'prop_across_areas_reward_group' in figures_to_do:
         output_path = os.path.join(FIGURE_PATH, 'across_areas_reward_group')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
+            
+        # Compare proportions of significant units across areas and per reward group, for each condition separately
         plot_proportion_across_areas_reward_group(roc_df_perc, area_order=area_order_shared, area_color_list=area_color_list,
                                      output_path=output_path)
+
+        output_path = os.path.join(FIGURE_PATH, 'across_areas_reward_group_per_subjects')
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        # Compare proportions of significant units across areas and per reward group and subjects, for each condition separately
+        plot_proportion_across_areas_reward_group(roc_df_perc_subjects, area_order=area_order_shared,
+                                                  area_color_list=area_color_list,
+                                                  output_path=output_path)
 
     elif 'prop_before_vs_after_across_areas' in figures_to_do:
         output_path = os.path.join(FIGURE_PATH, 'passive_before_vs_after_across_areas')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
+
+        # Compare proportions of significant units across areas before and after learning, for each reward group separately
         plot_prop_before_vs_after_across_areas(roc_df_perc_subjects, area_order=area_order_shared, area_color_list=area_color_list,
                                      output_path=output_path)
 
@@ -786,6 +819,8 @@ def main():
         output_path = os.path.join(FIGURE_PATH, 'passive_pre_vs_post_across_areas')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
+
+        # Compare proportions of significant units pre vs post learning, across areas, for each reward group separately
         plot_proportion_across_areas_pre_vs_post(roc_df_perc_subjects, area_order=area_order_shared, area_color_list=area_color_list,
                                      output_path=output_path)
 
