@@ -22,255 +22,10 @@ from scipy.stats import wilcoxon, ttest_rel, pearsonr
 
 import allen_utils as allen
 import plotting_utils as putils
+from roc_analysis_utils import *
 
 DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis')
 FIGURE_PATH = r'M:\analysis\Axel_Bisi\combined_results\roc_analysis'
-
-def remove_subjects_without_passive(df):
-    """Remove subjects that do not have any passive trials from the dataframe."""
-    df['mouse_id_int'] = df['mouse_id'].str.extract(r'(\d+)$').astype(int)
-
-    mask1 = df.mouse_id.str.startswith('AB')
-    mask2 = df.mouse_id_int < 116
-    filtered_df = df[~(mask1 & mask2)].copy()
-    return filtered_df
-
-
-def fdr_bh(pvals, fdr=0.05):
-    """
-    Benjamini-Hochberg FDR correction for multiple comparisons.
-    :param pvals: list or array of p-values
-    :param fdr: desired false discovery rate (default 0.05)
-    :return: array of boolean values indicating which hypotheses are rejected,
-                array of adjusted p-values
-    """
-    pvals = np.array(pvals)
-    n = len(pvals)
-    if n == 0:
-        return np.array([]), np.array([])
-
-    # Sort p-values and keep track of original indices
-    sorted_indices = np.argsort(pvals)
-    sorted_pvals = pvals[sorted_indices]
-
-    # Compute adjusted p-values
-    adjusted = sorted_pvals * n / (np.arange(1, n + 1))
-
-    # Ensure monotonicity
-    adjusted = np.minimum.accumulate(adjusted[::-1])[::-1]
-    adjusted = np.clip(adjusted, 0, 1)  # Bound between 0 and 1
-
-    # Map back to original order
-    pvals_corrected = np.empty_like(adjusted)
-    pvals_corrected[sorted_indices] = adjusted
-
-    # Determine which are significant
-    reject = pvals_corrected <= fdr
-
-    return reject, pvals_corrected
-
-
-def filter_process_data(data_df, n_units_min=10, n_mice_per_area_min=3, keep_shared=True):
-    """
-    Filter input dataframe of results based on criteria.
-    :param data_df: input dataframe with ROC results
-    :param n_units_min: minimum number of units per area to keep (over whole dataset)
-    :param n_mice_per_area_min: minimum number of mice per area to keep
-    :param keep_shared: if True, only keep areas that are present in both reward groups
-    """
-
-    data_df['selectivity_abs'] = data_df['selectivity'].abs()
-
-    # Step 1: Add custom area column
-    data_df = allen.create_area_custom_column(data_df)
-
-    # Step 2: Count occurrences and filter by threshold
-    area_counts_by_analysis = data_df.groupby(['analysis_type', 'area_acronym_custom']).size()
-    valid_areas = area_counts_by_analysis[area_counts_by_analysis >= n_units_min].index
-    data_df = data_df[data_df.set_index(['analysis_type', 'area_acronym_custom']).index.isin(valid_areas)]
-
-    # Step 3: Minimum number of mice per area
-    mouse_counts_by_area = data_df.groupby(['analysis_type', 'area_acronym_custom'])['mouse_id'].nunique()
-    valid_areas = mouse_counts_by_area[mouse_counts_by_area >= n_mice_per_area_min].index
-    filtered_df = data_df[data_df.set_index(['analysis_type', 'area_acronym_custom']).index.isin(valid_areas)]
-
-    # Step 4: Identify shared areas between R+ and R-
-    if keep_shared:
-        rplus_areas = filtered_df[filtered_df.reward_group == "R+"]['area_acronym_custom'].unique()
-        rmins_areas = filtered_df[filtered_df.reward_group == "R-"]['area_acronym_custom'].unique()
-        shared_areas = list(set(rplus_areas).intersection(rmins_areas))
-    else:
-        shared_areas = filtered_df['area_acronym_custom'].unique()
-
-    # Number of areas per reward group
-    n_rplus_areas = filtered_df[filtered_df.reward_group == "R+"]['area_acronym_custom'].nunique()
-    n_rmins_areas = filtered_df[filtered_df.reward_group == "R-"]['area_acronym_custom'].nunique()
-
-    # Print summary to console for quick inspection
-    print(f"Number of areas in R+: {n_rplus_areas}, R-: {n_rmins_areas}, Shared: {len(shared_areas)}")
-    print("Shared areas:", shared_areas)
-
-    return filtered_df
-
-
-def compute_prop_significant(roc_df, per_subject=True):
-    """
-    Compute proportions of significant neurons per area, analysis type, reward group, - and direction,
-    i.e. over the entire dataset aggregated over mice.
-    """
-    if per_subject:
-        default_groups = ['mouse_id', 'analysis_type', 'reward_group', 'area_acronym_custom']
-    else:
-        default_groups = ['analysis_type', 'reward_group', 'area_acronym_custom']
-
-    # Step 1: Total neuron counts per group
-    total_neurons_per_group = (
-        roc_df.groupby(default_groups)
-        .size()
-        .reset_index(name='total_count')
-    )
-
-    # Step 2: Count selective neurons (significant == True) by direction
-    selective_counts = (
-        roc_df[roc_df['significant']]
-        .groupby(default_groups + ['direction'])
-        .size()
-        .reset_index(name='count')
-    )
-
-    # Build all possible group combinations based on unique values in the data
-    if per_subject:
-        all_combinations = pd.MultiIndex.from_product(
-            [
-                roc_df['mouse_id'].unique(),
-                roc_df['analysis_type'].unique(),
-                roc_df['reward_group'].unique(),
-                roc_df['area_acronym_custom'].unique(),
-                roc_df['direction'].unique()
-            ],
-            names=default_groups + ['direction']
-        )
-    else:
-        all_combinations = pd.MultiIndex.from_product(
-            [
-                roc_df['analysis_type'].unique(),
-                roc_df['reward_group'].unique(),
-                roc_df['area_acronym_custom'].unique(),
-                roc_df['direction'].unique()
-            ],
-            names=default_groups + ['direction']
-        )
-
-    # Reindex the grouped data to include missing combinations (e.g. 0% positively-mod. units), fill them with 0
-    selective_counts = (
-        selective_counts.set_index(default_groups + ['direction'])
-        .reindex(all_combinations, fill_value=0)
-        .reset_index()
-    )
-
-    # Step 3: Count non-selective neurons (significant == False)
-    non_selective_counts = (
-        roc_df[~roc_df['significant']]
-        .groupby(default_groups)
-        .size()
-        .reset_index(name='count')
-    )
-    non_selective_counts['direction'] = 'non-selective' # add own label
-
-    # Step 4: Combine selective and non-selective counts
-    roc_df_perc = pd.concat([selective_counts, non_selective_counts], ignore_index=True)
-
-    # Step 5: Merge with total neuron counts to calculate proportions
-    roc_df_perc = roc_df_perc.merge(
-        total_neurons_per_group,
-        on=default_groups
-    )
-    #roc_df_perc['proportion'] = (roc_df_perc['count'] / roc_df_perc['total_count']) * 100
-    roc_df_perc['proportion'] = np.where(
-        (roc_df_perc['count'] > 0),
-        (roc_df_perc['count'] / roc_df_perc['total_count']) * 100,
-        0       # 0% if no significant units
-    )
-
-    # Step 6: Make a total-significant column, summing both directions positive/negative, or auditory/whisker
-    roc_df_perc['proportion_all'] = roc_df_perc['proportion']  # init. with current proportions for non-slective
-
-    # Subset for ROC significance is positive or negative modulation
-    mask_direction = roc_df_perc['direction'].isin(['positive', 'negative'])
-    roc_df_perc.loc[mask_direction, 'proportion_all'] =roc_df_perc.groupby(default_groups
-    )['proportion'].transform(lambda x: x[mask_direction].sum())
-    mask_direction_non = roc_df_perc['direction'].isin(['non-selective'])
-    roc_df_perc.loc[mask_direction_non, 'proportion_all'] = roc_df_perc.groupby(default_groups
-    )['proportion'].transform(lambda x: x[mask_direction_non].sum())
-
-    # Subset for ROC significance is auditory or whisker trials
-    mask_modality = roc_df_perc['direction'].isin(['whisker', 'auditory']) & roc_df_perc['analysis_type'].str.contains('wh_vs_aud')
-    roc_df_perc.loc[mask_modality, 'proportion_all'] = roc_df_perc.groupby(default_groups
-    )['proportion'].transform(lambda x: x[mask_modality].sum())
-    mask_modality_non = roc_df_perc['direction'].isin(['non-selective']) & roc_df_perc['analysis_type'].str.contains('wh_vs_aud')
-    roc_df_perc.loc[mask_modality_non, 'proportion_all'] = roc_df_perc.groupby(default_groups
-    )['proportion'].transform(lambda x: x[mask_modality_non].sum())
-
-    # Step 7: Create signed proportions for plotting (bar above/below x-axis)
-    roc_df_perc['proportion_signed'] = roc_df_perc['proportion']
-    roc_df_perc.loc[roc_df_perc['direction'] == 'negative', 'proportion_signed'] *= -1
-    roc_df_perc.loc[roc_df_perc['direction'] == 'auditory', 'proportion_signed'] *= -1
-
-    return roc_df_perc
-
-def compute_si_differences(roc_df):
-    """Compute difference in selectivity index (SI) between pre- and post-learning passive trials."""
-
-    results = roc_df.copy()
-
-    # Keep analysis types relevant i.e. those with pre and post during passive
-    results = results[results['analysis_type'].str.contains('passive')]
-
-    # Some mice lack passive data (either pre or post, or both): drop these nans
-    mice_with_incomplete_passive = ['MH013', 'MH038'] #TODO: potentially update with AB155
-    results = results[~results['mouse_id'].isin(mice_with_incomplete_passive)]
-
-    for anal_type in ['whisker_passive', 'auditory_passive', 'wh_vs_aud_passive']:
-        # Filter for only the relevant analysis type
-        df = roc_df[roc_df['analysis_type'].isin([f'{anal_type}_pre', f'{anal_type}_post'])].copy()
-
-        # Pivot so each neuron has pre and post SI in separate columns
-        pivot_df = df.pivot_table(
-            index=['mouse_id', 'unit_id', 'area_acronym_custom', 'reward_group'],
-            columns='analysis_type',
-            values='selectivity'
-        ).reset_index()
-
-        # Ensure columns exist even if missing
-        pivot_df = pivot_df.rename(
-            columns={
-                f'{anal_type}_pre': 'si_pre',
-                f'{anal_type}_post': 'si_post'
-            }
-        )
-
-        # Compute delta SI with different signs based on the SI post sign:
-        # The reason for using signed differences like this is to normalize the direction of
-        # selectivity so that the computed ΔSI always reflects changes in the preferred direction,
-        # regardless of whether the neuron prefers condition A or condition B.
-        delta_si = np.where(
-            pivot_df['si_post'] >= 0,
-            pivot_df['si_post'] - pivot_df['si_pre'],  # Positive SI post
-            -(pivot_df['si_post'] - pivot_df['si_pre'])  # Negative SI post
-        )
-
-        # Create a unique column name for this analysis type
-        delta_col = f"delta_si_{anal_type}"
-        pivot_df[delta_col] = delta_si
-
-        # Merge back into the main dataframe
-        results = results.merge(
-            pivot_df[['mouse_id', 'unit_id', delta_col]],
-            on=['mouse_id', 'unit_id'],
-            how='left'
-        )
-
-    return results
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
     """
@@ -281,6 +36,12 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
     :param area_color_list: list of colors corresponding to areas
     :param output_path: path to save figures
     """
+    if 'mouse_id' in data_df.columns:
+        errorbar = 'se'
+        errwidth = 0.7
+    else:
+        errorbar = None
+        errwidth = None
     for reward_group in ['R+', 'R-']:
         for anal_type in data_df['analysis_type'].unique():
             subset_df = data_df[
@@ -322,7 +83,8 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
                     palette=palette,
                     height=2.5,
                     aspect=4,
-                    errorbar=None,
+                    errorbar=errorbar,
+                    errwidth=errwidth,
                     legend=False,
                     dodge=False
                 )
@@ -330,10 +92,8 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
                 g.despine(left=False)
                 g.set_axis_labels('', 'Proportion (%)')
                 if dir == 'all':
-                    #g.ax.set_ylim(0, 100)
                     g.set(ylim=(0, 70))
                 else:
-                    #g.ax.set_ylim(-100, 100)
                     g.set(ylim=(-50, 50))
                 g.tight_layout()
                 g.set_xticklabels(rotation=90)
@@ -486,12 +246,12 @@ def plot_pop_selectivity_across_areas_reward_group(data_df, per_subject, area_or
 
 
     for anal_type in data_df['analysis_type'].unique():
-        subset_df = data_df[(data_df['analysis_type'] == anal_type)]
+        df = data_df[(data_df['analysis_type'] == anal_type)]
 
         y_val = 'selectivity_abs'
 
         g = sns.catplot(
-            data=subset_df,
+            data=df,
             kind='bar',
             x='area_acronym_custom',
             y=y_val,
@@ -568,6 +328,7 @@ def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list,
 
             # Plot pre. vs post
             df = roc_pre_vs_post_df[roc_pre_vs_post_df.direction == 'both']
+
             g = sns.catplot(
                 data=df,
                 kind='bar',
@@ -583,13 +344,25 @@ def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list,
                 errwidth=0.7,
                 legend=True,
                 legend_out=True,
-                seed=42
+                seed=42,
             )
+
+            for bar0, bar1 in zip(g.ax.containers[0], g.ax.containers[1]):
+                bar0.set_alpha(0.2)
+                bar1.set_alpha(0.2)
+            for i, area in enumerate(area_order):
+                mask_pre = (df['area_acronym_custom'] == area) & (df['period'] == 'pre-learning')
+                mask_post = (df['area_acronym_custom'] == area) & (df['period'] == 'post-learning')
+                pre_val = df.loc[mask_pre, 'proportion'].mean()
+                post_val = df.loc[mask_post, 'proportion'].mean()
+                plt.plot([i - 0.2, i + 0.2], [pre_val, post_val], color='gray', linewidth=0.8, alpha=1)
             g.despine(left=False)
             g.set_axis_labels('', 'Proportion (%)')
-            g.set(ylim=(0, 100))
+            g.set(ylim=(0, 80))
             g.tight_layout()
             g.set_xticklabels(rotation=90)
+
+
 
             # Run statistical test for each area
             results = []
@@ -727,13 +500,16 @@ def plot_pop_selectivity_before_vs_after_across_areas(data_df, per_subject, area
                 legend_out=True,
                 seed=42
             )
+            for bar0, bar1 in zip(g.ax.containers[0], g.ax.containers[1]):
+                bar0.set_alpha(0.2)
+                bar1.set_alpha(0.2)
             # Connect each bar value with a line
             for i, area in enumerate(area_order):
                 mask_pre = (df['area_acronym_custom'] == area) & (df['period'] == 'pre-learning')
                 mask_post = (df['area_acronym_custom'] == area) & (df['period'] == 'post-learning')
                 pre_val = df.loc[mask_pre, 'selectivity_abs'].mean()
                 post_val = df.loc[mask_post, 'selectivity_abs'].mean()
-                plt.plot([i - 0.2, i + 0.2], [pre_val, post_val], color='gray', linewidth=0.5, alpha=1)
+                plt.plot([i - 0.2, i + 0.2], [pre_val, post_val], color='gray', linewidth=0.8, alpha=1)
 
             g.despine(left=False)
             g.set_axis_labels('', 'Absolute selectivity')
@@ -822,12 +598,12 @@ def plot_proportion_across_areas_pre_vs_post(data_df, area_order, area_color_lis
     """
     for reward_group in ['R+', 'R-']:
         for stim_type in ['auditory', 'whisker']:
-            data_df_group = data_df[(data_df['reward_group'] == reward_group)
-                            &
-                (data_df['analysis_type'].str.contains(f'{stim_type}_pre_vs_post_learning'))]
+            df = data_df[(data_df['reward_group'] == reward_group)
+                         &
+                         (data_df['analysis_type'].str.contains(f'{stim_type}_pre_vs_post_learning'))]
 
             g = sns.catplot(
-                data=data_df_group,
+                data=df,
                 kind='bar',
                 x='area_acronym_custom',
                 y='proportion_signed',
@@ -840,7 +616,7 @@ def plot_proportion_across_areas_pre_vs_post(data_df, area_order, area_color_lis
                 errorbar='se',
                 errwidth=0.7,
                 legend=False,
-                #legend_out=True,
+                legend_out=True,
                 dodge=False,
                 seed=42
             )
@@ -1029,6 +805,8 @@ def plot_si_correlation_grid_across_areas(data_df, cond1, cond2, output_path):
 
 def main():
 
+    # Get data information
+
     info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
                              'dataset_info')
     mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
@@ -1045,7 +823,7 @@ def main():
     # ---------
     # LOAD DATA
     # ---------
-
+    print('Loading data...')
     data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'results') #TODO: update when change
     roc_results_files = glob.glob(os.path.join(data_path_axel, '**', '*_roc_results.csv'),
                                   recursive=True)  # find all roc results files
@@ -1065,14 +843,18 @@ def main():
           roc_df.groupby('reward_group')['mouse_id'].nunique())
     print('ROC analysis types:', roc_df['analysis_type'].unique())
 
-    excluded_mice = ['AB077', 'AB082']
-    excluded_mice  = []
+    excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
 
     # -----------------------
     # PROCESS AND FILTER DATA
     # -----------------------
-    roc_df = filter_process_data(roc_df, n_units_min=10, n_mice_per_area_min=3, keep_shared=True)
+    print('Processing and filtering data...')
+    N_UNITS_MIN = 10                # minimum units per area (whole-dataset)
+    N_MICE_PER_AREA_MIN = 3         # minimum mice per area
+    KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
+
+    roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
 
     # Create color list based on areas that are present
     shared_areas = roc_df['area_acronym_custom'].unique()
@@ -1102,13 +884,13 @@ def main():
     # -------------------------------------------------
     # COMPUTE PROPORTIONS OF SIGNIFICANT UNITS PER AREA
     # -------------------------------------------------
-
     roc_df_perc = compute_prop_significant(roc_df, per_subject=False)
     roc_df_perc_subjects = compute_prop_significant(roc_df, per_subject=True)
 
     # ----------------------------------------
     # PERFORM COMPARISONS ON SIGNIFICANT UNITS
     # ----------------------------------------
+    print('Plotting...')
 
     figures_to_do =[
         #'prop_across_areas',
@@ -1153,7 +935,7 @@ def main():
                                                   output_path=output_path)
 
     elif 'prop_before_vs_after_across_areas' in figures_to_do:
-        output_path = os.path.join(FIGURE_PATH, 'passive_before_vs_after_across_areas')
+        output_path = os.path.join(FIGURE_PATH, 'passive_before_vs_after_across_areas_per_subjects')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
@@ -1161,8 +943,9 @@ def main():
         plot_prop_before_vs_after_across_areas(roc_df_perc_subjects, area_order=area_order_shared, area_color_list=area_color_list,
                                      output_path=output_path)
 
+
     elif 'prop_across_areas_passive_pre_vs_post' in figures_to_do:
-        output_path = os.path.join(FIGURE_PATH, 'passive_pre_vs_post_across_areas')
+        output_path = os.path.join(FIGURE_PATH, 'passive_pre_vs_post_across_areas_per_subjects')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
@@ -1175,12 +958,12 @@ def main():
 
     # ---------------------------------------------
     # PERFORM COMPARISONS ON POPULATION SELECTIVITY
-    # --------------------------------------------
+    # ---------------------------------------------
 
     figures_to_do = [
         #'abs_si_across_areas',
         #'abs_si_across_areas_reward_group',
-        #'abs_si_before_vs_after_across_areas',
+        'abs_si_before_vs_after_across_areas',
     ]
 
     if 'abs_si_across_areas' in figures_to_do:
@@ -1224,8 +1007,8 @@ def main():
             os.makedirs(output_path)
 
         # Compare absolute population selectivity across areas before and after learning, for each reward group separately
-        #plot_pop_selectivity_before_vs_after_across_areas(roc_df, per_subject=False, area_order=area_order_shared, area_color_list=area_color_list,
-        #                             output_path=output_path)
+        plot_pop_selectivity_before_vs_after_across_areas(roc_df, per_subject=False, area_order=area_order_shared, area_color_list=area_color_list,
+                                     output_path=output_path)
 
         output_path = os.path.join(FIGURE_PATH, 'passive_before_vs_after_across_areas_per_subjects_abs_si')
         if not os.path.exists(output_path):
@@ -1246,8 +1029,8 @@ def main():
     roc_df_delta = compute_si_differences(roc_df)
 
     figures_to_do = [
-        #'si_delta_correlation_grid_across_areas',
-        #'si_delta_correlation_grid_across_areas_multimodal',
+        'si_delta_correlation_grid_across_areas',
+        'si_delta_correlation_grid_across_areas_multimodal',
         'si_correlation_grid_across_areas'
     ]
 
@@ -1329,5 +1112,6 @@ if __name__ == '__main__':
         #parser.add_argument('--config', type=str, nargs='?', required=False)
         args = parser.parse_args()
 
-
+        print('- Analysing ROC results...')
         main()
+        print('Done.')
