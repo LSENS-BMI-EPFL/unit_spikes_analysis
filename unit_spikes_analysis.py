@@ -16,8 +16,8 @@ import allen_utils as allen_utils
 from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from waveform_utils import assign_rsu_vs_fsu
-from unit_label_utils import unit_label_describe
-from glm_utils import run_unit_glm_pipeline_with_pool
+from unit_desc_utils import *
+#from glm_utils import run_unit_glm_pipeline_with_pool
 
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
@@ -28,18 +28,17 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 
 if __name__ == '__main__':
 
-    single_mouse = True
-    multiple_mice = False
+    single_mouse = False
+    multiple_mice = True
     joint_analysis = True
     expert_day = False
+
     # Set paths
-    experimenter = 'Myriam_Hamon'
+    experimenter = 'Axel_Bisi'
 
     proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
     all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
-
-
 
     if joint_analysis:
         info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
@@ -62,8 +61,10 @@ if __name__ == '__main__':
     # Filter for usable mice
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
+
         ]
 
     # Show mouse count per reward group
@@ -74,14 +75,15 @@ if __name__ == '__main__':
     # Filter by available NWB files
     subject_ids = mouse_info_df['mouse_id'].unique()
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
+    subject_ids = [s for s in subject_ids if 'MH' in s and int(s[2:])>4]
 
     # Exclude specific mice
-    excluded_mice = ['AB073', 'AB152', 'AB158', 'MH006']  # MH026, MH015
+    excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
-    print(f"Subject IDs to do: {subject_ids}")
+    #subject_ids = ['AB117']
 
-    subject_ids = ['MH038', 'MH039']
+    print(f"Subject IDs to do: {subject_ids}")
 
     ### --------------------
     # Define analyses to do
@@ -93,7 +95,7 @@ if __name__ == '__main__':
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
-    analyses_to_do_multi = ['unit_labels_processing']
+    analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
 
     # Init. list of NWB files with neural data for analyses requiring multiple mice
     nwb_neural_files = []
@@ -176,6 +178,9 @@ if __name__ == '__main__':
 
         if 'unit_labels_processing' in analyses_to_do_multi:
             unit_label_describe(nwb_neural_files, output_path)
+
+        if 'unit_anat_processing' in analyses_to_do_multi:
+            unit_anat_describe(nwb_neural_files, output_path)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
             assign_rsu_vs_fsu(nwb_neural_files, output_path)
