@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import plotly.graph_objects as go
+#import plotly.graph_objects as go
 
 # Import custom modules
 import NWB_reader_functions as nwb_reader
@@ -42,7 +42,6 @@ def unit_label_describe(nwb_files, output_path):
 
     print('Number of good units after Kilosort', len(unit_data[unit_data['ks_label'] == 'good']))
     print('Number of good units after Bombcell', len(unit_data[unit_data['bc_label'] == 'good']))
-    return
 
     # Order of categories
     ks_order = ['good', 'mua']
@@ -111,8 +110,10 @@ def unit_label_describe(nwb_files, output_path):
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
-    # Save plotly Figure object #TODO: fix saving
+    # Save plotly Figure object
     for format in file_formats:
-        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), engine='orca')
+        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), engine='orca', width=700, height=775)
 
     return
+
+def unit_anat_describe()
