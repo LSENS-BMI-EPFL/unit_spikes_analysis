@@ -75,7 +75,7 @@ if __name__ == '__main__':
     # Filter by available NWB files
     subject_ids = mouse_info_df['mouse_id'].unique()
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
-    subject_ids = [s for s in subject_ids if 'MH' in s and int(s[2:])>4]
+    #subject_ids = [s for s in subject_ids if 'MH' in s and int(s[2:])>4]
 
     # Exclude specific mice
     excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
@@ -96,6 +96,7 @@ if __name__ == '__main__':
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
+    analyses_to_do_multi = ['unit_labels_processing']
 
     # Init. list of NWB files with neural data for analyses requiring multiple mice
     nwb_neural_files = []
