@@ -16,6 +16,7 @@ import matplotlib.pyplot as plt
 import plotly.graph_objects as go
 
 # Import custom modules
+import neural_utils as nutils
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 from plotting_utils import save_figure_with_options
@@ -27,18 +28,22 @@ def unit_label_describe(nwb_files, output_path):
     :param output_path: path to save the output
     :return:
     """
+
+    # Load neural data
+    _, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
+
     # Load data
-    unit_data = []
-    for nwb_file in nwb_files:
-        try:
-            unit_table = nwb_reader.get_unit_table(nwb_file)
-            mouse_id = nwb_reader.get_mouse_id(nwb_file)
-            beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
-            unit_table['mouse_id'] = mouse_id
-            unit_data.append(unit_table)
-        except:
-            continue
-    unit_data = pd.concat(unit_data)
+    #unit_data = []
+    #for nwb_file in nwb_files:
+    #    try:
+    #        unit_table = nwb_reader.get_unit_table(nwb_file)
+    #        mouse_id = nwb_reader.get_mouse_id(nwb_file)
+    #        beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+    #        unit_table['mouse_id'] = mouse_id
+    #        unit_data.append(unit_table)
+    #    except:
+    #        continue
+    #unit_data = pd.concat(unit_data)
 
     print('Number of good units after Kilosort', len(unit_data[unit_data['ks_label'] == 'good']))
     print('Number of good units after Bombcell', len(unit_data[unit_data['bc_label'] == 'good']))
@@ -123,18 +128,20 @@ def unit_anat_describe(nwb_files, output_path):
     :param output_path: path to save the output
     :return:
     """
-    # Load data
-    unit_data = []
-    for nwb_file in nwb_files:
-        try:
-            unit_table = nwb_reader.get_unit_table(nwb_file)
-            mouse_id = nwb_reader.get_mouse_id(nwb_file)
-            beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
-            unit_table['mouse_id'] = mouse_id
-            unit_data.append(unit_table)
-        except:
-            continue
-    unit_data = pd.concat(unit_data)
+    # Load neural data
+    _, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
+
+    #unit_data = []
+    #for nwb_file in nwb_files:
+    #    try:
+    #        unit_table = nwb_reader.get_unit_table(nwb_file)
+    #        mouse_id = nwb_reader.get_mouse_id(nwb_file)
+    #        beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+    #        unit_table['mouse_id'] = mouse_id
+    #        unit_data.append(unit_table)
+    #    except:
+    #        continue
+    #unit_data = pd.concat(unit_data)
 
     # Assign neurons to broad categories based on ccf_acronym
     def categorize_area(acronym):
@@ -147,6 +154,15 @@ def unit_anat_describe(nwb_files, output_path):
             return 'grey matter'
     unit_data['pre_align_category'] = unit_data['ccf_acronym'].apply(categorize_area)
     unit_data['post_align_category'] = unit_data['ccf_atlas_acronym'].apply(categorize_area)
+
+    unit_data_good = unit_data[unit_data['bc_label'] == 'good']
+    unit_data_good_mua = unit_data[unit_data['bc_label'].isin(['good', 'mua'])]
+    # Compare number of good units before and after ephys-atlas alignment
+    print('Number of good units before ephys-atlas alignment:', len(unit_data_good[unit_data_good['pre_align_category'] == 'grey matter']))
+    print('Number of good units after ephys-atlas alignment:', len(unit_data_good[unit_data_good['post_align_category'] == 'grey matter']))
+    print('Number of good/mua units before ephys-atlas alignment:', len(unit_data_good_mua[unit_data_good_mua['pre_align_category'] == 'grey matter']))
+    print('Number of good/mua units after ephys-atlas alignment:', len(unit_data_good_mua[unit_data_good_mua['post_align_category'] == 'grey matter']))
+
 
     # Order of categories
     pre_align_order= ['grey matter', 'white matter / ventricular system', 'outside brain']
