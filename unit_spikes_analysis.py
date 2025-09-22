@@ -81,7 +81,7 @@ if __name__ == '__main__':
 
     print(f"Subject IDs to do: {subject_ids}")
 
-    subject_ids = ['MH038', 'MH039']
+    subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
@@ -89,7 +89,7 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_single = ['unit_glm']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
