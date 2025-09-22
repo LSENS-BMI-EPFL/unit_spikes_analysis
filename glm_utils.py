@@ -203,8 +203,8 @@ def plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index, n_bin
     ax.set_yticks(np.arange(len(feature_names)) + 0.5)
     ax.set_yticklabels(feature_names[::-1], fontsize=12)
     ax.set_ylabel('Features', fontsize=12, labelpad=15)
-    ax.set_xticks(range(9))
-    ax.set_xticklabels([-3,-2,-1,0,1,2,3,4,5], fontsize=12)
+    ax.set_xticks(range(4))
+    ax.set_xticklabels([-1,0,1,2], fontsize=12)
     ax.set_xlabel('Time (s)', fontsize=12)
     ax.set_title(f"Design matrix — trial {trial_index}", fontsize=12)
 
@@ -266,8 +266,8 @@ def plot_design_matrix_vector_single_trial(X, feature_names, trial_index, n_bins
         ax.axvline(x=3, color='k', linestyle='--', lw=1, clip_on=False)
 
     # Add x-axis to last subplot
-    axes[-1].set_xticks(range(9))
-    axes[-1].set_xticklabels([-3, -2, -1, 0, 1, 2, 3, 4, 5], fontsize=12)
+    axes[-1].set_xticks(range(4))
+    axes[-1].set_xticklabels([ -1, 0, 1, 2], fontsize=12)
     axes[-1].set_xlabel('Time (s)', fontsize=12)
 
     # Adjust figure
@@ -329,7 +329,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
     with NWBHDF5IO(nwb_path, mode='r', load_namespaces=True) as io:
         nwbfile = io.read()
 
-        window_bounds_sec = (-3, 5)
+        window_bounds_sec = (-1, 2)
         trials_df = nwbfile.trials.to_dataframe()
         trials_df = trials_df[(trials_df['context'] == 'active') & (trials_df['perf'] != 6)].copy()
 
@@ -344,6 +344,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table = unit_table.sample(frac=1)
         unit_table = unit_table[unit_table['bc_label']=='good']
         # unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
+
         # unit_table = unit_table.sample(n=2, random_state=None)
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
@@ -352,6 +353,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
+        # unit_table = unit_table.iloc[[15, 300]]
+
 
         # ------------------
         # Spike Trains
@@ -360,7 +363,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         for unit in unit_table.itertuples():
             binned_trials = []
             for start, end in zip(trial_starts, trial_ends):
-                bins = np.arange(start, end + bin_size, bin_size)
+                bins = np.arange(start, end, bin_size)
                 spike_times = unit.spike_times
                 binned, _ = np.histogram(spike_times, bins=bins)
                 padded = np.zeros(n_bins)
@@ -375,37 +378,12 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictors = {}
 
         # Binary Predictors
-        # ------------------
-        #TODO: add cumulative reward for whisker and auditory
-        #TODO: add local measure of past performance
-        #TODO: add hit variable joint with stim trials
+
 
         # Trial index scaled to total number of trials
         trial_idx_scaled = np.arange(n_trials) / (n_trials-1)
         predictors['trial_index_scaled'] = np.tile(trial_idx_scaled[:, None], (1, n_bins))
 
-        # This was to get the previous trial (the one immediately before the currrent) and if rewarded or not
-        # Previous stim trials rewarded #TODO: update to last stim, not previous sitm?
-        # stim_type = trials_df['trial_type'].fillna('').values
-        # trials_df['stimulus'] = trials_df['trial_type'].isin(['whisker_trial', 'auditory_trial'])
-        # trials_df['rewarded'] = (
-        #     trials_df['stimulus'].astype(int)
-        #     * trials_df['reward_available'].astype(int)
-        #     * trials_df['lick_flag'].astype(int)
-        # )
-        # rewarded = trials_df['rewarded'].fillna(0).values
-        # prev_whisker_reward = np.zeros(n_trials)
-        # prev_auditory_reward = np.zeros(n_trials)
-        #
-        # for i in range(1, n_trials):
-        #     if rewarded[i - 1] > 0:
-        #         if stim_type[i - 1] == 'whisker_trial':
-        #             prev_whisker_reward[i] = 1
-        #         elif stim_type[i - 1] == 'auditory_trial':
-        #             prev_auditory_reward[i] = 1
-        #
-        # predictors['prev_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
-        # predictors['prev_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
 
         # Now this is if the last whisker presented was rewarded or not and same for auditory
         stim_type = trials_df['trial_type'].fillna('').values
@@ -416,34 +394,22 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         ).fillna(0).values
 
         prev_whisker_reward = np.zeros(n_trials)
-        prev_auditory_reward = np.zeros(n_trials)
 
         # Running memory for last reward status
         last_whisker_reward = 0
-        last_auditory_reward = 0
 
         for i in range(n_trials):
             # Store the most recent reward info
             prev_whisker_reward[i] = last_whisker_reward
-            prev_auditory_reward[i] = last_auditory_reward
-
-            # Update memory if current trial is whisker or auditory
             if stim_type[i] == 'whisker_trial':
                 last_whisker_reward = rewarded[i]
-            elif stim_type[i] == 'auditory_trial':
-                last_auditory_reward = rewarded[i]
+
 
         # Broadcast to bins
-        predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
-        predictors['last_auditory_reward'] = np.tile(prev_auditory_reward[:, None], (1, n_bins))
-
-
+        # predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
         #  Independent code to get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
         past_whisker_rewards = 0
-        past_auditory_trials = 0
-        past_auditory_rewards = 0
-        prop_past_auditory_rewarded = np.zeros(n_trials)
         prop_past_whisker_rewarded = np.zeros(n_trials)
 
         for i in range(1, n_trials):
@@ -457,83 +423,45 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             if past_whisker_trials > 0:
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
-            # Auditory trial history
-            if stim_type[i - 1] == 'auditory_trial':
-                past_auditory_trials += 1
-                if rewarded[i - 1] > 0:
-                    past_auditory_rewards += 1
-
-            if past_auditory_trials > 0:
-                prop_past_auditory_rewarded[i] = past_auditory_rewards / past_auditory_trials
-
-        predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
-        predictors['prop_past_auditory_rewarded'] = np.tile(prop_past_auditory_rewarded[:, None], (1, n_bins))
+        # predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
 
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
-        auditory_reward_rate = np.zeros(n_trials)
-
         for i in range(n_trials):
             start_idx = max(0, i - 5)
             recent_trials = stim_type[start_idx:i]
             recent_rewards = rewarded[start_idx:i]
             whisker_mask = recent_trials == 'whisker_trial'
-            auditory_mask = recent_trials == 'auditory_trial'
             if np.sum(whisker_mask) > 0:
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
             else:
                 whisker_reward_rate[i] = 0
+        # predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
-            if np.sum(auditory_mask) > 0:
-                auditory_reward_rate[i] = np.sum(recent_rewards[auditory_mask]) / np.sum(auditory_mask)
-            else:
-                auditory_reward_rate[i] = 0
-
-        predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
-        predictors['auditory_reward_rate_5'] = np.tile(auditory_reward_rate[:, None], (1, n_bins))
-
-
-        # Get cumulative rewards per trial type
-        total_whisker_rewards = np.sum((stim_type == 'whisker_trial') & (rewarded > 0))
-        total_auditory_rewards = np.sum((stim_type == 'auditory_trial') & (rewarded > 0))
-        total_whisker_rewards = total_whisker_rewards if total_whisker_rewards > 0 else 1
-        total_auditory_rewards = total_auditory_rewards if total_auditory_rewards > 0 else 1
-        # Initialize cumulative reward arrays
-        cum_whisker_reward = np.zeros(n_trials)
-        cum_auditory_reward = np.zeros(n_trials)
-
-        whisker_reward_so_far = 0
-        auditory_reward_so_far = 0
-
+        total_rewards = np.sum(rewarded > 0)
+        total_rewards = total_rewards if total_rewards > 0 else 1
+        cum_reward = np.zeros(n_trials)
+        reward_so_far = 0
         for i in range(n_trials):
-            if stim_type[i] == 'whisker_trial':
-                cum_whisker_reward[i] = whisker_reward_so_far / total_whisker_rewards
-                if rewarded[i] > 0:
-                    whisker_reward_so_far += 1
-            else:
-                cum_whisker_reward[i] = whisker_reward_so_far / total_whisker_rewards
+            cum_reward[i] = reward_so_far / total_rewards
+            if rewarded[i] > 0:
+                reward_so_far += 1
 
-            if stim_type[i] == 'auditory_trial':
-                cum_auditory_reward[i] = auditory_reward_so_far / total_auditory_rewards
-                if rewarded[i] > 0:
-                    auditory_reward_so_far += 1
-            else:
-                cum_auditory_reward[i] = auditory_reward_so_far / total_auditory_rewards
+        # Add to predictors (scaled cumulative rewards across all trial types)
+        # predictors['sum_reward_scaled'] = np.tile(cum_reward[:, None], (1, n_bins))
 
+        # Whisker hit predictor: 1 if whisker trial and actually rewarded, else 0
+        whisker_hit = ((stim_type == 'whisker_trial') & (rewarded > 0)).astype(int)
         # Add to predictors
-        predictors['sum_whisker_reward_scaled'] = np.tile(cum_whisker_reward[:, None], (1, n_bins))
-        predictors['sum_auditory_reward_scaled'] = np.tile(cum_auditory_reward[:, None], (1, n_bins))
+        # predictors['whisker_hit'] = np.tile(whisker_hit[:, None], (1, n_bins))
 
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
-            'last_whisker_reward':'last_whisker_reward',
-            'last_auditory_reward':'last_auditory_reward',
-            'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
-            'prop_past_auditory_rewarded':'prop_past_auditory_rewarded',
-            'whisker_reward_rate_5': 'whisker_reward_rate_5',
-            'auditory_reward_rate_5': 'auditory_reward_rate_5',
-            'sum_whisker_reward_scaled':'sum_whisker_reward_scaled',
-            'sum_auditory_reward_scaled':'sum_auditory_reward_scaled'
+            # 'last_whisker_reward':'last_whisker_reward',
+            # 'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
+            # 'whisker_reward_rate_5': 'whisker_reward_rate_5',
+            # 'sum_reward_scaled':'sum_reward_scaled',
+            # 'whisker_hit': 'whisker_hit'
         }
 
         # Event-based predictors (rasterized kernels will be applied later)
@@ -766,6 +694,7 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
             'coef': glm_final.beta_.copy(),
             'y_test': y_test,
             'y_pred': y_test_pred,
+            'y_train_pred' : y_trainval_pred,
             'test_corr': test_corr,
             'test_mi': test_mi,
             'n_bins': n_bins,
@@ -933,6 +862,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Build design matrix for entire dataset
     X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+
     n_features = X.shape[0]
 
     # Save input/output data
@@ -969,7 +899,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = False
+        debug = True
         if debug:
             for test_idx in test_ids[5:10]:
                 plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
@@ -1026,31 +956,18 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
             'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
             'whisker_reward_encoding': ['prev_whisker_reward'],
-            'auditory_reward_encoding': ['prev_auditory_reward'],
             'lick_onset_encoding': [f for f in feature_names if 'dlc_lick_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
             'whisker_move': ['whisker_vel'],
             'session_progress_encoding': ['trial_index_scaled'],
-            'last_rewards_whisker': ['last_whisker_reward'],
-            'last_rewards_auditory': ['last_auditory_reward'],
-            'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
-            'prop_rewards_auditory': ['prop_past_auditory_reward'],
-            'prop_last_5_whisker': ['whisker_reward_rate_5'],
-            'prop_last_5_auditoy': ['auditory_reward_rate_5'],
-            'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
-            'cum_rewards_auditory': ['sum_auditory_reward_scaled'],
-            'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
-                                        'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
-            'all_auditory_progression': ['prev_auditory_reward', 'last_auditory_reward', 'prop_past_auditory_rewarded',
-                                         'auditory_reward_rate_5', 'sum_auditory_reward_scaled'],
-            'all_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
-                                'whisker_reward_rate_5', 'sum_whisker_reward_scaled', 'prev_auditory_reward',
-                                'last_auditory_reward', 'prop_past_auditory_rewarded', 'auditory_reward_rate_5',
-                                'sum_auditory_reward_scaled'],
-            'last_rewards': ['last_whisker_reward', 'last_auditory_reward'],
-            'prop_rewards': ['prop_past_whisker_rewarded', 'prop_past_auditory_rewarded'],
-            'prop_last_5': ['whisker_reward_rate_5', 'auditory_reward_rate_5'],
-            'cum_rewards': ['sum_whisker_reward_scaled', 'sum_auditory_reward_scaled']
+            # 'last_rewards_whisker': ['last_whisker_reward'],
+            # 'whisker_hit' : ['whisker_hit'],
+            # 'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
+            # 'prop_last_5_whisker': ['whisker_reward_rate_5'],
+            # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
+            # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
+                                        # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
+            # 'sum_rewards': ['sum_reward_scaled']
         }
         # Get full model params for fair comparison
         full_optimal_lambdas = {neuron_id: lambda_opt for neuron_id, lambda_opt in
