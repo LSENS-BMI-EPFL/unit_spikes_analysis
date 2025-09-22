@@ -30,7 +30,7 @@ if __name__ == '__main__':
 
     single_mouse = False
     multiple_mice = True
-    joint_analysis = False
+    joint_analysis = True
     expert_day = False
 
     # Set paths
@@ -161,7 +161,7 @@ if __name__ == '__main__':
         print('Multi-mouse analyses')
 
         if 'unit_labels_processing' in analyses_to_do_multi:
-            unit_label_describe(unit_table, output_path) 
+            unit_label_describe(unit_table, output_path)
 
         if 'unit_anat_processing' in analyses_to_do_multi:
             unit_anat_describe(unit_table, output_path)
