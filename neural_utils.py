@@ -50,10 +50,13 @@ def process_single_nwb(nwb):
 
         mouse_id = nwb_reader.get_mouse_id(nwb)
         session_id = nwb_reader.get_session_id(nwb)
+        sess_meta = nwb_reader.get_session_metadata(nwb)
+        reward_group = sess_meta.get('wh_reward')
 
         trial_table['mouse_id'] = mouse_id
         trial_table['session_id'] = session_id
         trial_table['context'] = trial_table['context'].astype(str)
+        trial_table['reward_group'] = reward_group
 
         if trial_table['context'].str.contains('nan').all():
             trial_table['context'] = 'active'
@@ -111,7 +114,7 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
     unit_table = pd.concat(unit_table_list, ignore_index=True) if unit_table_list else pd.DataFrame()
 
     if not unit_table.empty:
-        unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen.get_excluded_areas())]
+        #unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen.get_excluded_areas())]
         unit_table = unit_table.reset_index(drop=True)
         unit_table['unit_id'] = unit_table.index
 
