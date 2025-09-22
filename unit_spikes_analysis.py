@@ -161,14 +161,14 @@ if __name__ == '__main__':
         print('Multi-mouse analyses')
 
         if 'unit_labels_processing' in analyses_to_do_multi:
-            unit_label_describe(nwb_neural_files, output_path) #TODO: change args to unit_table
+            unit_label_describe(unit_table, output_path) 
 
         if 'unit_anat_processing' in analyses_to_do_multi:
-            unit_anat_describe(nwb_neural_files, output_path) #TODO: change args to unit_table
+            unit_anat_describe(unit_table, output_path)
 
         if 'area_pairs_describe' in analyses_to_do_multi:
             plot_number_area_pairs_heatmap(trial_table, unit_table, output_path)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            assign_rsu_vs_fsu(nwb_neural_files, output_path) #TODO: change args to unit_table
+            assign_rsu_vs_fsu(unit_table, output_path)
 

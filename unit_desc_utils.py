@@ -25,16 +25,16 @@ from matplotlib.font_manager import font_scalings
 import plotting_utils
 from plotting_utils import save_figure_with_options, adjust_lightness
 
-def unit_label_describe(nwb_files, output_path):
+def unit_label_describe(unit_data, output_path):
     """
     Describe unit labels conversion from Kilosort to Bombcell.
-    :param nwb_files: list of nwb files
+    :param unit_data: unit table
     :param output_path: path to save the output
     :return:
     """
 
     # Load neural data
-    _, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
+    #_, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
 
     # Load data
     #unit_data = []
@@ -125,15 +125,15 @@ def unit_label_describe(nwb_files, output_path):
 
     return
 
-def unit_anat_describe(nwb_files, output_path):
+def unit_anat_describe(unit_data, output_path):
     """
     Describe unit area change before after alignment of histology to ephys data.
-    :param nwb_files: list of nwb files
+    :param unit_data: unit table
     :param output_path: path to save the output
     :return:
     """
     # Load neural data
-    _, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
+    #_, unit_data, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
 
     # Assign neurons to broad categories based on ccf_acronym
     def categorize_area(acronym):

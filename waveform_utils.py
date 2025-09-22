@@ -97,11 +97,11 @@ def get_filtered_area_list(unit_table, params):
 
     return areas_present
 
-def assign_rsu_vs_fsu(nwb_files, output_path):
+def assign_rsu_vs_fsu(unit_data, output_path):
     """
     This function assigns the unit type (FSU or RSU) to each unit using area-specific
     distributions obtained from a list of NWB files.
-    :param nwb_files: List of neural data containing NWB files
+    :param unit_data: unit table with all mice data
     :param output_path: Path to save the results
     :return:
     """
@@ -109,21 +109,21 @@ def assign_rsu_vs_fsu(nwb_files, output_path):
     print('Assigning RSU vs FSU...')
 
     # Load data
-    unit_data = []
-    for nwb_file in nwb_files:
-        try:
-            unit_table = nwb_reader.get_unit_table(nwb_file)
-            mouse_id = nwb_reader.get_mouse_id(nwb_file)
-            beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
-            unit_table['mouse_id'] = mouse_id
-            unit_table['behaviour'] = beh
-            unit_table['day'] = day
-            unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
-            unit_table = allen_utils.create_area_custom_column(unit_table)
-            unit_data.append(unit_table)
-        except:
-            continue
-    unit_data = pd.concat(unit_data)
+    #unit_data = []
+    #for nwb_file in nwb_files:
+    #    try:
+    #        unit_table = nwb_reader.get_unit_table(nwb_file)
+    #        mouse_id = nwb_reader.get_mouse_id(nwb_file)
+    #        beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+    #        unit_table['mouse_id'] = mouse_id
+    #        unit_table['behaviour'] = beh
+    #        unit_table['day'] = day
+    #        unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+    #        unit_table = allen_utils.create_area_custom_column(unit_table)
+    #        unit_data.append(unit_table)
+    #    except:
+    #        continue
+    #unit_data = pd.concat(unit_data)
 
     print('Total number of well-isolated "good" neurons', len(unit_data[unit_data['bc_label'] == 'good']))
 
@@ -138,7 +138,7 @@ def assign_rsu_vs_fsu(nwb_files, output_path):
         area_data = unit_data[(unit_data['area_acronym_custom'] == area)
                                  & (unit_data['bc_label'] == 'good')]
 
-        if area_data.empty or len(area_data) < 30:
+        if area_data.empty or len(area_data) < 20:
             print(f'Not enough good units found in {area}. Only MUA or non-somatic. Skipping...')
             continue
 
