@@ -118,20 +118,47 @@ def extract_event_times(nwb_file, event_type='whisker', context='passive', has_c
 
     if event_type == 'spontaneous_licks':
         event_times = get_filtered_lick_times(nwb_file)
-    else:
+        return event_times
+
+    elif event_type in ['whisker', 'auditory']:
         condition = trials[event_type + '_stim'] == 1
         if has_context:
-            condition &= trials['context'] == context # boolean refinement: add context condition on top of stimulus type
+            condition &= trials['context'] == context #add context condition on top of stimulus type
 
         # Keep Hits only in active context
         condition &= trials['lick_flag'] == 1 if context == 'active' else True
+        event_times = trials[condition]['start_time'].values
 
+    elif event_type == 'lick_trial':
+        condition = trials['lick_flag'] == 1
+        if has_context:
+            condition &= trials['context'] == context
+        event_times = trials[condition]['start_time'].values
+
+    elif event_type == 'no_lick_trial':
+        condition = trials['lick_flag'] == 0
+        if has_context:
+            condition &= trials['context'] == context
+        event_times = trials[condition]['start_time'].values
+
+    elif event_type == 'whisker_hit':
+        condition = trials['whisker_stim'] == 1
+        condition &= trials['lick_flag'] == 1
+        if has_context:
+            condition &= trials['context'] == context
+        event_times = trials[condition]['start_time'].values
+
+    elif event_type == 'whisker_miss':
+        condition = trials['whisker_stim'] == 1
+        condition &= trials['lick_flag'] == 0
+        if has_context:
+            condition &= trials['context'] == context
         event_times = trials[condition]['start_time'].values
 
     return event_times
 
 
-def process_spike_data(nwb_file):
+def extract_spike_data(nwb_file):
     """
     Process spike data from a NWB file.
     :param nwb_file: path to NWB file
@@ -152,10 +179,10 @@ def process_spike_data(nwb_file):
     contexts = trial_table['context'].unique()
     has_context = 'active' in contexts and 'passive_pre' in contexts
 
-    event_types = ['whisker', 'auditory', 'spontaneous_licks']
+    event_types = ['whisker', 'auditory', 'spontaneous_licks', 'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss']
     time_windows = {
-        'pre': (-0.1, 0),
-        'post': (0, 0.1),
+        'pre': (-0.05, -0.005),
+        'post': (0.005, 0.05),
         'spontaneous_licks': (-0.4, -0.2, 0, 0.2)
     }
 
@@ -166,6 +193,8 @@ def process_spike_data(nwb_file):
         # Initialize columns
         if event_type == 'spontaneous_licks':
             contexts = [''] # context irrelevant for spontaneous licks
+        elif event_type in ['lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss']:
+            contexts = ['active'] # choice only in active context
 
         # Get count data for each unit
         for context in contexts:
@@ -219,15 +248,13 @@ def calculate_roc(class_1_counts, class_2_counts, shuffle=False):
     # Balance classes using sample weights inversely proportional to class frequency
     sample_weights = compute_sample_weight('balanced', labels)
 
-
-
     # Compute the ROC curve and area under the curve
     fpr, tpr, thresholds = roc_curve(labels, spike_counts, sample_weight=sample_weights, drop_intermediate=True)
     roc_auc = roc_auc_score(labels, spike_counts)
 
     return fpr, tpr, thresholds, roc_auc
 
-def select_spike_counts(unit_data, analysis_type):
+def  select_spike_counts(unit_data, analysis_type):
     """ Select spike counts based on analysis type. """
 
     if analysis_type == 'whisker_passive_pre':
@@ -269,6 +296,12 @@ def select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'spontaneous_licks':
         spikes_1 = unit_data[(unit_data['event'] == 'spontaneous_licks')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'spontaneous_licks')]['post_spikes']
+    elif analysis_type == 'choice':
+        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['post_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['post_spikes']
+    elif analysis_type == 'whisker_choice':
+        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['post_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['post_spikes']
     else:
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
@@ -389,13 +422,14 @@ def roc_analysis(nwb_file, results_path):
     print('Starting ROC analysis for file:', nwb_file)
 
     # Process spike data
-    proc_unit_table = process_spike_data(nwb_file)
+    proc_unit_table = extract_spike_data(nwb_file)
     mouse_id = proc_unit_table['mouse_id'].values[0]
 
     # Select ROC analyses based on available data
     if int(mouse_id[2:5]) < 115 and mouse_id[:2] =='AB':
         analyses_to_do = ['whisker_active', 'auditory_active',
-                          'wh_vs_aud_active', 'spontaneous_licks']
+                          'wh_vs_aud_active', 'spontaneous_licks',
+                          'choice', 'whisker_choice']
     else:
         analyses_to_do = ['whisker_passive_pre', # comparing pre vs post whisker stim activity in passive pre-learning trials
                           'whisker_passive_post', # comparing pre vs post whisker stim activity in passive post-learning trials
@@ -410,6 +444,8 @@ def roc_analysis(nwb_file, results_path):
                           'wh_vs_aud_active', # comparing whisker vs auditory post stim activity in active hit trials
                           'wh_vs_aud_pre_vs_post_learning', # comparing whisker vs auditory post stim activity in passive pre vs post-learning trials
                           'spontaneous_licks' # comparing pre vs post spontaneous lick activity
+                          'choice', # comparing post. trial start spikes in lick vs no-lick trials
+                          'whisker_choice' # comparing post. stim spikes in whisker hit vs miss trials
                           ]
 
     # Init. global results
@@ -430,6 +466,6 @@ def roc_analysis(nwb_file, results_path):
     mouse_name = results_table['mouse_id'].values[0]
     os.makedirs(results_path, exist_ok=True)
     print('Saving results to:', results_path)
-    results_table.to_csv(f'{results_path}/{mouse_name}_roc_results.csv', index=False)
+    results_table.to_csv(f'{results_path}/{mouse_name}_roc_results_new.csv', index=False)
 
     return

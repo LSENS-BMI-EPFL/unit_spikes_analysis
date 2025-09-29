@@ -214,10 +214,4 @@ def plot_rasters(nwb_file, results_path):
             unit_data = unit_table[unit_table['unit_id'] == unit_id]
             plot_unit_raster(unit_data, event_time_dict, align_event, results_path)
 
-
-
-
-
-
-
     return

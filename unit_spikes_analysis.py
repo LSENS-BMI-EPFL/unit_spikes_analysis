@@ -28,8 +28,8 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 
 if __name__ == '__main__':
 
-    single_mouse = False
-    multiple_mice = True
+    single_mouse = True
+    multiple_mice = False
     joint_analysis = True
     expert_day = False
 
@@ -86,8 +86,8 @@ if __name__ == '__main__':
     excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
-    subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-
+    #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
+    subject_ids = ['AB164']
     print(f"Subject IDs to do: {subject_ids}")
 
     ### --------------------
@@ -101,7 +101,7 @@ if __name__ == '__main__':
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
-    analyses_to_do_multi = ['area_pairs_describe']
+    analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe']
 
 
     # --------------
