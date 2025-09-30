@@ -302,6 +302,12 @@ def  select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'whisker_choice':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['post_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['post_spikes']
+    elif analysis_type == 'baseline_choice':
+        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
+    elif analysis_type == 'baseline_whisker_choice':
+        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['pre_spikes']
     else:
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
@@ -426,10 +432,11 @@ def roc_analysis(nwb_file, results_path):
     mouse_id = proc_unit_table['mouse_id'].values[0]
 
     # Select ROC analyses based on available data
-    if int(mouse_id[2:5]) < 115 and mouse_id[:2] =='AB':
+    if int(mouse_id[2:5]) < 115 and mouse_id[:2] =='AB':            # mice without passive trials
         analyses_to_do = ['whisker_active', 'auditory_active',
                           'wh_vs_aud_active', 'spontaneous_licks',
-                          'choice', 'whisker_choice']
+                          'choice', 'whisker_choice',
+                          'baseline_choice', 'baseline_whisker_choice']
     else:
         analyses_to_do = ['whisker_passive_pre', # comparing pre vs post whisker stim activity in passive pre-learning trials
                           'whisker_passive_post', # comparing pre vs post whisker stim activity in passive post-learning trials
@@ -445,7 +452,9 @@ def roc_analysis(nwb_file, results_path):
                           'wh_vs_aud_pre_vs_post_learning', # comparing whisker vs auditory post stim activity in passive pre vs post-learning trials
                           'spontaneous_licks', # comparing pre vs post spontaneous lick activity
                           'choice', # comparing post. trial start spikes in lick vs no-lick trials
-                          'whisker_choice' # comparing post. stim spikes in whisker hit vs miss trials
+                          'whisker_choice', # comparing post. stim spikes in whisker hit vs miss trials
+                          'baseline_choice', # comparing pre. trial start spikes in lick vs no-lick trials
+                        'baseline_whisker_choice' # comparing pre. stim spikes in whisker hit vs miss trials
                           ]
 
     # Init. global results

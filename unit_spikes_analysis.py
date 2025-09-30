@@ -87,7 +87,9 @@ if __name__ == '__main__':
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
+    subject_ids = ['AB162', 'AB163', 'AB164']
     subject_ids = ['AB164']
+
     print(f"Subject IDs to do: {subject_ids}")
 
     ### --------------------
@@ -110,6 +112,7 @@ if __name__ == '__main__':
 
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
+    nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=24)
 
     # ----------------------------------------
