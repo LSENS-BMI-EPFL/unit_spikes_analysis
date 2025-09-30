@@ -443,7 +443,7 @@ def roc_analysis(nwb_file, results_path):
                           'wh_vs_aud_passive_post', # comparing whisker vs auditory post stim activity in passive post-learning trials
                           'wh_vs_aud_active', # comparing whisker vs auditory post stim activity in active hit trials
                           'wh_vs_aud_pre_vs_post_learning', # comparing whisker vs auditory post stim activity in passive pre vs post-learning trials
-                          'spontaneous_licks' # comparing pre vs post spontaneous lick activity
+                          'spontaneous_licks', # comparing pre vs post spontaneous lick activity
                           'choice', # comparing post. trial start spikes in lick vs no-lick trials
                           'whisker_choice' # comparing post. stim spikes in whisker hit vs miss trials
                           ]
@@ -452,16 +452,16 @@ def roc_analysis(nwb_file, results_path):
     results = []
 
     for analysis_type in analyses_to_do:
-
+        print(f'ROC analysis type: {analysis_type}')
         # Use multiprocessing to process each unit_id in parallel
         unit_ids = proc_unit_table['unit_id'].unique()
 
-        with multiprocessing.Pool(os.cpu_count()-2) as pool:
+        with multiprocessing.Pool(os.cpu_count()-5) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, unit_ids)
             results.extend(analysis_results)
 
-    # Create and save individual mouse data to a parquet file
+    # Create and save individual mouse data
     results_table = pd.DataFrame(results)
     mouse_name = results_table['mouse_id'].values[0]
     os.makedirs(results_path, exist_ok=True)
