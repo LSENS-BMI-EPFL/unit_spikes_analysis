@@ -17,7 +17,7 @@ from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from waveform_utils import assign_rsu_vs_fsu
 from unit_desc_utils import *
-#from glm_utils import run_unit_glm_pipeline_with_pool
+from glm_utils import run_unit_glm_pipeline_with_pool
 
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
@@ -28,8 +28,8 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 
 if __name__ == '__main__':
 
-    single_mouse = False
-    multiple_mice = True
+    single_mouse = True
+    multiple_mice = False
     joint_analysis = True
     expert_day = False
 
@@ -83,7 +83,7 @@ if __name__ == '__main__':
 
     print(f"Subject IDs to do: {subject_ids}")
 
-    subject_ids = ['MH038', 'MH039']
+    subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
@@ -91,7 +91,7 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_single = ['unit_glm']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu']

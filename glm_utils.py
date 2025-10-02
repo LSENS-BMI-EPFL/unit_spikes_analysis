@@ -34,7 +34,8 @@ from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from pyglmnet import GLM, GLMCV
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-
+import matplotlib
+matplotlib.use('TkAgg')
 
 # Custom imports
 import NWB_reader_functions as nwbreader
@@ -328,33 +329,32 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
     """
     with NWBHDF5IO(nwb_path, mode='r', load_namespaces=True) as io:
         nwbfile = io.read()
-
+        #
         window_bounds_sec = (-1, 2)
         trials_df = nwbfile.trials.to_dataframe()
         trials_df = trials_df[(trials_df['context'] == 'active') & (trials_df['perf'] != 6)].copy()
-
+        #
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
-
+        #
         n_trials = len(trial_starts)
-        max_duration = np.max(trial_ends - trial_starts)
-        n_bins = int(np.ceil(max_duration / bin_size))
+        #
+        win_start, win_end = window_bounds_sec
+        n_bins = int(np.round((win_end - win_start) / bin_size))
 
         unit_table = nwbfile.units.to_dataframe()
-        unit_table = unit_table.sample(frac=1)
+        # unit_table = unit_table.sample(frac=1) why is there a random shuffle ????
         unit_table = unit_table[unit_table['bc_label']=='good']
         # unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
 
-        # unit_table = unit_table.sample(n=2, random_state=None)
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+        # unit_table = unit_table.sample(n=2, random_state=None)
 
         # Use index as new column named "unit_id", then reset
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
-        # unit_table = unit_table.iloc[[15, 300]]
-
 
         # ------------------
         # Spike Trains
@@ -363,7 +363,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         for unit in unit_table.itertuples():
             binned_trials = []
             for start, end in zip(trial_starts, trial_ends):
-                bins = np.arange(start, end, bin_size)
+                bins = np.linspace(start, end, n_bins + 1)
                 spike_times = unit.spike_times
                 binned, _ = np.histogram(spike_times, bins=bins)
                 padded = np.zeros(n_bins)
@@ -371,6 +371,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 binned_trials.append(padded)
             spike_array.append(np.stack(binned_trials))
         spike_array = np.stack(spike_array)  # (n_neurons, n_trials, n_bins)
+
 
         # ------------------
         # Predictors
@@ -384,7 +385,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         trial_idx_scaled = np.arange(n_trials) / (n_trials-1)
         predictors['trial_index_scaled'] = np.tile(trial_idx_scaled[:, None], (1, n_bins))
 
-
+        predictors['offset'] = np.ones((n_trials, n_bins))
         # Now this is if the last whisker presented was rewarded or not and same for auditory
         stim_type = trials_df['trial_type'].fillna('').values
         rewarded = (
@@ -451,7 +452,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         # predictors['sum_reward_scaled'] = np.tile(cum_reward[:, None], (1, n_bins))
 
         # Whisker hit predictor: 1 if whisker trial and actually rewarded, else 0
-        whisker_hit = ((stim_type == 'whisker_trial') & (rewarded > 0)).astype(int)
+        # whisker_hit = ((stim_type == 'whisker_trial') & (rewarded > 0)).astype(int)
         # Add to predictors
         # predictors['whisker_hit'] = np.tile(whisker_hit[:, None], (1, n_bins))
 
@@ -525,16 +526,35 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         # Define event kernels for single trial events
         event_defs = {
-            'dlc_lick_onset': (tongue_dlc_licks, (-0.2, 0.5)), # in seconds
-            'auditory_stim': (auditory_times, (-0.2, 0.5)),
-            'whisker_stim': (whisker_times, (-0.2, 0.5)),
+            'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
+            'auditory_stim': (auditory_times, (-0.3, 0.6)),
+            'whisker_stim': (whisker_times, (-0.3, 0.6)),
+            'piezo_reward': (piezo_licks, (-0.3, 0.6)),
         }
 
         for name, (times, _) in event_defs.items():
             if name=='dlc_lick_onset':
                 predictors['dlc_lick_onset'] = rasterize_event(times, first_only=True)
+
             else:
                 predictors[name] = rasterize_event(times, first_only=False)
+
+            # Rasterize the rewards, only for hit trials and only auditory if non-rewarded mouse
+        piezo_reward_matrix = np.zeros((n_trials, n_bins))
+        all_piezo_events = np.array(list(get_events('piezo_lick_times')[1]))
+
+        for i, (start, end) in enumerate(zip(trial_starts, trial_ends)):
+            # Only keep licks if this trial was a HIT
+            if  rewarded[i] > 0:
+                bins = np.linspace(start, end, n_bins + 1)
+                trial_events = all_piezo_events[(all_piezo_events >= start) & (all_piezo_events < end)]
+                if len(trial_events) > 0:
+                    first_event = trial_events[0]  # take the first one
+                    idx = np.digitize(first_event, bins) - 1
+                    if 0 <= idx < n_bins:
+                        piezo_reward_matrix[i, idx] = 1
+
+        predictors['piezo_reward'] = piezo_reward_matrix
 
         # Analog predictors, already filtered by likelihood at NWB creation
         analog_keys = {
@@ -595,6 +615,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictor_types ={'binary_keys': binary_keys,
                          'analog_keys': analog_keys,
                          'event_defs': event_defs}
+        print(predictors.keys())
         return spike_array, predictors, predictor_types, n_bins, bin_size, neurons_ccf
 
 
@@ -652,12 +673,18 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
                     verbose=False,
                     random_state=42)
 
-    try: #TODO have an actual outputs to failure to keep track
-        with warnings.catch_warnings():
-            warnings.filterwarnings("ignore", category=ConvergenceWarning)
+    fit_success = True  # Will remain True if no convergence issues
+
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always", category=ConvergenceWarning)
             glm_final.fit(X_trainval, y_trainval)
 
-
+            # Check if any convergence warnings occurred
+            for warning in w:
+                if issubclass(warning.category, ConvergenceWarning):
+                    print("Warning: Final GLM did not converge:", warning.message)
+                    fit_success = False
 
         # -------------------------------------------
         # Evaluate final model on train and test sets
@@ -692,12 +719,14 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
             'test_ll': test_ll,
             'test_score': test_score,
             'coef': glm_final.beta_.copy(),
+            'y_train': y_trainval,
             'y_test': y_test,
             'y_pred': y_test_pred,
             'y_train_pred' : y_trainval_pred,
             'test_corr': test_corr,
             'test_mi': test_mi,
             'n_bins': n_bins,
+            'fit_success': fit_success,
         }
         return result
 
@@ -899,7 +928,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
         X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        debug = True
+        debug = False
         if debug:
             for test_idx in test_ids[5:10]:
                 plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
@@ -941,10 +970,11 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=False
+        debug=True
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
                 plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size=BIN_SIZE)
+            return
 
 
         # --------------------------------------
