@@ -308,7 +308,7 @@ def  select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'baseline_whisker_choice':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['pre_spikes']
-    else:
+    else: #TODO: hit. vs false alarm (per modality?) but aligned at jaw onset
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
     # Make these into flattened arrays
@@ -336,7 +336,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
     area = unit_table['ccf_parent_acronym'].values[0]
 
     # Keep relevant columns for results
-    cols_to_keep = ['mouse_id', 'unit_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
+    cols_to_keep = ['mouse_id', 'session_id', 'unit_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
                     'ccf_parent_acronym', 'ccf_parent_id', 'ccf_parent_name']
     res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
     res_dict.update({'analysis_type': analysis_type, 'unit_id': unit_id, 'mouse_id': mouse_id, 'area': area})
@@ -454,7 +454,7 @@ def roc_analysis(nwb_file, results_path):
                           'choice', # comparing post. trial start spikes in lick vs no-lick trials
                           'whisker_choice', # comparing post. stim spikes in whisker hit vs miss trials
                           'baseline_choice', # comparing pre. trial start spikes in lick vs no-lick trials
-                        'baseline_whisker_choice' # comparing pre. stim spikes in whisker hit vs miss trials
+                          'baseline_whisker_choice' # comparing pre. stim spikes in whisker hit vs miss trials
                           ]
 
     # Init. global results
