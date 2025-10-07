@@ -332,7 +332,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         #
         window_bounds_sec = (-1, 2)
         trials_df = nwbfile.trials.to_dataframe()
-        trials_df = trials_df[(trials_df['context'] == 'active') & (trials_df['perf'] != 6)].copy()
+        trials_df = trials_df[(trials_df['context'] != 'passif') & (trials_df['perf'] != 6)].copy()
         #
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
@@ -355,7 +355,25 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
+        # unit_table = unit_table[unit_table['neuron_id'].isin([29])]
 
+        # # Here we can simulate Poisson spikes OR make it strictly constant.
+        # rate_hz = 10
+        # lam = rate_hz * bin_size
+        #
+        # # Option A: deterministic constant rate
+        # spike_array = np.full((1, n_trials, n_bins), lam)
+        #
+        # # Option B: realistic Poisson spikes
+        # spike_array = np.random.poisson(lam, size=(1, n_trials, n_bins))
+        #
+        # # Build dummy metadata
+        # unit_table = pd.DataFrame([{
+        #     "neuron_id": 999999,
+        #     "firing_rate": rate_hz,
+        #     "ccf_parent_acronym": "FAKE"
+        # }])
+        # neurons_ccf = 'FAKE'
         # ------------------
         # Spike Trains
         # ------------------
@@ -407,7 +425,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
 
         # Broadcast to bins
-        # predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+        predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
         #  Independent code to get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
         past_whisker_rewards = 0
@@ -424,7 +442,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             if past_whisker_trials > 0:
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
-        # predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+        predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
 
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
@@ -437,7 +455,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
             else:
                 whisker_reward_rate[i] = 0
-        # predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+        predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
         total_rewards = np.sum(rewarded > 0)
         total_rewards = total_rewards if total_rewards > 0 else 1
@@ -449,7 +467,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 reward_so_far += 1
 
         # Add to predictors (scaled cumulative rewards across all trial types)
-        # predictors['sum_reward_scaled'] = np.tile(cum_reward[:, None], (1, n_bins))
+        predictors['sum_reward_scaled'] = np.tile(cum_reward[:, None], (1, n_bins))
 
         # Whisker hit predictor: 1 if whisker trial and actually rewarded, else 0
         # whisker_hit = ((stim_type == 'whisker_trial') & (rewarded > 0)).astype(int)
@@ -458,10 +476,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
-            # 'last_whisker_reward':'last_whisker_reward',
-            # 'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
-            # 'whisker_reward_rate_5': 'whisker_reward_rate_5',
-            # 'sum_reward_scaled':'sum_reward_scaled',
+            'last_whisker_reward':'last_whisker_reward',
+            'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
+            'whisker_reward_rate_5': 'whisker_reward_rate_5',
+            'sum_reward_scaled':'sum_reward_scaled',
             # 'whisker_hit': 'whisker_hit'
         }
 
@@ -589,12 +607,18 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 result.append(values)
             return np.stack(result)
 
+        def pad_to_equal_length(a, b):
+            n = max(len(a), len(b))
+            a_padded = np.pad(a, (0, n - len(a)), constant_values=np.nan)
+            b_padded = np.pad(b, (0, n - len(b)), constant_values=np.nan)
+            return a_padded, b_padded
 
         for short_key, long_key in analog_keys.items():
             data, times = get_series(long_key)
             # Preprocess data to remove outliers
             data = preprocess_dlc_trace(data)
             assert np.isfinite(data.shape).all() # make sure there are no NaNs or infs
+            data, times = pad_to_equal_length(data, times)
 
             predictors[short_key] = bin_behavior(data, times)
 
@@ -615,7 +639,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         predictor_types ={'binary_keys': binary_keys,
                          'analog_keys': analog_keys,
                          'event_defs': event_defs}
-        print(predictors.keys())
+
         return spike_array, predictors, predictor_types, n_bins, bin_size, neurons_ccf
 
 
@@ -877,9 +901,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Get trial table, input and output formatted for GLM, list of predictor types
     trials_df = nwbreader.get_trial_table(nwb_path)
-    trials_df = trials_df[(trials_df['context'] == 'active') &(trials_df['perf'] != 6)].copy()
-    trials_df = trials_df.reset_index(drop=True)
+    trials_df = trials_df[(trials_df['context'] != 'passif') &(trials_df['perf'] != 6)].copy()
 
+    trials_df = trials_df.reset_index(drop=True)
     #try: #uncomment when design matrix fixed, so that no need to recompute it
     #    X, spikes, feature_names = load_model_input_output(output_dir)
     #
@@ -1154,7 +1178,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--nwb', type=str, required=True)
     parser.add_argument('--out', type=str, required=True)
-    parser.add_argument('--n_jobs', type=int, default=4)
+    parser.add_argument('--n_jobs', type=int, default=40)
     args = parser.parse_args()
     run_unit_glm_pipeline_with_pool(args.nwb, args.out, n_jobs=args.n_jobs)
 

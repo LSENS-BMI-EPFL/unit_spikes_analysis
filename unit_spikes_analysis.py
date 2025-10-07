@@ -20,7 +20,7 @@ from unit_desc_utils import *
 from glm_utils import run_unit_glm_pipeline_with_pool
 
 
-ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
+ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
                                 'NWBFull')
 
@@ -153,7 +153,7 @@ if __name__ == '__main__':
                 for analysis_type in analyses_to_do_single:
 
                     # Define and create results path
-                    results_path = os.path.join(mouse_output_path, analysis_type)
+                    results_path = os.path.join(mouse_output_path, analysis_type, 'poisson_10Hz_with_offset')
                     os.makedirs(results_path, exist_ok=True)
 
 

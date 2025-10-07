@@ -1,4 +1,5 @@
 import os.path
+from importlib.metadata import FastPath
 
 from glms_plotting_utils import *
 
@@ -28,17 +29,18 @@ if __name__ == '__main__':
     all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
 
 
-    subject_ids = ["AB130", "AB131", "AB138", "AB147", "AB162"]
-    # subject_ids = ["AB131"]
-    git_version = 'fe2babb'
-    single_mouse = False
-    over_mice = True
+    subject_ids = [ "AB131", "AB138", "AB147", "AB162"]
+    subject_ids = ["AB131"]
+    git_version = '1cce900'
+    single_mouse = True
+    # over_mice = True
+    over_mice = False
 
     if single_mouse:
 
         plots = [ 'average_kernels_by_region']
-        # plots = ['metrics'] 'per_unit_kernel_plots',, 'individual_trials_predictions'
-        plots = ['metrics']
+        # plots = ['metrics'] 'per_unit_kernel_plots',, 'average_predictions_per_trial_types'
+        plots = [ 'per_unit_kernel_plots']
         for subject_id in subject_ids:
             print(" ")
             print(f"Subject ID : {subject_id}")
@@ -66,7 +68,7 @@ if __name__ == '__main__':
             mouse_glm_results(nwb_list = nwb_files,model_path = model_paths,plots= plots, output_path =mouse_results_path, git_version =git_version)
 
     if over_mice:
-        plots = ['metrics', 'average_kernels_by_region']
+        plots = [ 'metrics']
 
         # Get list of NWB files for each mouse
         nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]

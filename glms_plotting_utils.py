@@ -53,9 +53,8 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
 
 
     # Load all models
-    df_models = load_models(unit_table['mouse_id'].unique()[0], model_path)
-    df_git = df_models[df_models['git_version'] == git_version] # only get the current git version
-
+    df_models = load_models(unit_table['mouse_id'].unique()[0], model_path, git_version)  # only get the current git version
+    df_git = df_models[df_models['git_version'] == git_version]
     if df_git.empty:
         print('Poisson GLMs not fit with that git version for mouse :', unit_table['mouse_id'].unique()[0])
         return None
@@ -81,7 +80,10 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         # plot_kde_per_trial_type( merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_corr_per_area_by_trialtype(merged_df[merged_df['model_name'] == 'full'], trial_table, area_groups, output_folder)
-
+    if git_version == '1cce900':
+        lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+    else:
+        lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
     if 'per_unit_kernel_plots' in plots :
         output_folder = os.path.join(output_path, 'per_unit_kernel_plots')
         if not os.path.exists(output_folder):
@@ -89,7 +91,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
 
         for neuron in merged_df['neuron_id'].unique():
             plot_neuron_kernels_avg_with_responses(
-                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_stim', 'auditory_stim', 'dlc_lick'], trial_table, output_folder)
+                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'], trial_table, output_folder,lags = lags)
 
     if 'average_predictions_per_trial_types' in plots :
         output_folder = os.path.join(output_path, 'average_predictions_per_trial_types')
@@ -104,7 +106,10 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         output_folder = os.path.join(output_path, 'average_kernels_by_region')
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
-        lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
+        if git_version == '1cce900':
+            lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+        else:
+            lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
         plot_average_kernels_by_region( merged_df, output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick'],
             lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3)
 
@@ -120,7 +125,7 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
     all_models = [] #TODO Change to already filter per git_version here
     for mouse in tqdm(unit_table['mouse_id'].unique()):
         models_path = os.path.join(output_path, mouse, "whisker_0", "unit_glm", "models")
-        all_models.append(load_models(mouse, models_path))
+        all_models.append(load_models(mouse, models_path, git_version))
     df_models = pd.concat(all_models, ignore_index=True)
 
     mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
@@ -144,7 +149,7 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
     area_colors = allen.get_custom_area_groups_colors()
     merged_df = allen.create_area_custom_column(merged_df)
 
-    output_path = os.path.join(output_path, 'unit_glm')
+    output_path = os.path.join(output_path, 'unit_glm', git_version)
     if not os.path.exists(output_path):
         os.makedirs(output_path)
 
@@ -157,7 +162,7 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
         for model_name in merged_df['model_name'].unique():
             if model_name == 'full':
                 continue
-            plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder, threshold = None)
+            plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder, threshold = 0.1)
 
         plot_test_corr_vs_firing_rate(merged_df[merged_df['model_name'] == 'full'], output_folder)
         plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
@@ -168,9 +173,12 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
         output_folder = os.path.join(output_path, 'average_kernels_by_region')
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
-        lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
-        plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick'],
-            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = 0.2)
+        if git_version == '1cce900':
+            lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
+        else:
+            lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
+        plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'],
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
 
 
 
@@ -270,6 +278,7 @@ def plot_avg_kde_per_trial_type_with_sem(merged, trial_table, output_folder):
             mouse_grp = grp[grp["mouse_id"] == mouse]
             # mean across folds per neuron
             neuron_means = mouse_grp.groupby("neuron_id")["corr"].mean().values
+            neuron_means = np.nan_to_num(neuron_means, nan=0.0)
             if len(neuron_means) < 2:
                 continue  # skip if not enough neurons
             kde = gaussian_kde(neuron_means)
@@ -1105,7 +1114,7 @@ def plot_predictions_with_reduced_models_parallel(df_full_slim, df_reduced_slim,
         )
 
 
-def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, trials_df, output_folder, bin_size=0.1):
+def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, trials_df, output_folder,lags, bin_size=0.1):
     """
     Plot kernels for one neuron alongside average responses and predictions.
     Uses SEM across folds (not across trials).
@@ -1115,7 +1124,6 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
     # KERNELS (per fold)
     # -------------------
     coefs_full_str = glm_full_df.loc[glm_full_df['neuron_id'] == neuron_id, 'coef'].tolist()
-    lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
     coefs_full = [np.array(ast.literal_eval(c)) for c in coefs_full_str]
     coefs_full = np.stack(coefs_full, axis=0)   # shape (n_folds, n_predictors)
 
@@ -1326,7 +1334,6 @@ def plot_average_kernels_by_region(df, output_folder, kernels_to_plot,
                         coefs_list = [np.array(ast.literal_eval(coefs_list))]
 
                     predictors = ast.literal_eval(row['predictors'])
-
                     indices = [i for i, p in enumerate(predictors) if p.startswith(kernel)]
 
                     for c in coefs_list:
@@ -1461,14 +1468,16 @@ def compute_residual_correlations(glm_full_results: pd.DataFrame,
     residuals_neurons = results.loc[results['whisker_kernel_sig'], 'neuron_id'].to_numpy()
 
     return results, residuals_neurons
-def load_models(mouse, models_path):
+
+def load_models(mouse, models_path, git_version):
     files = [f for f in os.listdir(models_path) if f.endswith('_results.parquet')]
+    pattern = rf'^{git_version}_model_(full|reduced)_fold(\d+)_results\.parquet'
 
     def _load(file):
-        match = re.match(r'([a-f0-9]+)_model_(full|reduced)_fold(\d+)_results\.parquet', file)
+        match = re.match(pattern, file)
         if not match:
             return None
-        git_version, model_type, fold = match.group(1), match.group(2), int(match.group(3))
+        model_type, fold = match.group(1), match.group(2)
 
         df = post_hoc_load_model_results(file.split("_results")[0], models_path)
         df['git_version'] = git_version
@@ -1648,7 +1657,7 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
 
     for idx, row in trials_test_df.iterrows():
         ax = axs[idx]
-        ax.set_title('Trial {}'.format(row['trial_id']), fontsize=10)
+        ax.set_title('Trial {} {}'.format(row['trial_id'], row['behav_type']), fontsize=10)
         putils.remove_top_right_frame(ax)
         ax.set_ylim(0, 10)
         ax.set_ylabel('Spikes', fontsize=10)
@@ -1668,7 +1677,6 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
         # Plot target and predictions
         ax.plot(time, y_pred[idx], color='red', linewidth=1.5)
         ax.step(time, y_test[idx], where='mid', color='black', alpha=0.9, linewidth=1.5)
-
 
     title = (f'GLM predictions on test trials - unit {neuron_id}, '
              f'$R$= {results_df_sub["test_corr"].values[0]:.2f}')
