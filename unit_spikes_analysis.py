@@ -15,12 +15,12 @@ import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from roc_utils import roc_analysis
-from waveform_utils import assign_rsu_vs_fsu
+from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
 #from glm_utils import run_unit_glm_pipeline_with_pool
 
 
-ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
+ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
                                 'NWBFull')
 
@@ -29,7 +29,7 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 if __name__ == '__main__':
 
     single_mouse = True
-    multiple_mice = False
+    multiple_mice = True
     joint_analysis = True
     expert_day = False
 
@@ -41,7 +41,6 @@ if __name__ == '__main__':
         all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     elif experimenter == 'Myriam_Hamon':
         all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
-    all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
     if joint_analysis:
         info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
@@ -49,10 +48,10 @@ if __name__ == '__main__':
         output_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
                                    'combined_results')
         if experimenter == 'Axel_Bisi':
-            nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
+            nwb_names_to_add = os.listdir(ROOT_PATH_MYRIAM)
         elif experimenter == 'Myriam_Hamon':
-            nwb_names_bis = os.listdir(ROOT_PATH_AXEL)
-        all_nwb_names.extend(nwb_names_bis)
+            nwb_names_to_add = os.listdir(ROOT_PATH_AXEL)
+        all_nwb_names.extend(nwb_names_to_add)
         #all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
         mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
 
@@ -70,7 +69,6 @@ if __name__ == '__main__':
         (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
-
         ]
 
     # Show mouse count per reward group
@@ -79,6 +77,7 @@ if __name__ == '__main__':
         print(f"Reward group {group} has {count} mice.")
 
     # Filter by available NWB files
+    all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
     subject_ids = mouse_info_df['mouse_id'].unique()
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
@@ -87,8 +86,7 @@ if __name__ == '__main__':
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    subject_ids = ['AB162', 'AB163', 'AB164']
-    subject_ids = ['AB164']
+    #subject_ids = ['AB162', 'AB163', 'AB164']
 
     print(f"Subject IDs to do: {subject_ids}")
 
@@ -101,9 +99,10 @@ if __name__ == '__main__':
     analyses_to_do_single = ['roc_analysis']
 
     # Multi-mouse analyses
-    analyses_to_do_multi = ['rsu_vs_fsu']
+    analyses_to_do_multi = ['rsu_vs_fsu', 'strial_type']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
     analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe']
+    analyses_to_do_multi = ['rsu_vs_fsu']
 
 
     # --------------
@@ -173,5 +172,9 @@ if __name__ == '__main__':
             plot_number_area_pairs_heatmap(trial_table, unit_table, output_path)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            assign_rsu_vs_fsu(unit_table, output_path)
+            classify_rsu_vs_fsu(unit_table, output_path)
+
+        if 'striatal_type' in analyses_to_do_multi:
+            classify_striatal_units(unit_table, output_path)
+
 

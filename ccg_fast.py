@@ -3,7 +3,7 @@ Fast cross-correlogram functions.
 """
 
 import numpy as np
-from bombcell.save_utils import global_bc_cacher
+#from bombcell.save_utils import global_bc_cacher
 
 
 def acg(spike_train, cbin, cwin,
@@ -65,7 +65,7 @@ def acg(spike_train, cbin, cwin,
     return correlogram.squeeze()
 
 
-@global_bc_cacher
+#@global_bc_cacher
 def ccg(spike_trains, cbin, cwin,
         fs=30000, normalize="hertz",
         log_window_end=None, n_log_bins=10,
@@ -122,7 +122,7 @@ def ccg(spike_trains, cbin, cwin,
     # Check input parameters
     assert len(spike_trains) > 0, "At least one spike train (then, will only compute autocorrelogram) is required."
     assert hasattr(spike_trains[0], '__iter__'), "spike_trains should be a list of spike times arrays."
-    assert all([len(st) >= 2 for st in spike_trains]), "Each spike train should contain at least two spike times."
+    #assert all([len(st) >= 2 for st in spike_trains]), "Each spike train should contain at least two spike times."
     
     # Convert spike trains to a single array of spike times and corresponding unit ids
     # (artificial unit ids: 0, 1, 2, ... for each spike train)
