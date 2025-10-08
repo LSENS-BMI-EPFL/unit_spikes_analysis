@@ -30,13 +30,10 @@ def process_nwb_tables(nwb_file):
     trials = nwb_file.trials.to_dataframe()
 
     # Keep well-isolated units with a valid brain region label
-    units = units[(units['bc_label'] == 'good')
-                  &
-                  (units['ccf_acronym'].str.contains('[A-Z]'))]
-
+    units = units[(units['bc_label'] == 'good')]
 
     # Keep fewer columns only
-    columns_to_keep = ["cluster_id", "firing_rate", "ccf_acronym", "ccf_name", "ccf_parent_acronym", "ccf_parent_id",
+    columns_to_keep = ["cluster_id", "firing_rate", "ccf_acronym", "ccf_name", "ccf_parent_acronym", "ccf_parent_id", #TODO: update with new CCF fields
                        "ccf_parent_name", "spike_times"]
     units = units[columns_to_keep]
 
@@ -167,10 +164,12 @@ def extract_spike_data(nwb_file):
 
     nwb_file_path = pathlib.Path(nwb_file)
     mouse_name = nwb_file_path.name[:5]
+    session_id = nwb_file_path.stem
     nwb = nwb_reader.read_nwb_file(nwb_file_path)
 
     unit_table, trial_table = process_nwb_tables(nwb)
     unit_table['mouse_id'] = mouse_name
+    unit_table['session_id'] = session_id
 
     # Store processed data
     proc_unit_table = []
@@ -465,7 +464,7 @@ def roc_analysis(nwb_file, results_path):
         # Use multiprocessing to process each unit_id in parallel
         unit_ids = proc_unit_table['unit_id'].unique()
 
-        with multiprocessing.Pool(os.cpu_count()-5) as pool:
+        with multiprocessing.Pool(5) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, unit_ids)
             results.extend(analysis_results)
