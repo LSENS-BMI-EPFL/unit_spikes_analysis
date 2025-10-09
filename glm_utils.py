@@ -45,8 +45,8 @@ import plotting_utils as putils
 # Set global variables
 BIN_SIZE = 0.1 # in seconds
 
-ROOT_PATH = '/scratch/mhamon/'
-ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
+ROOT_PATH = '/home/mhamon/data/'
+# ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
 
 def bin_spike_times(spike_times, start_time, end_time, bin_size):
     """
@@ -1002,34 +1002,38 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
+    whisker_kernels = True
+    if whisker_kernels:
+        all_Xs = []
+        feature_namess = []
+        nb_whisker_kernels = []
+        for number_of_whisker_kernel in range(2,5):
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
+            event_defs = predictor_types['event_defs']
+            analog_keys = predictor_types['analog_keys']
 
-    all_Xs = []
-    feature_namess = []
-    nb_whisker_kernels = []
-    for number_of_whisker_kernel in range(2,5):
-        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
-        event_defs = predictor_types['event_defs']
-        analog_keys = predictor_types['analog_keys']
+            # Build design matrix for entire dataset
+            X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+            all_Xs.append(X_extra)
+            feature_namess.append(feature_names_extra)
+            nb_whisker_kernels.append(number_of_whisker_kernel)
 
-        # Build design matrix for entire dataset
-        X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
-        all_Xs.append(X_extra)
-        feature_namess.append(feature_names_extra)
-        nb_whisker_kernels.append(number_of_whisker_kernel)
+    reward_kernels = True
+    if reward_kernels:
 
-    X_rewards = []
-    feature_names_rewards = []
-    nb_whisker_kernel_rewards = []
-    for number_of_whisker_kernel in [1,2]:
-        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
-        event_defs = predictor_types['event_defs']
-        analog_keys = predictor_types['analog_keys']
+        X_rewards = []
+        feature_names_rewards = []
+        nb_whisker_kernel_rewards = []
+        for number_of_whisker_kernel in [1,2]:
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
+            event_defs = predictor_types['event_defs']
+            analog_keys = predictor_types['analog_keys']
 
-        # Build design matrix for entire dataset
-        X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
-        X_rewards.append(X_extra)
-        feature_names_rewards.append(feature_names_extra)
-        nb_whisker_kernel_rewards.append(number_of_whisker_kernel)
+            # Build design matrix for entire dataset
+            X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+            X_rewards.append(X_extra)
+            feature_names_rewards.append(feature_names_extra)
+            nb_whisker_kernel_rewards.append(number_of_whisker_kernel)
 
 
     # ---------------------------------------
@@ -1163,79 +1167,67 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             # Append reduced model to all models
             model_res_df_outer.append(results_reduced_df)
 
-        for number_of_whisker_kernel in range(len(all_Xs)):
-            # Get data splits
-            X_trainval, X_test = all_Xs[number_of_whisker_kernel][:, trainval_ids, :],  all_Xs[number_of_whisker_kernel][:, test_ids, :]
-            X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-            X_test = X_test.reshape(X_test.shape[0], -1)
+        if whisker_kernels:
+            for number_of_whisker_kernel in range(len(all_Xs)):
+                # Get data splits
+                X_trainval, X_test = all_Xs[number_of_whisker_kernel][:, trainval_ids, :],  all_Xs[number_of_whisker_kernel][:, test_ids, :]
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+                X_test = X_test.reshape(X_test.shape[0], -1)
 
-            X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
-            debug = False
-            if debug:
-                for test_idx in test_ids[5:10]:
-                    plot_design_matrix_heatmap_single_trial(all_Xs[number_of_whisker_kernel], feature_namess[number_of_whisker_kernel], trial_index=test_idx, n_bins=n_bins,
-                                                            bin_size=BIN_SIZE)
-                    plot_design_matrix_vector_single_trial(all_Xs[number_of_whisker_kernel], feature_namess[number_of_whisker_kernel], trial_index=test_idx, n_bins=n_bins,
-                                                           bin_size=BIN_SIZE)
-                return
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
+                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-            # -------------------------
-            X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+                # Fit GLM with reduced feature set
+                results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                    X_trainval=X_trainval,
+                                                    spikes_test=spikes_test,
+                                                    X_test=X_test,
+                                                    lambdas=full_optimal_lambdas,
+                                                    n_jobs=n_jobs)
+                results_reduced_df = pd.DataFrame(results_reduced)
+                results_reduced_df['fold'] = fold_idx
+                results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+                results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+                results_reduced_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
+                results_reduced_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_reduced_df)
+                results_reduced_all.append(results_reduced_df)
 
+                # Append reduced model to all models
+                model_res_df_outer.append(results_reduced_df)
 
-            print('X_train multiple kernels')
-            print(X_trainval.shape)
-            print(X_test.shape)
-            # Fit GLM with reduced feature set
-            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                                X_trainval=X_trainval,
-                                                spikes_test=spikes_test,
-                                                X_test=X_test,
-                                                lambdas=full_optimal_lambdas,
-                                                n_jobs=n_jobs)
-            results_reduced_df = pd.DataFrame(results_reduced)
-            results_reduced_df['fold'] = fold_idx
-            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-            results_reduced_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
-            results_reduced_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_reduced_df)
-            results_reduced_all.append(results_reduced_df)
+        if reward_kernels:
+            X_rewards = []
+            feature_names_rewards = []
+            nb_whisker_kernel_rewards = []
+            for number_of_whisker_kernel in range(len(X_rewards)):
+                # Get data splits
+                X_trainval, X_test = X_rewards[number_of_whisker_kernel][:, trainval_ids, :], X_rewards[number_of_whisker_kernel][
+                                                                                           :, test_ids, :]
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+                X_test = X_test.reshape(X_test.shape[0], -1)
 
-            # Append reduced model to all models
-            model_res_df_outer.append(results_reduced_df)
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
+                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
-        X_rewards = []
-        feature_names_rewards = []
-        nb_whisker_kernel_rewards = []
-        for number_of_whisker_kernel in range(len(X_rewards)):
-            # Get data splits
-            X_trainval, X_test = X_rewards[number_of_whisker_kernel][:, trainval_ids, :], X_rewards[number_of_whisker_kernel][
-                                                                                       :, test_ids, :]
-            X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-            X_test = X_test.reshape(X_test.shape[0], -1)
+                # Fit GLM with reduced feature set
+                results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                    X_trainval=X_trainval,
+                                                    spikes_test=spikes_test,
+                                                    X_test=X_test,
+                                                    lambdas=full_optimal_lambdas,
+                                                    n_jobs=n_jobs)
 
-            X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
-            X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+                results_reduced_df = pd.DataFrame(results_reduced)
+                results_reduced_df['fold'] = fold_idx
+                results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+                results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+                results_reduced_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
+                results_reduced_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
+                    results_reduced_df)
+                results_reduced_all.append(results_reduced_df)
 
-            # Fit GLM with reduced feature set
-            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                                X_trainval=X_trainval,
-                                                spikes_test=spikes_test,
-                                                X_test=X_test,
-                                                lambdas=full_optimal_lambdas,
-                                                n_jobs=n_jobs)
-
-            results_reduced_df = pd.DataFrame(results_reduced)
-            results_reduced_df['fold'] = fold_idx
-            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-            results_reduced_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
-            results_reduced_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
-                results_reduced_df)
-            results_reduced_all.append(results_reduced_df)
-
-            # Append reduced model to all models
-            model_res_df_outer.append(results_reduced_df)
+                # Append reduced model to all models
+                model_res_df_outer.append(results_reduced_df)
 
         # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
