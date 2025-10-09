@@ -75,11 +75,26 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
             if model_name == 'full':
                 continue
             plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder)
+            # Step 1: compute trial-type correlations for both models
+            corr_full = compute_trialtype_correlations(merged_df[merged_df['model_name'] == 'full'], trial_table)
+            corr_reduced = compute_trialtype_correlations(merged_df[merged_df['model_name'] == model_name], trial_table)
+            corr_all = pd.concat([corr_full, corr_reduced])
 
+            # Step 2: plot
+            plot_full_vs_reduced_per_area_and_trialtype(
+                corr_all,
+                selected_reduced=model_name,
+                area_groups=area_groups,
+                area_colors=area_colors,
+                output_folder=output_folder,
+                threshold=None
+            )
         plot_kde_full_vs_reduced(merged_df, output_folder)
         # plot_kde_per_trial_type( merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_corr_per_area_by_trialtype(merged_df[merged_df['model_name'] == 'full'], trial_table, area_groups, output_folder)
+
+
     if git_version == '1cce900':
         lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
     else:
@@ -100,7 +115,32 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         df_git['y_test_array'] = df_git['y_test'].apply(lambda x: np.array(ast.literal_eval(x)))
         df_git['y_pred_array'] = df_git['y_pred'].apply(lambda x: np.array(ast.literal_eval(x)))
         merged_df = pd.merge(df_git, unit_table, on="neuron_id", how="inner")
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_type'] == 'reduced'], trial_table, output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_type'] == 'reduced'], trial_table,type = 'Normal',output_folder_base= output_folder)
+
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='last_rewards_whisker')
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        output_folder = os.path.join(output_path, 'average_predictions_per_trial_types_per_blocks')
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'last_rewards_whisker'], trial_table,type = 'previous_whisker',output_folder_base= output_folder)
+
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='prop_last_5_whisker')
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'prop_last_5_whisker'], trial_table,type = 'last_5',output_folder_base= output_folder)
+
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='session_progress_encoding')
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'session_progress_encoding'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='all_whisker_progression')
+
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'all_whisker_progression'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+
+
 
     if 'average_kernels_by_region' in plots :
         output_folder = os.path.join(output_path, 'average_kernels_by_region')
@@ -110,8 +150,18 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
             lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
         else:
             lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
-        plot_average_kernels_by_region( merged_df, output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick'],
+        plot_average_kernels_by_region( merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'],
             lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3)
+
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='whisker_encoding')
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        output_folder = os.path.join(output_path, 'average_kernels_by_region_sign_whisker')
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+
+        plot_average_kernels_by_region(  merged_df_sig[merged_df_sig['model_name'] == 'full'], output_folder, ['whisker_stim',],
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
 
     return
 
@@ -159,15 +209,29 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
 
+        corr_full = compute_trialtype_correlations(merged_df[merged_df['model_name'] == 'full'], trial_table)
         for model_name in merged_df['model_name'].unique():
             if model_name == 'full':
                 continue
             plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder, threshold = 0.1)
+            # Step 1: compute trial-type correlations for both models
+            corr_reduced = compute_trialtype_correlations(merged_df[merged_df['model_name'] == model_name], trial_table)
+            corr_all = pd.concat([corr_full, corr_reduced])
+
+            # Step 2: plot
+            plot_full_vs_reduced_per_area_and_trialtype(
+                corr_all,
+                selected_reduced=model_name,
+                area_groups=area_groups,
+                area_colors=area_colors,
+                output_folder=output_folder,
+                threshold=None
+            )
 
         plot_test_corr_vs_firing_rate(merged_df[merged_df['model_name'] == 'full'], output_folder)
         plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
         plot_avg_kde_per_trial_type_with_sem(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
-
+        plot_two_reduced_per_area(merged_df, 'all_whisker_progression', 'all_whisker_progression_but_local', area_groups, area_colors, output_folder, threshold=None)
 
     if 'average_kernels_by_region' in plots :
         output_folder = os.path.join(output_path, 'average_kernels_by_region')
@@ -180,9 +244,15 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
         plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'],
             lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
 
+        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='whisker_encoding')
+        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        output_folder = os.path.join(output_path, 'average_kernels_by_region_sign_whisker')
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
 
-
-
+        plot_average_kernels_by_region(  merged_df_sig[merged_df_sig['model_name'] == 'full'], output_folder, ['whisker_stim',],
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
 
 
 def plot_kde_full_vs_reduced(df,output_folder):
@@ -478,6 +548,474 @@ import matplotlib.pyplot as plt
 from scipy.stats import ttest_rel
 import pandas as pd
 
+def label_by_last_whisker_outcome(trials_df):
+    """
+    Label each trial based on whether the last *whisker trial* before it
+    was a hit or miss.
+
+    Adds a new column:
+        last_whisker_outcome ∈ {"last_hit", "last_miss", np.nan}
+    """
+    df = trials_df.copy()
+    df["last_whisker_outcome"] = np.nan
+
+    last_outcome = "last_miss"
+    for i, row in df.iterrows():
+        behav_type = row["behav_type"]
+
+        # Assign current label based on most recent whisker outcome
+        if last_outcome is not None:
+            df.at[i, "last_whisker_outcome"] = last_outcome
+
+        # Update last_outcome if this trial is a whisker trial
+        if behav_type == "whisker_hit":
+            last_outcome = "last_hit"
+        elif behav_type == "whisker_miss":
+            last_outcome = "last_miss"
+
+    return df
+
+def plot_by_last_whisker_outcome(
+    neuron_ids, df_full, df_reduced, trials_df, output_folder, name,
+    reduced_model="whisker_encoding", bin_size=0.1, zscore=False
+):
+    """
+    Compare model fits for trials grouped by last whisker outcome:
+    - Row 0: last whisker was hit
+    - Row 1: last whisker was miss
+    Columns: trial types
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import zscore as zscore_f
+    import ast
+    import os
+
+    os.makedirs(output_folder, exist_ok=True)
+    trials_df = label_by_last_whisker_outcome(trials_df)
+
+    last_outcomes = ["last_hit", "last_miss"]
+    trial_types = sorted(trials_df["behav_type"].unique())
+
+    # Containers
+    all_y_test = {lo: {tt: [] for tt in trial_types} for lo in last_outcomes}
+    all_y_pred_full = {lo: {tt: [] for tt in trial_types} for lo in last_outcomes}
+    all_y_pred_reduced = {lo: {tt: [] for tt in trial_types} for lo in last_outcomes}
+
+    for nid in neuron_ids:
+        full_rows = df_full[df_full["neuron_id"] == nid]
+        reduced_rows = df_reduced[df_reduced["neuron_id"] == nid]
+
+        for res in full_rows.itertuples(index=False):
+            y_test = res.y_test_array
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+
+            y_test = y_test.reshape(n_trials, n_bins)
+            y_pred = y_pred.reshape(n_trials, n_bins)
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_test, y_pred = y_test[order], y_pred[order]
+            trials_test_df = trials_df.iloc[test_trial_ids[order]]
+
+            for lo in last_outcomes:
+                idx_lo = np.where(trials_test_df["last_whisker_outcome"] == lo)[0]
+                for tt in trial_types:
+                    idx_tt = np.where(trials_test_df["behav_type"] == tt)[0]
+                    idx = np.intersect1d(idx_lo, idx_tt)
+                    if len(idx) == 0:
+                        continue
+                    test_mean = y_test[idx].mean(axis=0)
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        test_mean = zscore_f(test_mean)
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_test[lo][tt].append(test_mean)
+                    all_y_pred_full[lo][tt].append(pred_mean)
+
+        for res in reduced_rows.itertuples(index=False):
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+            y_pred = y_pred.reshape(n_trials, n_bins)
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_pred = y_pred[order]
+            trials_test_df = trials_df.iloc[test_trial_ids[order]]
+
+            for lo in last_outcomes:
+                idx_lo = np.where(trials_test_df["last_whisker_outcome"] == lo)[0]
+                for tt in trial_types:
+                    idx_tt = np.where(trials_test_df["behav_type"] == tt)[0]
+                    idx = np.intersect1d(idx_lo, idx_tt)
+                    if len(idx) == 0:
+                        continue
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_pred_reduced[lo][tt].append(pred_mean)
+
+    # ------------------------ PLOTTING ------------------------
+    plt.ioff()
+    n_rows = len(last_outcomes)
+    n_cols = len(trial_types)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3 * n_cols, 2.5 * n_rows), sharey=True)
+    time = np.linspace(-1 + bin_size/2, 2 - bin_size/2, n_bins)
+    colors = {"full": "green", "reduced": "red", "data": "black"}
+
+    for r, lo in enumerate(last_outcomes):
+        for c, tt in enumerate(trial_types):
+            ax = axes[r, c] if n_rows > 1 and n_cols > 1 else axes[max(r,c)]
+            ax.set_title(tt if r == 0 else "")
+            y_data = all_y_test[lo][tt]
+            y_full = all_y_pred_full[lo][tt]
+            y_reduced = all_y_pred_reduced[lo][tt]
+
+            if len(y_data) == 0:
+                ax.text(0.5, 0.5, "No trials", ha="center", va="center")
+                continue
+
+            # Data
+            y_data = np.stack(y_data)
+            m_data = y_data.mean(axis=0)
+            s_data = y_data.std(axis=0, ddof=1) / np.sqrt(y_data.shape[0])
+            ax.plot(time, m_data, color=colors["data"], label="data")
+            ax.fill_between(time, m_data - s_data, m_data + s_data, color=colors["data"], alpha=0.3)
+
+            # Full
+            y_full = np.stack(y_full)
+            m_full = y_full.mean(axis=0)
+            s_full = y_full.std(axis=0, ddof=1) / np.sqrt(y_full.shape[0])
+            ax.plot(time, m_full, color=colors["full"], label="full")
+            ax.fill_between(time, m_full - s_full, m_full + s_full, color=colors["full"], alpha=0.3)
+
+            # Reduced
+            y_reduced = np.stack(y_reduced)
+            m_red = y_reduced.mean(axis=0)
+            s_red = y_reduced.std(axis=0, ddof=1) / np.sqrt(y_reduced.shape[0])
+            ax.plot(time, m_red, color=colors["reduced"], label="reduced")
+            ax.fill_between(time, m_red - s_red, m_red + s_red, color=colors["reduced"], alpha=0.3)
+            if c == 0:
+                # Set row label (leftmost column)
+                ax.set_ylabel("Last whisker: Hit" if lo == "last_hit" else "Last whisker: Miss", fontsize=10)
+            ax.axvline(0, color="gray", linestyle="--")
+            if r == n_rows-1:
+                ax.set_xlabel("Time (s)")
+            if r == 0 and c == n_cols-1:
+                ax.legend(fontsize=8)
+
+    fig.suptitle(
+        f"Reduced model {reduced_model}, neuron {neuron_ids[0]}\n"
+        f"full fit={df_full['test_corr'].mean():.3f}, reduced fit={df_reduced['test_corr'].mean():.3f}"
+    )
+    plt.tight_layout()
+    plt.savefig(f"{output_folder}/{name}_by_last_whisker_outcome.png", dpi=300)
+    plt.close(fig)
+
+def plot_by_session_quartiles(
+    neuron_ids, df_full, df_reduced, trials_df, output_folder, name,
+    reduced_model="whisker_encoding", bin_size=0.1, zscore=False
+):
+    """
+    Compare model fits across session quartiles (early → late trials).
+    Rows: quartiles (1st–4th)
+    Columns: trial types (e.g., whisker, no-stim, etc.)
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import zscore as zscore_f
+    import ast, os
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # ------------------------------
+    # Assign quartiles
+    # ------------------------------
+    df = trials_df.copy().reset_index(drop=True)
+    n_trials = len(df)
+    df["quartile"] = pd.qcut(np.arange(n_trials), 4, labels=["Q1", "Q2", "Q3", "Q4"])
+
+    quartiles = ["Q1", "Q2", "Q3", "Q4"]
+    trial_types = sorted(df["behav_type"].unique())
+
+    # Storage
+    all_y_test = {q: {tt: [] for tt in trial_types} for q in quartiles}
+    all_y_pred_full = {q: {tt: [] for tt in trial_types} for q in quartiles}
+    all_y_pred_reduced = {q: {tt: [] for tt in trial_types} for q in quartiles}
+
+    # ------------------------------
+    # Gather model data
+    # ------------------------------
+    for nid in neuron_ids:
+        full_rows = df_full[df_full["neuron_id"] == nid]
+        reduced_rows = df_reduced[df_reduced["neuron_id"] == nid]
+
+        for res in full_rows.itertuples(index=False):
+            y_test = res.y_test_array
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+
+            y_test = y_test.reshape(n_trials, n_bins)
+            y_pred = y_pred.reshape(n_trials, n_bins)
+
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_test, y_pred = y_test[order], y_pred[order]
+            trials_test_df = df.iloc[test_trial_ids[order]]
+
+            for q in quartiles:
+                for tt in trial_types:
+                    idx = np.where(
+                        (trials_test_df["quartile"] == q) &
+                        (trials_test_df["behav_type"] == tt)
+                    )[0]
+                    if len(idx) == 0:
+                        continue
+                    test_mean = y_test[idx].mean(axis=0)
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        test_mean = zscore_f(test_mean)
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_test[q][tt].append(test_mean)
+                    all_y_pred_full[q][tt].append(pred_mean)
+
+        for res in reduced_rows.itertuples(index=False):
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+            y_pred = y_pred.reshape(n_trials, n_bins)
+
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_pred = y_pred[order]
+            trials_test_df = df.iloc[test_trial_ids[order]]
+
+            for q in quartiles:
+                for tt in trial_types:
+                    idx = np.where(
+                        (trials_test_df["quartile"] == q) &
+                        (trials_test_df["behav_type"] == tt)
+                    )[0]
+                    if len(idx) == 0:
+                        continue
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_pred_reduced[q][tt].append(pred_mean)
+
+    # ------------------------------
+    # Plotting
+    # ------------------------------
+    plt.ioff()
+    n_rows, n_cols = len(quartiles), len(trial_types)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.5 * n_rows), sharey=True)
+    time = np.linspace(-1 + bin_size/2, 2 - bin_size/2, n_bins)
+    colors = {"full": "green", "reduced": "red", "data": "black"}
+
+    for r, q in enumerate(quartiles):
+        for c, tt in enumerate(trial_types):
+            ax = axes[r, c] if n_rows > 1 else axes[c]
+            if r == 0:
+                ax.set_title(tt)
+            y_data = all_y_test[q][tt]
+            y_full = all_y_pred_full[q][tt]
+            y_red = all_y_pred_reduced[q][tt]
+
+            if len(y_data) == 0:
+                ax.text(0.5, 0.5, "No trials", ha="center", va="center")
+                continue
+
+            y_data = np.stack(y_data)
+            y_full = np.stack(y_full)
+            y_red = np.stack(y_red)
+
+            def plot_with_error(y, color, label):
+                m = y.mean(axis=0)
+                s = y.std(axis=0, ddof=1) / np.sqrt(y.shape[0])
+                ax.plot(time, m, color=color, label=label)
+                ax.fill_between(time, m - s, m + s, color=color, alpha=0.3)
+
+            plot_with_error(y_data, colors["data"], "data")
+            plot_with_error(y_full, colors["full"], "full")
+            plot_with_error(y_red, colors["reduced"], "reduced")
+
+            ax.axvline(0, color="gray", linestyle="--")
+            if c == 0:
+                ax.set_ylabel(f"{q}\n(25% of session)")
+            if r == n_rows - 1:
+                ax.set_xlabel("Time (s)")
+
+    fig.suptitle(
+        f"Reduced model {reduced_model}, neuron {neuron_ids[0]}\n"
+        f"full fit={df_full['test_corr'].mean():.3f}, reduced fit={df_reduced['test_corr'].mean():.3f}"
+    )
+    plt.tight_layout()
+    plt.savefig(f"{output_folder}/{name}_by_session_quartiles.png", dpi=300)
+    plt.close(fig)
+
+
+def plot_by_recent_whisker_history(
+    neuron_ids, df_full, df_reduced, trials_df, output_folder, name,
+    reduced_model="whisker_encoding", bin_size=0.1, zscore=False, history_len=5
+):
+    """
+    Compare model fits for trials grouped by recent whisker history
+    (e.g., last 5 whisker trials were mostly hits vs mostly misses).
+    """
+
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import zscore as zscore_f
+    import ast, os
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # ------------------------------
+    # Compute recent whisker history
+    # ------------------------------
+    df = trials_df.copy()
+    df["recent_whisker_history"] = np.nan
+
+    whisker_outcomes = []
+    for i, row in df.iterrows():
+        if len(whisker_outcomes) >= history_len:
+            frac_hits = np.mean([o == "hit" for o in whisker_outcomes[-history_len:]])
+            if frac_hits >= 0.8:
+                df.at[i, "recent_whisker_history"] = "mostly_hits"
+            elif frac_hits <= 0.4:
+                df.at[i, "recent_whisker_history"] = "mostly_misses"
+        # update history if current trial is a whisker trial
+        if "whisker" in row["behav_type"]:
+            if row["behav_type"] == "whisker_hit":
+                whisker_outcomes.append("hit")
+            elif row["behav_type"] == "whisker_miss":
+                whisker_outcomes.append("miss")
+
+    groups = ["mostly_hits", "mostly_misses"]
+    trial_types = sorted(df["behav_type"].unique())
+
+    # Storage dicts
+    all_y_test = {g: {tt: [] for tt in trial_types} for g in groups}
+    all_y_pred_full = {g: {tt: [] for tt in trial_types} for g in groups}
+    all_y_pred_reduced = {g: {tt: [] for tt in trial_types} for g in groups}
+
+    # ------------------------------
+    # Collect model data
+    # ------------------------------
+    for nid in neuron_ids:
+        full_rows = df_full[df_full["neuron_id"] == nid]
+        reduced_rows = df_reduced[df_reduced["neuron_id"] == nid]
+
+        for res in full_rows.itertuples(index=False):
+            y_test = res.y_test_array
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+
+            y_test = y_test.reshape(n_trials, n_bins)
+            y_pred = y_pred.reshape(n_trials, n_bins)
+
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_test, y_pred = y_test[order], y_pred[order]
+            trials_test_df = df.iloc[test_trial_ids[order]]
+
+            for g in groups:
+                for tt in trial_types:
+                    idx = np.where(
+                        (trials_test_df["recent_whisker_history"] == g) &
+                        (trials_test_df["behav_type"] == tt)
+                    )[0]
+                    if len(idx) == 0:
+                        continue
+                    test_mean = y_test[idx].mean(axis=0)
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        test_mean = zscore_f(test_mean)
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_test[g][tt].append(test_mean)
+                    all_y_pred_full[g][tt].append(pred_mean)
+
+        for res in reduced_rows.itertuples(index=False):
+            y_pred = res.y_pred_array
+            n_bins = res.n_bins
+            n_trials = y_pred.shape[0] // n_bins
+            y_pred = y_pred.reshape(n_trials, n_bins)
+
+            test_trial_ids = np.array(ast.literal_eval(res.test_trials))
+            order = np.argsort(test_trial_ids)
+            y_pred = y_pred[order]
+            trials_test_df = df.iloc[test_trial_ids[order]]
+
+            for g in groups:
+                for tt in trial_types:
+                    idx = np.where(
+                        (trials_test_df["recent_whisker_history"] == g) &
+                        (trials_test_df["behav_type"] == tt)
+                    )[0]
+                    if len(idx) == 0:
+                        continue
+                    pred_mean = y_pred[idx].mean(axis=0)
+                    if zscore:
+                        pred_mean = zscore_f(pred_mean)
+                    all_y_pred_reduced[g][tt].append(pred_mean)
+
+    # ------------------------------
+    # Plotting
+    # ------------------------------
+    plt.ioff()
+    n_rows, n_cols = len(groups), len(trial_types)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.5 * n_rows), sharey=True)
+    time = np.linspace(-1 + bin_size/2, 2 - bin_size/2, n_bins)
+    colors = {"full": "green", "reduced": "red", "data": "black"}
+
+    for r, g in enumerate(groups):
+        for c, tt in enumerate(trial_types):
+            ax = axes[r, c] if n_rows > 1 else axes[c]
+            if r == 0:
+                ax.set_title(tt)
+            y_data = all_y_test[g][tt]
+            y_full = all_y_pred_full[g][tt]
+            y_red = all_y_pred_reduced[g][tt]
+
+            if len(y_data) == 0:
+                ax.text(0.5, 0.5, "No trials", ha="center", va="center")
+                continue
+
+            y_data = np.stack(y_data)
+            y_full = np.stack(y_full)
+            y_red = np.stack(y_red)
+
+            def plot_with_error(y, color, label):
+                m = y.mean(axis=0)
+                s = y.std(axis=0, ddof=1) / np.sqrt(y.shape[0])
+                ax.plot(time, m, color=color, label=label)
+                ax.fill_between(time, m - s, m + s, color=color, alpha=0.3)
+
+            plot_with_error(y_data, colors["data"], "data")
+            plot_with_error(y_full, colors["full"], "full")
+            plot_with_error(y_red, colors["reduced"], "reduced")
+
+            ax.axvline(0, color="gray", linestyle="--")
+            if c == 0:
+                ax.set_ylabel("Recent whiskers:\nMostly hits" if g == "mostly_hits" else "Recent whiskers:\nMostly misses")
+            if r == n_rows - 1:
+                ax.set_xlabel("Time (s)")
+
+    fig.suptitle(
+        f"Reduced model {reduced_model}, neuron {neuron_ids[0]}\n"
+        f"full fit={df_full['test_corr'].mean():.3f}, reduced fit={df_reduced['test_corr'].mean():.3f}"
+    )
+    plt.tight_layout()
+    plt.savefig(f"{output_folder}/{name}_by_recent_whisker_history.png", dpi=300)
+    plt.close(fig)
+
+
+
 def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors, output_folder, threshold=None):
     """
     Plot mean ± SEM test correlations per area for full and one reduced model,
@@ -594,6 +1132,105 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
     plt.close(fig)
     return
 
+def plot_two_reduced_per_area(df, reduced1, reduced2, area_groups, area_colors, output_folder, threshold=None):
+    """
+    Plot mean ± SEM test correlations per area for two reduced models,
+    including significance stars (paired t-test) between models per area.
+
+    :param df: pd.DataFrame with columns ['model_type','model_name','test_corr','area_acronym_custom','mouse_id','neuron_id']
+    :param reduced1: str, name of first reduced model
+    :param reduced2: str, name of second reduced model
+    :param area_groups: dict, group_name -> list of area names
+    :param area_colors: dict, group_name -> color
+    :param output_folder: str path
+    :param threshold: float or None, minimum test_corr_mean for neurons to be included
+    """
+
+    # Filter for reduced models of interest
+    df_r1 = df[(df['model_type'] == 'reduced') & (df['model_name'] == reduced1)].copy()
+    df_r2 = df[(df['model_type'] == 'reduced') & (df['model_name'] == reduced2)].copy()
+
+    # Build ordered areas and colors
+    ordered_areas = []
+    area_to_color = {}
+    for group_name, areas in area_groups.items():
+        for area in areas:
+            if area in df_r1['area_acronym_custom'].values or area in df_r2['area_acronym_custom'].values:
+                ordered_areas.append(area)
+                area_to_color[area] = area_colors[group_name]
+
+    # Initialize lists
+    means_r1, sems_r1, means_r2, sems_r2, bar_colors = [], [], [], [], []
+
+    # Plot setup
+    fig, ax = plt.subplots(figsize=(max(12, len(ordered_areas) * 0.5), 6), dpi=300)
+    x = np.arange(len(ordered_areas))
+    width = 0.35
+
+    for i, area in enumerate(ordered_areas):
+        # --- Model 1 ---
+        grp1 = df_r1[df_r1['area_acronym_custom'] == area]
+        fold_means_r1 = grp1.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr'].mean()
+
+        # --- Model 2 ---
+        grp2 = df_r2[df_r2['area_acronym_custom'] == area]
+        fold_means_r2 = grp2.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr'].mean()
+
+        # Apply threshold if given
+        if threshold is not None:
+            neurons_to_keep = fold_means_r1[fold_means_r1['test_corr'] >= threshold]
+        else:
+            neurons_to_keep = fold_means_r1
+
+        # Keep only neurons that exist in both models and pass threshold
+        merged = fold_means_r1.merge(
+            fold_means_r2, on=['mouse_id', 'neuron_id'], suffixes=('_r1', '_r2')
+        )
+        merged = merged.merge(neurons_to_keep[['mouse_id', 'neuron_id']], on=['mouse_id', 'neuron_id'], how='inner')
+
+        vals1 = merged['test_corr_r1'].to_numpy()
+        vals2 = merged['test_corr_r2'].to_numpy()
+
+        # Compute mean ± SEM
+        means_r1.append(vals1.mean() if len(vals1) > 0 else np.nan)
+        sems_r1.append(vals1.std(ddof=1) / np.sqrt(len(vals1)) if len(vals1) > 1 else 0)
+
+        means_r2.append(vals2.mean() if len(vals2) > 0 else np.nan)
+        sems_r2.append(vals2.std(ddof=1) / np.sqrt(len(vals2)) if len(vals2) > 1 else 0)
+
+        bar_colors.append(area_to_color.get(area, 'gray'))
+
+        # --- Significance test ---
+        if len(vals1) > 1 and len(vals2) > 1:
+            _, pval = ttest_rel(vals1, vals2)
+        else:
+            pval = np.nan
+
+        if pval < 0.05:
+            ax.text(x[i], max(means_r1[-1] + sems_r1[-1], means_r2[-1] + sems_r2[-1]) + 0.01,
+                    '*', ha='center', va='bottom', fontsize=12, color='red')
+
+    # --- Plot bars ---
+    ax.bar(x - width / 2, means_r1, width, yerr=sems_r1, label=reduced1, color='k', capsize=4)
+    ax.bar(x + width / 2, means_r2, width, yerr=sems_r2, label=reduced2, color=bar_colors, capsize=4)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(ordered_areas, rotation=45, ha='right')
+    ax.set_ylabel('Test Score')
+    ax.set_title(f'{reduced1} vs {reduced2} per area')
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.4)
+    plt.tight_layout()
+
+    # Save
+    name = f'{reduced1} vs {reduced2} per area'
+    if threshold is not None:
+        name += f' threshold {threshold}'
+    putils.save_figure_with_options(fig, file_formats=['png'], filename=name, output_dir=output_folder)
+    plt.close(fig)
+
+
+
 def compute_lrt_from_model_results(model_results_df, alpha=0.05, ll_field='test_ll'):
     # Extract only full model
     full_df = model_results_df[model_results_df['model_name'] == 'full']
@@ -673,6 +1310,8 @@ def compute_trialtype_correlations(merged, trials_df):
         fold = row["fold"]
         mouse_id = row.get("mouse_id", "unknown")  # assume merged has mouse_id column
         area_custom = row.get("area_acronym_custom", None)
+        model_type = row["model_type"]
+        model_name = row["model_name"]
 
         # decode arrays
         y_test = np.array(ast.literal_eval(row["y_test"]))
@@ -703,12 +1342,158 @@ def compute_trialtype_correlations(merged, trials_df):
                     "neuron_id": neuron_id,
                     "fold": fold,
                     "trial_type": trial_type,
-                    "corr": r,
-                    "area_acronym_custom": area_custom
+                    "test_corr": r,
+                    "area_acronym_custom": area_custom,
+                    "model_type": model_type,
+                    "model_name": model_name
                 })
 
     return pd.DataFrame(rows)
 
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.stats import ttest_rel
+
+
+def plot_full_vs_reduced_per_area_and_trialtype(
+    df,
+    selected_reduced,
+    area_groups,
+    area_colors,
+    output_folder,
+    threshold=None
+):
+    """
+    Plot mean ± SEM test correlations per area and trial type for full vs reduced model.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Must include ['model_type','model_name','test_corr','area_acronym_custom',
+                      'mouse_id','neuron_id','trial_type'].
+    selected_reduced : str
+        Name of the reduced model to compare against full.
+    area_groups : dict
+        {group_name: [list of area names]}.
+    area_colors : dict
+        {group_name: color}.
+    output_folder : str
+        Directory to save figure.
+    threshold : float or None
+        Minimum test_corr (full model) per neuron to be included.
+    """
+
+    # --- Separate models ---
+    df_full = df[df['model_type'] == 'full'].copy()
+    df_reduced = df[
+        (df['model_type'] == 'reduced') &
+        (df['model_name'] == selected_reduced)
+    ].copy()
+
+    # --- Determine trial types and ordered areas ---
+    trial_types = sorted(df['trial_type'].unique())
+    ordered_areas = []
+    area_to_color = {}
+
+    for group_name, areas in area_groups.items():
+        for area in areas:
+            if area in df['area_acronym_custom'].values:
+                ordered_areas.append(area)
+                area_to_color[area] = area_colors[group_name]
+    # --- Create figure ---
+    fig, axes = plt.subplots(
+        nrows=len(trial_types),
+        ncols= 1,
+        figsize=(max(14, len(ordered_areas) * 0.6), 6*len(trial_types)),
+        dpi=300,
+        sharey=True
+    )
+    if len(trial_types) == 1:
+        axes = [axes]
+
+    # --- Loop over trial types ---
+    for t_idx, trial_type in enumerate(trial_types):
+        ax = axes[t_idx]
+        means_full, sems_full, means_reduced, sems_reduced, bar_colors = [], [], [], [], []
+
+        for area in ordered_areas:
+            # select subset
+            fgrp = df_full[
+                (df_full['trial_type'] == trial_type) &
+                (df_full['area_acronym_custom'] == area)
+            ]
+            rgrp = df_reduced[
+                (df_reduced['trial_type'] == trial_type) &
+                (df_reduced['area_acronym_custom'] == area)
+            ]
+
+            if fgrp.empty or rgrp.empty:
+                means_full.append(np.nan)
+                sems_full.append(0)
+                means_reduced.append(np.nan)
+                sems_reduced.append(0)
+                bar_colors.append(area_to_color.get(area, 'gray'))
+                continue
+
+            # average across folds per neuron
+            fmeans = (
+                fgrp.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr']
+                .mean()
+                .rename(columns={'test_corr': 'test_corr_full'})
+            )
+            rmeans = (
+                rgrp.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr']
+                .mean()
+                .rename(columns={'test_corr': 'test_corr_reduced'})
+            )
+
+            # apply threshold on full model
+            if threshold is not None:
+                valid_ids = fmeans.loc[fmeans['test_corr_full'] >= threshold, ['mouse_id', 'neuron_id']]
+            else:
+                valid_ids = fmeans[['mouse_id', 'neuron_id']]
+
+            # restrict both full and reduced
+            fvals = fmeans.merge(valid_ids, on=['mouse_id', 'neuron_id'], how='inner')['test_corr_full']
+            rvals = rmeans.merge(valid_ids, on=['mouse_id', 'neuron_id'], how='inner')['test_corr_reduced']
+
+            # compute mean ± sem
+            means_full.append(fvals.mean() if len(fvals) else np.nan)
+            sems_full.append(fvals.std(ddof=1) / np.sqrt(len(fvals)) if len(fvals) > 1 else 0)
+            means_reduced.append(rvals.mean() if len(rvals) else np.nan)
+            sems_reduced.append(rvals.std(ddof=1) / np.sqrt(len(rvals)) if len(rvals) > 1 else 0)
+            bar_colors.append(area_to_color.get(area, 'gray'))
+
+            # paired t-test and star annotation
+            if len(fvals) > 1 and len(rvals) > 1:
+                stat, p = ttest_rel(fvals, rvals)
+                if p < 0.05:
+                    y = max(means_full[-1] + sems_full[-1], means_reduced[-1] + sems_reduced[-1])
+                    ax.text(ordered_areas.index(area), y + 0.01, '*', ha='center', va='bottom', color='red')
+
+        # --- Plot bars ---
+        x = np.arange(len(ordered_areas))
+        width = 0.35
+        ax.bar(x - width / 2, means_full, width, yerr=sems_full,
+               label='Full', color='black', capsize=4)
+        ax.bar(x + width / 2, means_reduced, width, yerr=sems_reduced,
+               label=f'Reduced ({selected_reduced})', color=bar_colors, capsize=4)
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(ordered_areas, rotation=45, ha='right')
+        ax.set_title(trial_type)
+        ax.grid(True, linestyle='--', alpha=0.4)
+        if t_idx == 0:
+            ax.set_ylabel('Test correlation')
+
+    axes[0].legend()
+    plt.tight_layout()
+    plt.suptitle(f'Full vs {selected_reduced} per area and trial type', y=1.02)
+    plt.savefig(f"{output_folder}/full_vs_{selected_reduced}_per_area_and_trialtype.png", bbox_inches='tight')
+    plt.close(fig)
+    return
 
 def plot_model_comparison(
     neuron_ids, df_full, df_reduced, trials_df, output_folder, name, reduced_model="whisker_encoding",
@@ -1066,7 +1851,7 @@ def make_pickleable_df(df):
 
 
 
-def process_neuron(neuron_id, model, trials_df, output_folder, df_full_slim, df_reduced_slim):
+def process_neuron(neuron_id, model, trials_df, output_folder, df_full_slim, df_reduced_slim, type = 'Normal'):
     """
     Worker function to plot a single neuron.
     """
@@ -1077,23 +1862,38 @@ def process_neuron(neuron_id, model, trials_df, output_folder, df_full_slim, df_
         return
 
     plt.ioff()  # non-interactive
-    plot_model_comparison(
-        [neuron_id],
-        df_full_neuron,
-        df_reduced_neuron,
-        trials_df,
-        output_folder,
-        name=str(neuron_id),
-        reduced_model=model,
-        bin_size=0.1,
-        zscore=False
-    )
-
+    if type == 'Normal':
+        plot_model_comparison(
+            [neuron_id],
+            df_full_neuron,
+            df_reduced_neuron,
+            trials_df,
+            output_folder,
+            name=str(neuron_id),
+            reduced_model=model,
+            bin_size=0.1,
+            zscore=False
+        )
+    elif type == 'previous_whisker':
+        plot_by_last_whisker_outcome(
+            [neuron_id], df_full_neuron, df_reduced_neuron, trials_df, output_folder, name=str(neuron_id),
+            reduced_model=model, bin_size=0.1, zscore=False
+        )
+    elif type =='last_5':
+        plot_by_recent_whisker_history(
+            [neuron_id], df_full_neuron, df_reduced_neuron, trials_df, output_folder, name=str(neuron_id),
+            reduced_model=model, bin_size=0.1, zscore=False, history_len=5
+        )
+    elif type == 'session_progression':
+        plot_by_session_quartiles(
+        [neuron_id], df_full_neuron, df_reduced_neuron, trials_df, output_folder,  name=str(neuron_id),
+        reduced_model=model, bin_size=0.1, zscore=False
+        )
 
 import os
 import multiprocessing
 
-def plot_predictions_with_reduced_models_parallel(df_full_slim, df_reduced_slim, trials_df, output_folder_base):
+def plot_predictions_with_reduced_models_parallel(df_full_slim, df_reduced_slim, trials_df, type, output_folder_base):
     n_jobs = max(1, multiprocessing.cpu_count() - 1)
 
     for model in df_reduced_slim['model_name'].unique():
@@ -1105,10 +1905,9 @@ def plot_predictions_with_reduced_models_parallel(df_full_slim, df_reduced_slim,
         output_folder = os.path.join(output_folder_base, model)
         os.makedirs(output_folder, exist_ok=True)
         neuron_ids = df_full_slim['neuron_id'].unique()
-
         Parallel(n_jobs=n_jobs, backend='loky', verbose=5)(
             delayed(process_neuron)(
-                neuron_id, model, trials_df, output_folder, df_full_slim, df_full_slim_model
+                neuron_id, model, trials_df, output_folder, df_full_slim, df_full_slim_model, type = type
             )
             for neuron_id in neuron_ids
         )
@@ -1119,7 +1918,6 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
     Plot kernels for one neuron alongside average responses and predictions.
     Uses SEM across folds (not across trials).
     """
-    print('CAREFUL NOW THE KERNEL GET PLOTTED FOR -0.2 to 0.4')
     # -------------------
     # KERNELS (per fold)
     # -------------------
@@ -1686,3 +2484,51 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size):
     plt.show()
 
     return
+def neurons_with_consistent_decrease(df, reduced_name, alpha=0.05):
+    """
+    Identify neurons showing a consistent decrease in test_corr
+    from the full model to a specific reduced model across all folds.
+
+    :param df: DataFrame with columns ['neuron_id', 'fold', 'model_type', 'model_name', 'test_corr']
+    :param reduced_name: str, name of the reduced model to compare
+    :return: DataFrame with neurons that show consistent decrease
+    """
+
+    # Filter data for relevant models
+    df_full = df[df["model_type"] == "full"][["neuron_id", "fold", "test_corr"]].rename(columns={"test_corr": "full_corr"})
+    df_reduced = df[(df["model_type"] == "reduced") & (df["model_name"] == reduced_name)][
+        ["neuron_id", "fold", "test_corr"]
+    ].rename(columns={"test_corr": "reduced_corr"})
+
+    # Merge by neuron_id + fold
+    merged = pd.merge(df_full, df_reduced, on=["neuron_id", "fold"], how="inner")
+
+    # Compute fold-level difference
+    merged["diff"] = merged["full_corr"] - merged["reduced_corr"]
+
+    # Per-neuron t-test
+    results = []
+    for neuron_id, group in merged.groupby("neuron_id"):
+        diffs = group["diff"].dropna()
+        if len(diffs) > 1:
+            t_stat, p_val = ttest_1samp(diffs, popmean=0, alternative="greater")
+        else:
+            t_stat, p_val = np.nan, np.nan
+
+        results.append({
+            "neuron_id": neuron_id,
+            "mean": diffs.mean() if len(diffs) > 0 else np.nan,
+            "min": diffs.min() if len(diffs) > 0 else np.nan,
+            "count": len(diffs),
+            "p_val": p_val
+        })
+
+    summary = pd.DataFrame(results)
+
+    # Consistent decrease flag based on significance
+    summary["consistent_decrease"] = summary["p_val"] < alpha
+
+    # Match previous return variable naming
+    decreased_neurons = summary[summary["consistent_decrease"]].sort_values("mean", ascending=False)
+
+    return decreased_neurons, merged

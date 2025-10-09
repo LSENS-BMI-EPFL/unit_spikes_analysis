@@ -1,4 +1,5 @@
 import os.path
+from idlelib.autocomplete import TRY_A
 from importlib.metadata import FastPath
 
 from glms_plotting_utils import *
@@ -30,17 +31,17 @@ if __name__ == '__main__':
 
 
     subject_ids = [ "AB131", "AB138", "AB147", "AB162"]
-    subject_ids = ["AB131"]
+    # subject_ids = ["AB131"]
     git_version = '1cce900'
     single_mouse = True
     # over_mice = True
-    over_mice = False
+    # over_mice = False
 
     if single_mouse:
 
         plots = [ 'average_kernels_by_region']
         # plots = ['metrics'] 'per_unit_kernel_plots',, 'average_predictions_per_trial_types'
-        plots = [ 'per_unit_kernel_plots']
+        plots = [ 'average_predictions_per_trial_types']
         for subject_id in subject_ids:
             print(" ")
             print(f"Subject ID : {subject_id}")
