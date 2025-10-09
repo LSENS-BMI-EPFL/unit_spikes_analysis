@@ -45,6 +45,8 @@ import plotting_utils as putils
 # Set global variables
 BIN_SIZE = 0.1 # in seconds
 
+ROOT_PATH = '/scratch/mhamon/'
+ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
 
 def bin_spike_times(spike_times, start_time, end_time, bin_size):
     """
@@ -315,6 +317,25 @@ def preprocess_dlc_trace(trace):
     #trace = smooth_trace_savgol(trace, window_length=11, polyorder=3)
     return trace
 
+def load_jaw_onset_data(mouse_id):
+    """
+    Load jaw onset data from NWB files.
+    :param nwb_files: List of NWB file paths.
+    :return:
+    """
+    print('Loading jaw onset data...')
+
+    jaw_onset_list = []
+    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.parquet')
+    if os.path.exists(file_path):
+        df = pd.read_parquet(file_path)
+        jaw_onset_list.append(df)
+    else:
+        print(f"[WARN] Jaw onset data file not found for {mouse_id} at {file_path}. Skipping.")
+        return
+    jaw_onset_table = pd.concat(jaw_onset_list, ignore_index=True)
+    return jaw_onset_table
+
 def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
     """
     Loads spike trains from unit table and predictors from an NWB file.
@@ -333,6 +354,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         window_bounds_sec = (-1, 2)
         trials_df = nwbfile.trials.to_dataframe()
         trials_df = trials_df[(trials_df['context'] != 'passif') & (trials_df['perf'] != 6)].copy()
+        trials_df['mouse_id'] = nwbreader.get_mouse_id(nwb_path)
+        trials_df['session_id'] = nwbreader.get_session_id(nwb_path)
         #
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
@@ -526,9 +549,16 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         # Get lick onset time
         piezo_licks = np.array(list(get_events('piezo_lick_times')[1]))
-        jaw_dlc_licks = np.array(list(get_events('jaw_dlc_licks')[1])) / 200 + video_start_time
-        tongue_dlc_licks = np.array(list(get_events('tongue_dlc_licks')[1])) / 200 + video_start_time
+        # tongue_dlc_licks = np.array(list(get_events('tongue_dlc_licks')[1])) / 200 + video_start_time
 
+        jaw_onset_table = load_jaw_onset_data(trials_df['mouse_id'].unique()[0] )
+
+        trials_df = trials_df.merge(jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
+                                on=['mouse_id', 'session_id', 'trial_id'], how='left')
+
+        all_jaw_onsets = trials_df['jaw_dlc_onset'].values + trials_df['start_time'].values
+
+        print(all_jaw_onsets)
         # Get available stimulus times
         try:
             auditory_times = list(get_events('auditory_hit_trial')[1]) + list(get_events('auditory_miss_trial')[1])
@@ -544,10 +574,11 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         # Define event kernels for single trial events
         event_defs = {
-            'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
-            'auditory_stim': (auditory_times, (-0.3, 0.6)),
-            'whisker_stim': (whisker_times, (-0.3, 0.6)),
-            'piezo_reward': (piezo_licks, (-0.3, 0.6)),
+            # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
+            'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
+            'auditory_stim': (auditory_times, (-0.1, 0.6)),
+            'whisker_stim': (whisker_times, (-0.1, 0.6)),
+            'piezo_reward': (piezo_licks, (-0, 0.6)),
         }
 
         for name, (times, _) in event_defs.items():
@@ -567,10 +598,16 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 bins = np.linspace(start, end, n_bins + 1)
                 trial_events = all_piezo_events[(all_piezo_events >= start) & (all_piezo_events < end)]
                 if len(trial_events) > 0:
-                    first_event = trial_events[0]  # take the first one
-                    idx = np.digitize(first_event, bins) - 1
-                    if 0 <= idx < n_bins:
-                        piezo_reward_matrix[i, idx] = 1
+                    if len(trial_events) > 1:
+                        first_event = trial_events[1]  # take the first one
+                        idx = np.digitize(first_event, bins) - 1
+                        if 0 <= idx < n_bins:
+                            piezo_reward_matrix[i, idx] = 1
+                    else:
+                        first_event = trial_events[1]  # take the first one
+                        idx = np.digitize(first_event, bins) - 1
+                        if 0 <= idx < n_bins:
+                            piezo_reward_matrix[i, idx] = 1
 
         predictors['piezo_reward'] = piezo_reward_matrix
 
@@ -819,10 +856,9 @@ def save_model_results2(result_df, filename, output_dir):
 
 
 
-def save_model_results(result_df, filename, output_dir):
+def save_model_results(result_df, filename, commit_hash, output_dir):
     result_path = pathlib.Path(output_dir, 'models')
     result_path.mkdir(parents=True, exist_ok=True)
-    commit_hash = get_git_revision_short_hash()
 
     # Iterate through columns to identify and convert problematic 'object' types
     for col in result_df.columns:
@@ -892,6 +928,7 @@ def fit_one_reduced_model(combo_name, features_to_remove, spikes_trainval, X_tra
 def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     print('GLM fitting for:', pathlib.Path(nwb_path).name)
 
+    commit_hash = get_git_revision_short_hash()
     mouse_id = nwbreader.get_mouse_id(nwb_path)
     mouse_output_path = pathlib.Path(output_dir, mouse_id, 'whisker_0', 'unit_glm')
     mouse_output_path.mkdir(parents=True, exist_ok=True)
@@ -988,7 +1025,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         describe_cols = ['neuron_id', 'fold', 'train_score', 'test_score', 'train_corr', 'test_corr',
                          'train_mi', 'test_mi']
         print(model_res_df[describe_cols].describe())
-        save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), output_dir=mouse_output_path)
+        save_model_results(model_res_df, filename='model_full_fold{}'.format(fold_idx), commit_hash = commit_hash, output_dir=mouse_output_path)
 
         # Add to list of global dat
         model_res_df_outer.append(model_res_df)
@@ -1054,7 +1091,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
+        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), commit_hash = commit_hash,
                            output_dir=mouse_output_path)
 
         model_res_df_outer.append(results_reduced_all_df)
@@ -1069,7 +1106,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save all model results in a single file
     model_res_df_outer_df = pd.concat(model_res_df_outer, ignore_index=True)
-    save_model_results(model_res_df_outer_df, filename='model_results_all', output_dir=output_dir)
+    save_model_results(model_res_df_outer_df, filename='model_results_all',commit_hash = commit_hash, output_dir=output_dir)
 
     # Inspect predictions for full models across folds
     neuron_id = 0
