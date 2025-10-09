@@ -336,7 +336,7 @@ def load_jaw_onset_data(mouse_id):
     jaw_onset_table = pd.concat(jaw_onset_list, ignore_index=True)
     return jaw_onset_table
 
-def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
+def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False):
     """
     Loads spike trains from unit table and predictors from an NWB file.
     :param nwb_path: str, path to the NWB file
@@ -347,6 +347,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
     - predictor_types: dict, contains types of predictors
     - n_bins: int, number of bins per trial
     - bin_size: float, size of time bin in seconds
+    - nb_of_whisker_kernel : int, number of whisker kernels
     """
     with NWBHDF5IO(nwb_path, mode='r', load_namespaces=True) as io:
         nwbfile = io.read()
@@ -378,7 +379,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
-        # unit_table = unit_table[unit_table['neuron_id'].isin([29])]
+        unit_table = unit_table.iloc[[21, 34]]
+
+
 
         # # Here we can simulate Poisson spikes OR make it strictly constant.
         # rate_hz = 10
@@ -448,7 +451,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
 
         # Broadcast to bins
-        predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+        # predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
         #  Independent code to get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
         past_whisker_rewards = 0
@@ -465,7 +468,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             if past_whisker_trials > 0:
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
-        predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+        # predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
 
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
@@ -478,7 +481,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
             else:
                 whisker_reward_rate[i] = 0
-        predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+        # predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
         total_rewards = np.sum(rewarded > 0)
         total_rewards = total_rewards if total_rewards > 0 else 1
@@ -499,9 +502,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
-            'last_whisker_reward':'last_whisker_reward',
-            'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
-            'whisker_reward_rate_5': 'whisker_reward_rate_5',
+            # 'last_whisker_reward':'last_whisker_reward',
+            # 'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
+            # 'whisker_reward_rate_5': 'whisker_reward_rate_5',
             'sum_reward_scaled':'sum_reward_scaled',
             # 'whisker_hit': 'whisker_hit'
         }
@@ -558,7 +561,6 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
 
         all_jaw_onsets = trials_df['jaw_dlc_onset'].values + trials_df['start_time'].values
 
-        print(all_jaw_onsets)
         # Get available stimulus times
         try:
             auditory_times = list(get_events('auditory_hit_trial')[1]) + list(get_events('auditory_miss_trial')[1])
@@ -572,14 +574,27 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             whisker_times = list(get_events('whisker_hit_trial')[1])
         whisker_times = np.array(sorted(whisker_times))
 
-        # Define event kernels for single trial events
-        event_defs = {
-            # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
-            'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
-            'auditory_stim': (auditory_times, (-0.1, 0.6)),
-            'whisker_stim': (whisker_times, (-0.1, 0.6)),
-            'piezo_reward': (piezo_licks, (-0, 0.6)),
-        }
+        if nb_of_whisker_kernel is None:
+            # Define event kernels for single trial events
+            event_defs = {
+                # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
+                'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
+                'auditory_stim': (auditory_times, (-0.1, 0.6)),
+                'whisker_stim': (whisker_times, (-0.1, 0.6)),
+                'piezo_reward': (piezo_licks, (-0, 0.6)),
+            }
+
+        else :
+            event_defs = {
+                # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
+                'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
+                'auditory_stim': (auditory_times, (-0.1, 0.6)),
+                'piezo_reward': (piezo_licks, (-0, 0.6)),
+            }
+            whisker_splits = np.array_split(whisker_times, nb_of_whisker_kernel)
+            for nb in range(nb_of_whisker_kernel):
+                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (-0.1, 0.6))
+
 
         for name, (times, _) in event_defs.items():
             if name=='dlc_lick_onset':
@@ -588,28 +603,58 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1):
             else:
                 predictors[name] = rasterize_event(times, first_only=False)
 
-            # Rasterize the rewards, only for hit trials and only auditory if non-rewarded mouse
-        piezo_reward_matrix = np.zeros((n_trials, n_bins))
+        # Rasterize the rewards, only for hit trials and only auditory if non-rewarded mouse
         all_piezo_events = np.array(list(get_events('piezo_lick_times')[1]))
 
-        for i, (start, end) in enumerate(zip(trial_starts, trial_ends)):
-            # Only keep licks if this trial was a HIT
-            if  rewarded[i] > 0:
-                bins = np.linspace(start, end, n_bins + 1)
-                trial_events = all_piezo_events[(all_piezo_events >= start) & (all_piezo_events < end)]
-                if len(trial_events) > 0:
-                    if len(trial_events) > 1:
-                        first_event = trial_events[1]  # take the first one
-                        idx = np.digitize(first_event, bins) - 1
-                        if 0 <= idx < n_bins:
-                            piezo_reward_matrix[i, idx] = 1
-                    else:
-                        first_event = trial_events[1]  # take the first one
-                        idx = np.digitize(first_event, bins) - 1
-                        if 0 <= idx < n_bins:
-                            piezo_reward_matrix[i, idx] = 1
+        if not reward_kernel_per_type:
+            piezo_reward_matrix = np.zeros((n_trials, n_bins))
+            for i, (start, end) in enumerate(zip(trial_starts, trial_ends)):
+                # Only keep licks if this trial was a HIT
+                if  rewarded[i] > 0:
+                    bins = np.linspace(start, end, n_bins + 1)
+                    trial_events = all_piezo_events[(all_piezo_events >= start) & (all_piezo_events < end)]
+                    if len(trial_events) > 0:
+                        if len(trial_events) > 1:
+                            first_event = trial_events[1]  # take the first one
+                            idx = np.digitize(first_event, bins) - 1
+                            if 0 <= idx < n_bins:
+                                piezo_reward_matrix[i, idx] = 1
+                        else:
+                            first_event = trial_events[0]  # take the first one
+                            idx = np.digitize(first_event, bins) - 1
+                            if 0 <= idx < n_bins:
+                                piezo_reward_matrix[i, idx] = 1
+            predictors['piezo_reward'] = piezo_reward_matrix
 
-        predictors['piezo_reward'] = piezo_reward_matrix
+        else :
+            piezo_reward_matrix_wh = np.zeros((n_trials, n_bins))
+            piezo_reward_matrix_au = np.zeros((n_trials, n_bins))
+            event_defs['piezo_reward_au'] = (piezo_licks, (-0.1, 0.6))
+            for i, (start, end) in enumerate(zip(trial_starts, trial_ends)):
+                # Only keep licks if this trial was a HIT
+                if rewarded[i] > 0:
+                    bins = np.linspace(start, end, n_bins + 1)
+                    trial_events = all_piezo_events[(all_piezo_events >= start) & (all_piezo_events < end)]
+                    if len(trial_events) > 0:
+                        if len(trial_events) > 1:
+                            first_event = trial_events[1]  # take the first one
+                            idx = np.digitize(first_event, bins) - 1
+                            if 0 <= idx < n_bins:
+                                if stim_type[i] == 'whisker_trial':
+                                    piezo_reward_matrix_wh[i, idx] = 1
+                                else :
+                                    piezo_reward_matrix_au[i, idx] = 1
+                        else:
+                            first_event = trial_events[0]  # take the first one
+                            idx = np.digitize(first_event, bins) - 1
+                            if 0 <= idx < n_bins:
+                                if stim_type[i] == 'whisker_trial':
+                                    piezo_reward_matrix_wh[i, idx] = 1
+                                else :
+                                    piezo_reward_matrix_au[i, idx] = 1
+            predictors['piezo_reward'] = piezo_reward_matrix_wh
+            predictors['piezo_reward_au'] = piezo_reward_matrix_au
+
 
         # Analog predictors, already filtered by likelihood at NWB creation
         analog_keys = {
@@ -958,6 +1003,34 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
 
+    all_Xs = []
+    feature_namess = []
+    nb_whisker_kernels = []
+    for number_of_whisker_kernel in range(2,5):
+        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
+        event_defs = predictor_types['event_defs']
+        analog_keys = predictor_types['analog_keys']
+
+        # Build design matrix for entire dataset
+        X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+        all_Xs.append(X_extra)
+        feature_namess.append(feature_names_extra)
+        nb_whisker_kernels.append(number_of_whisker_kernel)
+
+    X_rewards = []
+    feature_names_rewards = []
+    nb_whisker_kernel_rewards = []
+    for number_of_whisker_kernel in [1,2]:
+        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
+        event_defs = predictor_types['event_defs']
+        analog_keys = predictor_types['analog_keys']
+
+        # Build design matrix for entire dataset
+        X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+        X_rewards.append(X_extra)
+        feature_names_rewards.append(feature_names_extra)
+        nb_whisker_kernel_rewards.append(number_of_whisker_kernel)
+
 
     # ---------------------------------------
     # Train/test data cross-validation splits
@@ -1031,7 +1104,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df_outer.append(model_res_df)
 
         # Plot single trial predictions models
-        debug=True
+        debug=False
         if debug:
             for neuron_id in model_res_df.neuron_id.unique():
                 plot_trial_grid_predictions(model_res_df, trials_df, neuron_id, bin_size=BIN_SIZE)
@@ -1047,9 +1120,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
             'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
             'whisker_reward_encoding': ['prev_whisker_reward'],
-            'lick_onset_encoding': [f for f in feature_names if 'dlc_lick_onset' in f],
+            'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-            'whisker_move': ['whisker_vel'],
+            # 'whisker_move': ['whisker_vel'],
             'session_progress_encoding': ['trial_index_scaled'],
             # 'last_rewards_whisker': ['last_whisker_reward'],
             # 'whisker_hit' : ['whisker_hit'],
@@ -1058,7 +1131,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
             # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
                                         # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
-            # 'sum_rewards': ['sum_reward_scaled']
+            'sum_rewards': ['sum_reward_scaled']
         }
         # Get full model params for fair comparison
         full_optimal_lambdas = {neuron_id: lambda_opt for neuron_id, lambda_opt in
@@ -1070,6 +1143,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             # Select subset of feature matrix
             X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
             X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
+
 
             # Fit GLM with reduced feature set
             results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
@@ -1084,6 +1158,80 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
             results_reduced_df['model_name'] = model_name
             results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+            results_reduced_all.append(results_reduced_df)
+
+            # Append reduced model to all models
+            model_res_df_outer.append(results_reduced_df)
+
+        for number_of_whisker_kernel in range(len(all_Xs)):
+            # Get data splits
+            X_trainval, X_test = all_Xs[number_of_whisker_kernel][:, trainval_ids, :],  all_Xs[number_of_whisker_kernel][:, test_ids, :]
+            X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+            X_test = X_test.reshape(X_test.shape[0], -1)
+
+            X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
+            debug = False
+            if debug:
+                for test_idx in test_ids[5:10]:
+                    plot_design_matrix_heatmap_single_trial(all_Xs[number_of_whisker_kernel], feature_namess[number_of_whisker_kernel], trial_index=test_idx, n_bins=n_bins,
+                                                            bin_size=BIN_SIZE)
+                    plot_design_matrix_vector_single_trial(all_Xs[number_of_whisker_kernel], feature_namess[number_of_whisker_kernel], trial_index=test_idx, n_bins=n_bins,
+                                                           bin_size=BIN_SIZE)
+                return
+
+            # -------------------------
+            X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+
+            print('X_train multiple kernels')
+            print(X_trainval.shape)
+            print(X_test.shape)
+            # Fit GLM with reduced feature set
+            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                X_trainval=X_trainval,
+                                                spikes_test=spikes_test,
+                                                X_test=X_test,
+                                                lambdas=full_optimal_lambdas,
+                                                n_jobs=n_jobs)
+            results_reduced_df = pd.DataFrame(results_reduced)
+            results_reduced_df['fold'] = fold_idx
+            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+            results_reduced_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
+            results_reduced_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_reduced_df)
+            results_reduced_all.append(results_reduced_df)
+
+            # Append reduced model to all models
+            model_res_df_outer.append(results_reduced_df)
+
+        X_rewards = []
+        feature_names_rewards = []
+        nb_whisker_kernel_rewards = []
+        for number_of_whisker_kernel in range(len(X_rewards)):
+            # Get data splits
+            X_trainval, X_test = X_rewards[number_of_whisker_kernel][:, trainval_ids, :], X_rewards[number_of_whisker_kernel][
+                                                                                       :, test_ids, :]
+            X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+            X_test = X_test.reshape(X_test.shape[0], -1)
+
+            X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
+            X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+            # Fit GLM with reduced feature set
+            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                X_trainval=X_trainval,
+                                                spikes_test=spikes_test,
+                                                X_test=X_test,
+                                                lambdas=full_optimal_lambdas,
+                                                n_jobs=n_jobs)
+
+            results_reduced_df = pd.DataFrame(results_reduced)
+            results_reduced_df['fold'] = fold_idx
+            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+            results_reduced_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
+            results_reduced_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
+                results_reduced_df)
             results_reduced_all.append(results_reduced_df)
 
             # Append reduced model to all models
@@ -1215,7 +1363,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--nwb', type=str, required=True)
     parser.add_argument('--out', type=str, required=True)
-    parser.add_argument('--n_jobs', type=int, default=40)
+    parser.add_argument('--n_jobs', type=int, default=20)
     args = parser.parse_args()
     run_unit_glm_pipeline_with_pool(args.nwb, args.out, n_jobs=args.n_jobs)
 
