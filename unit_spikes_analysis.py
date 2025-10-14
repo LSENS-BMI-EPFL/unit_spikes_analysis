@@ -18,7 +18,7 @@ from roc_utils import roc_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
 #from glm_utils import run_unit_glm_pipeline_with_pool
-
+from noise_correl_utils import noise_correlation_analysis
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
@@ -29,7 +29,7 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 if __name__ == '__main__':
 
     single_mouse = True
-    multiple_mice = True
+    multiple_mice = False
     joint_analysis = True
     expert_day = False
 
@@ -86,8 +86,7 @@ if __name__ == '__main__':
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    #subject_ids = ['AB162', 'AB163', 'AB164']
-
+    subject_ids = ['AB131']
     print(f"Subject IDs to do: {subject_ids}")
 
     ### --------------------
@@ -97,6 +96,7 @@ if __name__ == '__main__':
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
     analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_single = ['noise_correlation']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu', 'strial_type']
@@ -153,6 +153,9 @@ if __name__ == '__main__':
 
                     if 'unit_glm' in analyses_to_do_single:
                         run_unit_glm_pipeline_with_pool(nwb_file, results_path)
+
+                    if 'noise_correlation' in analyses_to_do_single:
+                        noise_correlation_analysis(nwb_file, results_path)
 
     ### ------------------------------------------
     # Analyses aggregating data from multiple mice
