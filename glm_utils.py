@@ -80,7 +80,7 @@ def bin_behavior(series_time, series_values, trial_start, trial_end, n_bins):
     return binned
 
 
-def build_design_matrix(data_dict, event_defs, analog_keys, bin_size):
+def build_design_matrix(data_dict, event_defs, analog_keys, bin_size, scale = None ):
     """
     Builds a design matrix X for GLM using input data dict and event definitions from
     `load_nwb_spikes_and_predictors`.
@@ -115,7 +115,8 @@ def build_design_matrix(data_dict, event_defs, analog_keys, bin_size):
                     shifted[:, shift:] = data[:, :-shift]
                 else:
                     shifted = data.copy()
-
+                if name == 'whisker_stim' and scale is not None:
+                    shifted = shifted * scale
                 col = shifted.flatten()
                 design_cols.append(col)
                 feature_names.append(f"{name}_t{shift * bin_size:+.2f}s")
@@ -317,6 +318,203 @@ def preprocess_dlc_trace(trace):
     #trace = smooth_trace_savgol(trace, window_length=11, polyorder=3)
     return trace
 
+def assign_expertise_blocks(trial_table, n_consecutive=5):
+    """
+    Assign 'expert' or 'naive' labels to each trial for each mouse based on
+    p_low vs p_chance, separately for reward_group, identifying blocks of at
+    least `n_consecutive` trials.
+
+    Parameters
+    ----------
+    trial_table : pd.DataFrame
+        Must contain ['mouse_id', 'reward_group', 'trial_id', 'p_low', 'p_chance'].
+        Should be sorted by trial_id within each mouse.
+    n_consecutive : int
+        Minimum number of consecutive trials to label as expert.
+
+    Returns
+    -------
+    pd.DataFrame
+        Original dataframe with added column 'block_perf_type' = 'naive' or 'expert'.
+    """
+    trial_table = trial_table.copy()
+    trial_table['block_perf_type'] = 0
+
+    def process_mouse(df_mouse):
+        reward_group = df_mouse['reward_group'].iloc[0]
+
+        # Criterion per trial
+        if reward_group == 1:
+            criterion = df_mouse['p_low'] > df_mouse['p_chance']
+        elif reward_group == 0:
+            criterion = df_mouse['p_low'] < df_mouse['p_chance']
+        else:
+            raise ValueError(f"Unexpected reward_group: {reward_group}")
+
+        # Convert boolean series to runs of consecutive True/False
+        vals = criterion.values
+        expert_mask = np.zeros(len(vals), dtype=bool)
+
+        start_idx = 0
+        while start_idx < len(vals):
+            if vals[start_idx]:
+                # find run of consecutive True
+                end_idx = start_idx
+                while end_idx < len(vals) and vals[end_idx]:
+                    end_idx += 1
+                run_length = end_idx - start_idx
+                if run_length >= n_consecutive:
+                    expert_mask[start_idx:end_idx] = True
+                start_idx = end_idx
+            else:
+                start_idx += 1
+
+        df_mouse.loc[expert_mask, 'block_perf_type'] = 1
+        return df_mouse
+
+    trial_table = trial_table.groupby('mouse_id', group_keys=False).apply(process_mouse)
+    return trial_table
+
+def propagate_expertise_inplace(trial_table):
+    """
+    Propagate 'block_perf_type' (expert/naive) from whisker trials
+    to other trial types in-place based on closest start_time per mouse.
+
+    Parameters
+    ----------
+    trial_table : pd.DataFrame
+        Must contain ['mouse_id', trial_type_col, time_col, 'block_perf_type'].
+        Only whisker trials will have non-null 'block_perf_type' initially.
+    time_col : str
+        Column name for trial start time (used to find nearest whisker trial).
+    trial_type_col : str
+        Column name that identifies trial type (e.g., 'whisker', 'auditory', 'no_stim').
+
+    Returns
+    -------
+    pd.DataFrame
+        The same table with 'block_perf_type' updated for all trials.
+    """
+    trial_table = trial_table.sort_values(['start_time'])
+    updated_trials = []
+
+    for mouse_id, df_mouse in trial_table.groupby('mouse_id', group_keys=False):
+        df_mouse = df_mouse.sort_values('start_time').copy()
+        whisker_df = df_mouse[df_mouse['trial_type'] == 'whisker_trial']
+
+        if whisker_df.empty:
+            df_mouse['block_perf_type'] = np.nan
+        else:
+            # Use merge_asof for nearest whisker match
+            merged = pd.merge_asof(
+                df_mouse,
+                whisker_df[['start_time', 'block_perf_type']].sort_values('start_time'),
+                on='start_time',
+                direction='nearest',
+                suffixes=('', '_whisker')
+            )
+            # Update block_perf_type with nearest whisker label where missing
+            df_mouse['block_perf_type'] = np.where(
+                df_mouse['block_perf_type'].isna(),
+                merged['block_perf_type_whisker'],
+                df_mouse['block_perf_type']
+            )
+
+        updated_trials.append(df_mouse)
+
+    # Combine back into one table
+    updated_table = pd.concat(updated_trials, ignore_index=True)
+    return updated_table
+
+def keep_active_from_whisker_onset(trial_df):
+    """
+    Remove auditory blocks at onset of session, where mice were not yet engaged in the task, before whisker introduction
+    :param trial_df: trial table dataframe with active trials only
+    :return:
+    """
+    print('Keeping active trials and removing auditory onset blocks. Getting whisker trial indices...')
+
+    # Keep active trials
+    trial_df = trial_df[
+        (~trial_df['context'].isin(['passive']))
+        & (trial_df['perf'] != 6)
+        & (trial_df['early_lick'] == 0)]
+
+    df = trial_df.copy()
+
+    # Find first whisker trial per mouse
+    first_whisker_id = (
+        df[df['trial_type'] == 'whisker_trial']
+        .groupby('mouse_id')['trial_id']
+        .min()
+        .rename('first_whisker_id')
+    )
+
+    # Merge to get first whisker trial per mouse
+    df = df.merge(first_whisker_id, on='mouse_id', how='left')
+
+    # Keep only trials >= first whisker trial
+    df = df[df['trial_id'] >= df['first_whisker_id']].copy()
+
+    # Reindex trial_id to start at 0 from first whisker trial
+    df['trial_id'] = df['trial_id'] - df['first_whisker_id']
+
+    # Define also a whisker_trial_id, just for whisker trials
+    df['whisker_trial_id'] = np.nan
+    whisker_mask = df['trial_type'] == 'whisker_trial'
+    df.loc[whisker_mask, 'whisker_trial_id'] = df.loc[whisker_mask].groupby('mouse_id').cumcount()
+    df['whisker_trial_id'] = df['whisker_trial_id'].astype('Int64') # keep as nullable integer
+
+    # Drop helper column
+    df.drop(columns='first_whisker_id', inplace=True)
+
+    return df
+
+
+
+
+def load_perf_blocks(trial_table, mouse_id):
+
+    path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+    # curves_df = load_helpers.load_learning_curves_data(path_to_data=path_to_data, subject_ids=subject_ids)
+
+    file_name = f'{mouse_id}_whisker_0_whisker_trial_learning_curve_interp.h5'
+    path_to_file = os.path.join(ROOT_PATH, mouse_id, file_name)
+    path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
+
+    df_w = pd.read_hdf(path_to_file)
+
+    trial_curves = []
+    array_cols = ['p_mean', 'p_low', 'p_high', 'p_chance']
+    for _, row in df_w.iterrows():
+        n_trials = len(row[array_cols[0]])
+        for t in range(n_trials):
+            trial_dict = {}
+            for col in df_w.columns:
+                if col in array_cols:
+                    trial_dict[col] = row[col][t]
+                else:
+                    trial_dict[col] = row[col]
+            trial_dict['whisker_trial_id'] = t
+            trial_curves.append(trial_dict)
+    trial_curves_df = pd.DataFrame(trial_curves)
+    trial_curves_df = assign_expertise_blocks(trial_curves_df, n_consecutive=5)
+
+    # Merge learning curve data into trial table onto trial_id, for each mouse and onto whisker trials only
+    trial_table = keep_active_from_whisker_onset(trial_table)  # get whisker trial index
+
+    trial_table = trial_table.merge(
+        trial_curves_df[
+            ['mouse_id', 'block_perf_type', 'whisker_trial_id', 'p_mean', 'p_low', 'p_high', 'p_chance', 'mouse_cat',
+             'learning_trial']],
+        on=['mouse_id', 'whisker_trial_id'], how='left'
+    )
+
+    # Assign block_perf_typ to auditory_trial and no_stim_trial depending on the closest previous whisker trial
+    trial_table = propagate_expertise_inplace(trial_table)
+
+    return trial_table
+
 def load_jaw_onset_data(mouse_id):
     """
     Load jaw onset data from NWB files.
@@ -326,9 +524,9 @@ def load_jaw_onset_data(mouse_id):
     print('Loading jaw onset data...')
 
     jaw_onset_list = []
-    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.parquet')
+    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.h5')
     if os.path.exists(file_path):
-        df = pd.read_parquet(file_path)
+        df = pd.read_hdf(file_path)
         jaw_onset_list.append(df)
     else:
         print(f"[WARN] Jaw onset data file not found for {mouse_id} at {file_path}. Skipping.")
@@ -358,6 +556,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         trials_df['mouse_id'] = nwbreader.get_mouse_id(nwb_path)
         trials_df['session_id'] = nwbreader.get_session_id(nwb_path)
         #
+        trials_df = load_perf_blocks(trials_df, trials_df['mouse_id'].unique()[0])
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
         #
@@ -469,6 +668,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
         # predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+        block_perf_type = trials_df['block_perf_type'].to_numpy()  # shape (n_trials,)
+        predictors['block_perf_type'] = np.tile(block_perf_type[:, None], (1, n_bins))
 
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
@@ -481,6 +682,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
             else:
                 whisker_reward_rate[i] = 0
+        scale = None
+        scale = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+
         # predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
         total_rewards = np.sum(rewarded > 0)
@@ -506,6 +710,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             # 'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
             # 'whisker_reward_rate_5': 'whisker_reward_rate_5',
             'sum_reward_scaled':'sum_reward_scaled',
+            'block_perf_type':'block_perf_type'
             # 'whisker_hit': 'whisker_hit'
         }
 
@@ -722,7 +927,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                          'analog_keys': analog_keys,
                          'event_defs': event_defs}
 
-        return spike_array, predictors, predictor_types, n_bins, bin_size, neurons_ccf
+        return spike_array, predictors, predictor_types, n_bins, bin_size, neurons_ccf, scale
 
 
 def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, lambdas):
@@ -984,6 +1189,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     # Get trial table, input and output formatted for GLM, list of predictor types
     trials_df = nwbreader.get_trial_table(nwb_path)
     trials_df = trials_df[(trials_df['context'] != 'passif') &(trials_df['perf'] != 6)].copy()
+    trials_df['mouse_id'] = mouse_id
+    trials_df = load_perf_blocks(trials_df, mouse_id)
 
     trials_df = trials_df.reset_index(drop=True)
     #try: #uncomment when design matrix fixed, so that no need to recompute it
@@ -991,12 +1198,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     #
 
     #  Get trial table, input and output formatted for GLM, list of predictor types
-    spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE)
+    spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, scale = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE)
     event_defs = predictor_types['event_defs']
     analog_keys = predictor_types['analog_keys']
 
     # Build design matrix for entire dataset
-    X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+    X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE, scale = None)
 
     n_features = X.shape[0]
 
@@ -1008,7 +1215,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         feature_namess = []
         nb_whisker_kernels = []
         for number_of_whisker_kernel in range(2,5):
-            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
             event_defs = predictor_types['event_defs']
             analog_keys = predictor_types['analog_keys']
 
@@ -1025,7 +1232,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         feature_names_rewards = []
         nb_whisker_kernel_rewards = []
         for number_of_whisker_kernel in [1,2]:
-            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
             event_defs = predictor_types['event_defs']
             analog_keys = predictor_types['analog_keys']
 
@@ -1043,7 +1250,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     cv_outer_folds = 5
 
     outer_kf = KFold(n_splits=cv_outer_folds, shuffle=True, random_state=42)
+
     for fold_idx, (trainval_ids, test_ids) in enumerate(outer_kf.split(trials_df.index)):
+
         print('Fold', fold_idx)
 
         # Get data splits
@@ -1068,9 +1277,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         debug = False
         if debug:
-            for test_idx in test_ids[5:10]:
-                plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
-                plot_design_matrix_vector_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins,
+            for test_idx in test_ids[10:15]:
+                plot_design_matrix_heatmap_single_trial(X_rewards[1], feature_names_rewards[1], trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
+                plot_design_matrix_vector_single_trial(X_rewards[1], feature_names_rewards[1], trial_index=test_idx, n_bins=n_bins,
                                                        bin_size=BIN_SIZE)
             return
 
@@ -1126,6 +1335,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'whisker_reward_encoding': ['prev_whisker_reward'],
             'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
+            'block_perf_type' : ['block_perf_type'],
             # 'whisker_move': ['whisker_vel'],
             'session_progress_encoding': ['trial_index_scaled'],
             # 'last_rewards_whisker': ['last_whisker_reward'],
@@ -1196,9 +1406,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 model_res_df_outer.append(results_reduced_df)
 
         if reward_kernels:
-            X_rewards = []
-            feature_names_rewards = []
-            nb_whisker_kernel_rewards = []
+
             for number_of_whisker_kernel in range(len(X_rewards)):
                 # Get data splits
                 X_trainval, X_test = X_rewards[number_of_whisker_kernel][:, trainval_ids, :], X_rewards[number_of_whisker_kernel][

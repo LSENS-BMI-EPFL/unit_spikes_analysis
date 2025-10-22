@@ -49,7 +49,8 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
 
     # Load and combine NWB files
     trial_table, unit_table, ephys_nwb_list = combine_ephys_nwb(nwb_list, day_to_analyze=day_to_analyze, max_workers=8)
-
+    if git_version == '2ce0ecd':
+        trial_table = trial_table[trial_table['trial_type'] =='whisker_trial']
 
 
     # Load all models
@@ -70,6 +71,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         output_folder = os.path.join(output_path, 'metrics')
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
+        plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
 
         for model_name in df_git['model_name'].unique():
             if model_name == 'full':
@@ -90,7 +92,6 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
                 threshold=None
             )
         plot_kde_full_vs_reduced(merged_df, output_folder)
-        # plot_kde_per_trial_type( merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_corr_per_area_by_trialtype(merged_df[merged_df['model_name'] == 'full'], trial_table, area_groups, output_folder)
 
@@ -99,6 +100,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
     else:
         lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
+
     if 'per_unit_kernel_plots' in plots :
         output_folder = os.path.join(output_path, 'per_unit_kernel_plots')
         if not os.path.exists(output_folder):
@@ -106,7 +108,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
 
         for neuron in merged_df['neuron_id'].unique():
             plot_neuron_kernels_avg_with_responses(
-                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'], trial_table, output_folder,lags = lags)
+                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'], trial_table, output_folder, lags = lags, git_handle=git_version)
 
     if 'average_predictions_per_trial_types' in plots :
         output_folder = os.path.join(output_path, 'average_predictions_per_trial_types')
@@ -116,30 +118,34 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         df_git['y_pred_array'] = df_git['y_pred'].apply(lambda x: np.array(ast.literal_eval(x)))
         merged_df = pd.merge(df_git, unit_table, on="neuron_id", how="inner")
         # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_type'] == 'reduced'], trial_table,type = 'Normal',output_folder_base= output_folder)
+        #
+        # decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='last_rewards_whisker')
+        # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        # merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        # output_folder = os.path.join(output_path, 'average_predictions_per_trial_types_per_blocks')
+        # if not os.path.exists(output_folder):
+        #     os.makedirs(output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'last_rewards_whisker'], trial_table,type = 'previous_whisker',output_folder_base= output_folder)
+        #
+        # decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='prop_last_5_whisker')
+        # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        # merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        # plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'prop_last_5_whisker'], trial_table,type = 'last_5',output_folder_base= output_folder)
 
-        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='last_rewards_whisker')
-        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
-        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
-        output_folder = os.path.join(output_path, 'average_predictions_per_trial_types_per_blocks')
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'last_rewards_whisker'], trial_table,type = 'previous_whisker',output_folder_base= output_folder)
+        # decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='all_whisker_progression_but_local')
+        # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        # merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
 
-        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='prop_last_5_whisker')
-        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
-        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
-        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'prop_last_5_whisker'], trial_table,type = 'last_5',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '3whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '4whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
 
-        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='session_progress_encoding')
-        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
-        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
-        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'session_progress_encoding'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='all_whisker_progression')
 
-        print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
-        merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
-        plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'all_whisker_progression'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-
+        #
+        # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
+        # merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
+        # plot_predictions_with_reduced_models_parallel(merged_df_sig[merged_df_sig['model_name'] == 'full'], merged_df_sig[merged_df_sig['model_name'] == 'all_whisker_progression_but_local'], trial_table,type = 'session_progression',output_folder_base= output_folder + str('test'))
+        #
 
 
     if 'average_kernels_by_region' in plots :
@@ -151,7 +157,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         else:
             lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
         plot_average_kernels_by_region( merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'],
-            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3)
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, git_handle=git_version)
 
         decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='whisker_encoding')
         print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
@@ -241,8 +247,10 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
             lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
         else:
             lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
-        plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'dlc_lick', 'piezo_reward'],
-            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
+        plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'],
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
+        plot_average_kernels_by_region(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'],
+            lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = 0.2, git_handle=git_version)
 
         decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='whisker_encoding')
         print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
@@ -251,7 +259,7 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
 
-        plot_average_kernels_by_region(  merged_df_sig[merged_df_sig['model_name'] == 'full'], output_folder, ['whisker_stim',],
+        plot_average_kernels_by_region(  merged_df_sig[merged_df_sig['model_name'] == 'full'], output_folder, ['whisker_stim'],
             lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None)
 
 
@@ -284,35 +292,52 @@ def plot_kde_full_vs_reduced(df,output_folder):
 
     ax.set_xlabel('Test Score')
     ax.set_ylabel('Density')
-    ax.legend(fontsize=8)
+    ax.legend(fontsize=8, bbox_to_anchor=(1.02, 1), loc='upper left', borderaxespad=0)
+    plt.tight_layout()
     ax.grid(False, linestyle='--', alpha=0.4)
     ax.set_title('Kde_full_vs_reduced')
     putils.save_figure_with_options(fig, file_formats=[ 'png'], filename= 'Kde_full_vs_reduced', output_dir=output_folder)
 
     return
 
-def plot_kde_per_trial_type(merged, trial_table, output_folder):
 
-    trialtype_corrs = compute_trialtype_correlations(merged,
-                                                     trials_df=trial_table
-                                                     )
-
+def plot_kde_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
+    trialtype_corrs = compute_trialtype_correlations(merged, trials_df=trial_table)
+    # Define a consistent color scheme
+    color_map = {
+        "whisker_hit": "forestgreen",
+        "whisker_miss": "crimson",
+        "auditory_hit": "mediumblue",
+        "auditory_miss": "skyblue",
+        "catch": "gray",
+        "correct_rejection": "black"
+    }
 
     fig, ax = plt.subplots(figsize=(7, 5), dpi=300)
 
     for trial_type, grp in trialtype_corrs.groupby("trial_type"):
-        grp["corr"].plot(kind="kde", lw=2, label=f"{trial_type}", ax =ax )
+        color = color_map.get(trial_type, "gray")  # fallback color
+        grp["test_corr"].plot(kind="kde", lw=2, label=f"{trial_type}", ax=ax, color=color)
+
 
 
     ax.set_xlabel('Test Score')
     ax.set_ylabel('Density')
     ax.legend(fontsize=8)
-    ax.set_title("Test correlation distribution by trial type")
+    ax.set_title("KDE of test correlation by trial type")
     ax.grid(False, linestyle='--', alpha=0.4)
-    ax.set_title('Kde_full_vs_reduced')
-    putils.save_figure_with_options(fig, file_formats=[ 'png'], filename= 'Kde_per_trial_type_full_model', output_dir=output_folder)
 
+    putils.save_figure_with_options(
+        fig,
+        file_formats=['png'],
+        filename='Kde_per_trial_type_full_model',
+        output_dir=output_folder,
+        dark_background= True
+    )
+
+    plt.close(fig)
     return
+
 
 
 
@@ -347,7 +372,7 @@ def plot_avg_kde_per_trial_type_with_sem(merged, trial_table, output_folder):
         for mouse in grp["mouse_id"].unique():
             mouse_grp = grp[grp["mouse_id"] == mouse]
             # mean across folds per neuron
-            neuron_means = mouse_grp.groupby("neuron_id")["corr"].mean().values
+            neuron_means = mouse_grp.groupby("neuron_id")["test_corr"].mean().values
             neuron_means = np.nan_to_num(neuron_means, nan=0.0)
             if len(neuron_means) < 2:
                 continue  # skip if not enough neurons
@@ -517,7 +542,7 @@ def plot_corr_per_area_by_trialtype(merged, trial_table, area_groups, output_fol
         for area in ordered_areas:
             grp = trialtype_corrs[(trialtype_corrs['area_acronym_custom'] == area) &
                                   (trialtype_corrs['trial_type'] == trial_type)]
-            values = grp['corr'].values
+            values = grp['test_corr'].values
             means.append(values.mean() if len(values) > 0 else np.nan)
             sems.append(values.std(ddof=1) / np.sqrt(len(values)) if len(values) > 1 else 0)
 
@@ -741,6 +766,26 @@ def plot_by_session_quartiles(
     quartiles = ["Q1", "Q2", "Q3", "Q4"]
     trial_types = sorted(df["behav_type"].unique())
 
+    # ------------------------------
+    # Compute per-trial-type & quartile correlations
+    # ------------------------------
+    trialtype_q_corrs_full = compute_trialtype_quartile_correlations(
+        df_full[df_full["neuron_id"].isin(neuron_ids)], df
+    )
+    trialtype_q_corrs_reduced = compute_trialtype_quartile_correlations(
+        df_reduced[df_reduced["neuron_id"].isin(neuron_ids)], df
+    )
+
+    # Aggregate per quartile × trial type
+    corr_full = (
+        trialtype_q_corrs_full.groupby(["quartile", "trial_type"])["test_corr"]
+        .mean().to_dict()
+    )
+    corr_reduced = (
+        trialtype_q_corrs_reduced.groupby(["quartile", "trial_type"])["test_corr"]
+        .mean().to_dict()
+    )
+
     # Storage
     all_y_test = {q: {tt: [] for tt in trial_types} for q in quartiles}
     all_y_pred_full = {q: {tt: [] for tt in trial_types} for q in quartiles}
@@ -819,8 +864,9 @@ def plot_by_session_quartiles(
     for r, q in enumerate(quartiles):
         for c, tt in enumerate(trial_types):
             ax = axes[r, c] if n_rows > 1 else axes[c]
-            if r == 0:
-                ax.set_title(tt)
+            corr_f = corr_full.get((q, tt), np.nan)
+            corr_r = corr_reduced.get((q, tt), np.nan)
+            ax.set_title(f"{tt}\nfull={corr_f:.2f}, red={corr_r:.2f}")
             y_data = all_y_test[q][tt]
             y_full = all_y_pred_full[q][tt]
             y_red = all_y_pred_reduced[q][tt]
@@ -1350,6 +1396,59 @@ def compute_trialtype_correlations(merged, trials_df):
 
     return pd.DataFrame(rows)
 
+def compute_trialtype_quartile_correlations(merged, trials_df):
+    """
+    Compute test Pearson correlation per neuron, per fold, per trial type, per quartile.
+    Requires 'quartile' column in trials_df.
+    """
+    rows = []
+    for _, row in merged.iterrows():
+        neuron_id = row["neuron_id"]
+        fold = row["fold"]
+        mouse_id = row.get("mouse_id", "unknown")
+        area_custom = row.get("area_acronym_custom", None)
+        model_type = row["model_type"]
+        model_name = row["model_name"]
+
+        y_test = np.array(ast.literal_eval(row["y_test"]))
+        y_pred = np.array(ast.literal_eval(row["y_pred"]))
+        n_bins = row["n_bins"]
+        n_trials = y_pred.shape[0] // n_bins
+        y_test = y_test.reshape(n_trials, n_bins)
+        y_pred = y_pred.reshape(n_trials, n_bins)
+
+        test_trial_ids = np.array(ast.literal_eval(row["test_trials"]))
+        trials_test_df = trials_df.iloc[test_trial_ids, :]
+
+        # Must have quartile column already in trials_df
+        if "quartile" not in trials_test_df.columns:
+            raise ValueError("trials_df must contain 'quartile' column")
+
+        for q in trials_test_df["quartile"].unique():
+            for trial_type in trials_test_df["behav_type"].unique():
+                idx = np.where(
+                    (trials_test_df["quartile"].values == q) &
+                    (trials_test_df["behav_type"].values == trial_type)
+                )[0]
+                if len(idx) < 2:
+                    continue
+                y_true_t = y_test[idx, :].ravel()
+                y_pred_t = y_pred[idx, :].ravel()
+                if len(np.unique(y_true_t)) > 1:
+                    r, _ = pearsonr(y_true_t, y_pred_t)
+                    rows.append({
+                        "mouse_id": mouse_id,
+                        "neuron_id": neuron_id,
+                        "fold": fold,
+                        "quartile": q,
+                        "trial_type": trial_type,
+                        "test_corr": r,
+                        "area_acronym_custom": area_custom,
+                        "model_type": model_type,
+                        "model_name": model_name
+                    })
+    return pd.DataFrame(rows)
+
 
 import numpy as np
 import pandas as pd
@@ -1591,6 +1690,22 @@ def plot_model_comparison(
         .astype(float).mean()
     )
 
+    trialtype_corrs_full = compute_trialtype_correlations(
+        df_full[df_full["neuron_id"].isin(neuron_ids)], trials_df
+    )
+    trialtype_corrs_reduced = compute_trialtype_correlations(
+        df_reduced[df_reduced["neuron_id"].isin(neuron_ids)], trials_df
+    )
+
+    # Aggregate correlations by trial type
+    corr_summary_full = (
+        trialtype_corrs_full.groupby("trial_type")["test_corr"]
+        .mean().to_dict()
+    )
+    corr_summary_reduced = (
+        trialtype_corrs_reduced.groupby("trial_type")["test_corr"]
+        .mean().to_dict()
+    )
     # ------------------------
     # PLOTTING
     # ------------------------
@@ -1661,7 +1776,12 @@ def plot_model_comparison(
         ax.plot(time, mean_reduced, color="red", label="reduced")
         ax.fill_between(time, mean_reduced - sem_reduced[:80], mean_reduced + sem_reduced[:80], color="red", alpha=0.3)
 
-        ax.set_title(trial_type, fontsize=14)
+        corr_f = corr_summary_full.get(trial_type, np.nan)
+        corr_r = corr_summary_reduced.get(trial_type, np.nan)
+        ax.set_title(
+            f"{trial_type}\nfull={corr_f:.2f}, reduced={corr_r:.2f}",
+            fontsize=12
+        )
 
     axes[min(2, len(axes)-1)].legend(fontsize=8)
     plt.tight_layout()
@@ -1913,7 +2033,7 @@ def plot_predictions_with_reduced_models_parallel(df_full_slim, df_reduced_slim,
         )
 
 
-def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, trials_df, output_folder,lags, bin_size=0.1):
+def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, trials_df, output_folder,lags, bin_size=0.1, git_handle = None):
     """
     Plot kernels for one neuron alongside average responses and predictions.
     Uses SEM across folds (not across trials).
@@ -1959,9 +2079,23 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
         kernel_stack = coefs_full[:, indices].reshape(coefs_full.shape[0], -1)
         mean_kernel = kernel_stack.mean(axis=0)
         sem_kernel = kernel_stack.std(axis=0, ddof=1) / np.sqrt(kernel_stack.shape[0])
+        if git_handle is None:
+            ax_k.plot(lags, mean_kernel, color="blue")
+            ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
+        else:
+            if predictor =='whisker_stim' or predictor == 'auditory_stim':
 
-        ax_k.plot(lags, mean_kernel, color="blue")
-        ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
+                lags = [-0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5]
+                ax_k.plot(lags, mean_kernel, color="blue")
+                ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
+            if predictor == 'piezo_reward':
+                lags = [ 0, 0.1, 0.2, 0.3, 0.4,0.5]
+                ax_k.plot(lags, mean_kernel, color="blue")
+                ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
+            if predictor == 'jaw_onset':
+                lags = [-0.5, -0.4, -0.3, -0.2, -0.1]
+                ax_k.plot(lags, mean_kernel, color="blue")
+                ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
         ax_k.set_title(f"{predictor} kernel")
         ax_k.set_xlabel("Lag (s)")
         ax_k.set_ylabel("Coef")
@@ -2063,7 +2197,7 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
     return
 
 def plot_average_kernels_by_region(df, output_folder, kernels_to_plot,
-                                   lags=None, area_groups=None, area_colors=None, n_cols=3,  threshold = None):
+                                   lags=None, area_groups=None, area_colors=None, n_cols=3,  threshold = None, git_handle = None):
     """
     Plot average kernels across neurons grouped by area_acronym_custom (regions),
     one figure per kernel. Regions are colored by area group, ordered by area_groups.
@@ -2151,9 +2285,22 @@ def plot_average_kernels_by_region(df, output_folder, kernels_to_plot,
             sem_kernel = kernels_stack.std(axis=0, ddof=1) / np.sqrt(kernels_stack.shape[0])
 
             color = get_region_color(region)
-            ax.plot(lags, mean_kernel, color=color)
-            ax.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel,
-                            color=color, alpha=0.3)
+            if git_handle is None:
+                ax.plot(lags, mean_kernel, color=color)
+                ax.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color=color, alpha=0.3)
+            else:
+                if kernel == 'whisker_stim' or kernel == 'auditory_stim':
+                    lags = [-0.1, 0, 0.1, 0.2, 0.3, 0.4, 0.5]
+                    ax.plot(lags, mean_kernel, color = color)
+                    ax.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color=color, alpha=0.3)
+                if kernel == 'piezo_reward':
+                    lags = [0, 0.1, 0.2, 0.3, 0.4, 0.5]
+                    ax.plot(lags, mean_kernel, color=color)
+                    ax.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color=color, alpha=0.3)
+                if kernel == 'jaw_onset':
+                    lags = [-0.5, -0.4, -0.3, -0.2, -0.1]
+                    ax.plot(lags, mean_kernel, color=color)
+                    ax.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color=color, alpha=0.3)
 
             ax.set_title(f"{region} (n={len(kernels_list)})", fontsize=10)
             ax.set_xlabel("Lag (s)")
@@ -2511,7 +2658,7 @@ def neurons_with_consistent_decrease(df, reduced_name, alpha=0.05):
     for neuron_id, group in merged.groupby("neuron_id"):
         diffs = group["diff"].dropna()
         if len(diffs) > 1:
-            t_stat, p_val = ttest_1samp(diffs, popmean=0, alternative="greater")
+            t_stat, p_val = ttest_1samp(diffs, popmean=0, alternative="less")
         else:
             t_stat, p_val = np.nan, np.nan
 
