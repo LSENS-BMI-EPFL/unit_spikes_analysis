@@ -45,7 +45,7 @@ import plotting_utils as putils
 # Set global variables
 BIN_SIZE = 0.1 # in seconds
 
-ROOT_PATH = '/home/mhamon/data/'
+ROOT_PATH = '/scratch/mhamon/results/'
 # ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
 
 def bin_spike_times(spike_times, start_time, end_time, bin_size):
@@ -524,9 +524,9 @@ def load_jaw_onset_data(mouse_id):
     print('Loading jaw onset data...')
 
     jaw_onset_list = []
-    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.h5')
+    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.pkl')
     if os.path.exists(file_path):
-        df = pd.read_hdf(file_path)
+        df = pd.read_pickle(file_path)
         jaw_onset_list.append(df)
     else:
         print(f"[WARN] Jaw onset data file not found for {mouse_id} at {file_path}. Skipping.")

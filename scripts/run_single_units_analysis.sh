@@ -6,12 +6,12 @@
 #SBATCH --time=76:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=10
+#SBATCH --cpus-per-task=40
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=myriam.hamon@epfl.ch
 
 source /home/mhamon/anaconda3/etc/profile.d/conda.sh
-conda activate unit_spike_env
+conda activate unit_spikes_env_2
 
 FILE_LIST="$1"
 RESULTS_PATH="$2"
