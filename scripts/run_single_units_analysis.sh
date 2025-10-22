@@ -2,16 +2,16 @@
 #SBATCH --job-name=single_unit_analysis
 #SBATCH --output=/home/%u/logs/single_units_analysis_%A_%a.out
 #SBATCH --error=/home/%u/logs/single_units_analysis_%A_%a.err
-#SBATCH --array=0-9
-#SBATCH --time=76:00:00
+#SBATCH --array=0-99
+#SBATCH --time=99:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --cpus-per-task=40
+#SBATCH --cpus-per-task=20
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=myriam.hamon@epfl.ch
 
 source /home/mhamon/anaconda3/etc/profile.d/conda.sh
-conda activate unit_spikes_env_2
+conda activate unit_spike_env_2
 
 FILE_LIST="$1"
 RESULTS_PATH="$2"

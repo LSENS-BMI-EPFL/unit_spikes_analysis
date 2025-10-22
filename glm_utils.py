@@ -35,7 +35,7 @@ from pyglmnet import GLM, GLMCV
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 
 # Custom imports
 import NWB_reader_functions as nwbreader
@@ -475,12 +475,12 @@ def keep_active_from_whisker_onset(trial_df):
 
 def load_perf_blocks(trial_table, mouse_id):
 
-    path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+    #path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
     # curves_df = load_helpers.load_learning_curves_data(path_to_data=path_to_data, subject_ids=subject_ids)
 
     file_name = f'{mouse_id}_whisker_0_whisker_trial_learning_curve_interp.h5'
     path_to_file = os.path.join(ROOT_PATH, mouse_id, file_name)
-    path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
+    #path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
 
     df_w = pd.read_hdf(path_to_file)
 
@@ -578,7 +578,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
-        unit_table = unit_table.iloc[[21, 34]]
+    #    unit_table = unit_table.iloc[[21, 34]]
 
 
 
@@ -1287,7 +1287,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # Fit full GLMs using multiprocessing
         # -----------------------------------
 
-        lambdas = np.exp(np.linspace(np.log(0.5), np.log(1e-5), 5)) # regul. strength hyperparam.
+        lambdas = np.exp(np.linspace(np.log(10), np.log(1e-5), 10)) # regul. strength hyperparam.
         #lambdas = np.array([0.001, 0.5])
 
         start_time = time.time()
