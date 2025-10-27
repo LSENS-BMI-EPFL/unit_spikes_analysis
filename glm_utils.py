@@ -785,7 +785,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
                 'auditory_stim': (auditory_times, (-0.1, 0.6)),
-                'whisker_stim': (whisker_times, (-0.1, 0.6)),
+                'whisker_stim': (whisker_times, (0, 0.3)),
                 'piezo_reward': (piezo_licks, (-0, 0.6)),
             }
 
@@ -798,7 +798,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             }
             whisker_splits = np.array_split(whisker_times, nb_of_whisker_kernel)
             for nb in range(nb_of_whisker_kernel):
-                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (-0.1, 0.6))
+                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (0, 0.3))
 
 
         for name, (times, _) in event_defs.items():
