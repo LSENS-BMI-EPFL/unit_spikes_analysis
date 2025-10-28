@@ -20,7 +20,8 @@ from unit_desc_utils import *
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
 
-ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
+
+ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
                                 'NWBFull')
 
@@ -41,6 +42,7 @@ if __name__ == '__main__':
         all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     elif experimenter == 'Myriam_Hamon':
         all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
+    all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
     if joint_analysis:
         info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
@@ -82,11 +84,13 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = [] #invalid NWB file 006, 038 ephys_exclude
+    excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
     print(f"Subject IDs to do: {subject_ids}")
+
+    subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
