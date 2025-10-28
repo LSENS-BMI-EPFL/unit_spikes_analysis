@@ -824,12 +824,12 @@ def main():
     # LOAD DATA
     # ---------
     print('Loading data...')
-    data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'results') #TODO: update when change
-    roc_results_files = glob.glob(os.path.join(data_path_axel, '**', '*_roc_results.csv'),
+    data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results') #TODO: double check
+    roc_results_files = glob.glob(os.path.join(data_path_axel, '**', '*_roc_results_new.csv'),
                                   recursive=True)  # find all roc results files
     roc_df_axel = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
-    data_path_myriam = os.path.join(DATA_PATH, 'Myriam_Hamon', 'combined_results')
-    roc_results_files = glob.glob(os.path.join(data_path_myriam, '**', '*_roc_results.csv'),
+    data_path_myriam = os.path.join(DATA_PATH, 'Myriam_Hamon', 'results')
+    roc_results_files = glob.glob(os.path.join(data_path_myriam, '**', '*_roc_results_new.csv'),
                                             recursive=True)
     roc_df_myriam = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
 
@@ -837,7 +837,7 @@ def main():
     roc_df = roc_df.merge(mouse_info_df[['mouse_id', 'reward_group']], on='mouse_id', how='left')
 
     # Create unique unit identifier based on index
-    roc_df['neuron_id'] = roc_df.index.astype(int)
+    roc_df['unit_id'] = roc_df.index.astype(int)
 
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
@@ -1060,12 +1060,12 @@ def main():
         auditory_mask_pre = (roc_df['analysis_type'] == 'auditory_passive_pre') & (roc_df['significant']==True)
         #auditory_mask_post = (roc_df['analysis_type'] == 'auditory_passive_post') & (roc_df['significant']==True)
         #whisker_units = set(roc_df.loc[whisker_mask_pre & whisker_mask_post, 'unit_id'])
-        whisker_units = set(roc_df.loc[whisker_mask_pre, 'neuron_id']) #global neuronal index
+        whisker_units = set(roc_df.loc[whisker_mask_pre, 'unit_id']) #global neuronal index
         #auditory_units = set(roc_df.loc[auditory_mask_pre & auditory_mask_post, 'unit_id'])
-        auditory_units = set(roc_df.loc[auditory_mask_pre, 'neuron_id'])
+        auditory_units = set(roc_df.loc[auditory_mask_pre, 'unit_id'])
 
         multimodal_units = whisker_units.intersection(auditory_units)
-        roc_df_delta_sub = roc_df_delta[roc_df_delta['neuron_id'].isin(multimodal_units)]
+        roc_df_delta_sub = roc_df_delta[roc_df_delta['unit_id'].isin(multimodal_units)]
 
         # Correlation of multimodal single-unit selectivity changes (delta) across areas, for each modality
         plot_si_delta_correlation_grid_across_areas(roc_df_delta_sub, cond1='whisker_passive', cond2='auditory_passive',

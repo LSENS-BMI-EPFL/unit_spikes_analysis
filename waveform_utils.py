@@ -21,7 +21,7 @@ import allen_utils as allen_utils
 import plotting_utils as plutils
 
 
-def process_area_acronyms(unit_table):  # TODO: use this function to combine future areas e.g. ACAv,ACAd -> ACA, etc.
+def process_area_acronyms(unit_table):
     """
     Process and re-assign area acronyms.
     In particular, groups barrel columns together.
@@ -595,7 +595,7 @@ def classify_striatal_units(unit_data, output_path):
     valid_mask = (
         (unit_data['bc_label'] == 'good') &
         (unit_data['ccf_atlas_acronym'].isin(['CP', 'ACB', 'STR', 'STRd', 'STRv', 'FS', 'OT']))
-        #& (len(unit_data['spike_times'])>300)
+        & (len(unit_data['spike_times'])>300)
     )
 
     # Initialize result column
@@ -670,6 +670,18 @@ def classify_striatal_units(unit_data, output_path):
 
     #summary = unit_data['striatal_type'].value_counts()
 
+    # Summarize
+    # 0. Starting number of neurons to assign
+    n_total = len(unit_data[valid_mask])
+    # 1. Number of unassigned units
+    n_unassigned = (unit_data['striatal_type'] == 'unknown').sum()
+    # 2. Number of assigned units per type
+    n_assigned_per_type = unit_data['striatal_type'].value_counts().to_dict()
+    print(f'Total number of striatal "good" neurons: {n_total}')
+    # 4. Number of assigned units
+    n_assigned = n_total - n_unassigned
+
+
     # Plot classification results
     plot_striatal_waveforms_and_acgs(unit_data, output_path)
 
@@ -678,12 +690,11 @@ def classify_striatal_units(unit_data, output_path):
     unit_data.to_csv(output_file, index=False)
     print('Striatal cell type classification done and saved.')
 
-
     # For each mouse, save the results
     mouse_list = unit_data['mouse_id'].unique()
     for mouse_id in mouse_list:
         mouse_results = unit_data[unit_data['mouse_id'] == mouse_id]
-        cols_to_keep = ['mouse_id', 'session_id', 'behaviour', 'day', 'electrode_group', 'cluster_id', 'striatal_type']
+        cols_to_keep = ['mouse_id', 'session_id', 'behaviour', 'day', 'electrode_group', 'cluster_id', 'neuron_id', 'striatal_type']
         mouse_results = mouse_results[cols_to_keep]
         behaviour = mouse_results['behaviour'].unique()[0]
         day = mouse_results['day'].unique()[0]

@@ -28,8 +28,8 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 
 if __name__ == '__main__':
 
-    single_mouse = True
-    multiple_mice = False
+    single_mouse = False
+    multiple_mice = True
     joint_analysis = True
     expert_day = False
 
@@ -82,11 +82,10 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
+    excluded_mice = [] #invalid NWB file 006, 038 ephys_exclude
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    subject_ids = ['AB131']
     print(f"Subject IDs to do: {subject_ids}")
 
     ### --------------------
@@ -95,14 +94,14 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = ['roc_analysis']
     analyses_to_do_single = ['noise_correlation']
+    analyses_to_do_single = ['roc_analysis']
 
     # Multi-mouse analyses
-    analyses_to_do_multi = ['rsu_vs_fsu', 'strial_type']
+    analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
     analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe']
-    analyses_to_do_multi = ['rsu_vs_fsu']
+    analyses_to_do_multi = ['striatal_type']
 
 
     # --------------
@@ -146,6 +145,7 @@ if __name__ == '__main__':
 
                     if 'roc_analysis' in analyses_to_do_single:
                         roc_analysis(nwb_file, results_path)
+
 
                     if 'xcorr_analysis' in analyses_to_do_single:
                         #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing

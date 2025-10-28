@@ -222,7 +222,7 @@ def compute_si_differences(roc_df):
 
         # Pivot so each neuron has pre and post SI in separate columns
         pivot_df = df.pivot_table(
-            index=['mouse_id', 'neuron_id', 'area_acronym_custom', 'reward_group'],
+            index=['mouse_id', 'unit_id', 'area_acronym_custom', 'reward_group'],
             columns='analysis_type',
             values='selectivity'
         ).reset_index()
@@ -251,8 +251,8 @@ def compute_si_differences(roc_df):
 
         # Merge back into the main dataframe
         results = results.merge(
-            pivot_df[['mouse_id', 'neuron_id', delta_col]],
-            on=['mouse_id', 'neuron_id'],
+            pivot_df[['mouse_id', 'unit_id', delta_col]],
+            on=['mouse_id', 'unit_id'],
             how='left'
         )
 
