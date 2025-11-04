@@ -14,6 +14,7 @@ import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
+from unit_spike_report import generate_unit_spike_report
 from roc_utils import roc_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
@@ -29,8 +30,8 @@ ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analy
 
 if __name__ == '__main__':
 
-    single_mouse = False
-    multiple_mice = True
+    single_mouse = True
+    multiple_mice = False
     joint_analysis = True
     expert_day = False
 
@@ -92,7 +93,7 @@ if __name__ == '__main__':
 
     subject_ids = ['AB131']
 
-    ### --------------------
+    ### -------------------
     # Define analyses to do
     ### -------------------
 
@@ -100,6 +101,7 @@ if __name__ == '__main__':
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
     analyses_to_do_single = ['noise_correlation']
     analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_single = ['unit_spike_report']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
@@ -146,6 +148,9 @@ if __name__ == '__main__':
 
                     if 'unit_raster' in analyses_to_do_single:
                         plot_rasters(nwb_file, results_path)
+
+                    if 'unit_spike_report' in analyses_to_do_single:
+                        generate_unit_spike_report(nwb_file, mouse_results_path, results_path)
 
                     if 'roc_analysis' in analyses_to_do_single:
                         roc_analysis(nwb_file, results_path)

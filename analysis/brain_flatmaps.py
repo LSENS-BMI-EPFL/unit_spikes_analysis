@@ -61,12 +61,15 @@ DARK_GRAY = "#7E7D7D"
 MISSING_DATA_DARK = -2.0
 
 
-DATA_PATH = os.path.join("/Volumes", "Petersen-Lab", "z_LSENS", "Share", "Dana_Shayakhmetova", "new_roc_csv")
-FIGURE_PATH = os.path.join("/Volumes", "Petersen-Lab", "z_LSENS", "Share", "Dana_Shayakhmetova", "flatmap_figures")
+DATA_PATH = os.path.join(r"M:\analysis\Axel_Bisi\combined_data\new_roc_csv")
+FIGURE_PATH = os.path.join(r"M:\analysis\Axel_Bisi\combined_results\roc_flatmaps")
 
 single_analyses = ['auditory_active', 'auditory_passive_pre', 'auditory_passive_post', 'baseline_choice', 'baseline_whisker_choice', 'choice', 'spontaneous_licks', 
-                   'wh_vs_aud_pre_vs_post_learning', 'whisker_active', 'whisker_passive_pre', 'whisker_passive_post', 'whisker_choice']
+                   'wh_vs_aud_pre_vs_post_learning', 'whisker_active', 'whisker_passive_pre', 'whisker_passive_post', 'whisker_choice',
+                   'whisker_pre_vs_post_learning', 'auditory_pre_vs_post_learning']
+
 reward_groups = ['R+', 'R-']
+
 pair_analyses = [['whisker_active', 'auditory_active'], ['whisker_passive_pre', 'whisker_passive_post'], ['choice', 'whisker_choice'], ['baseline_whisker_choice', 'whisker_choice'], ['auditory_passive_pre', 'auditory_passive_post'], ['baseline_choice', 'choice']]
 delta_pairs = [['whisker_passive_pre', 'whisker_passive_post'], ['auditory_passive_pre', 'auditory_passive_post']]
 
@@ -204,7 +207,8 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
         'whisker_passive_pre', 'whisker_passive_post', 'whisker_active',
         'auditory_passive_pre', 'auditory_passive_post', 'auditory_active',
         'wh_vs_aud_pre_vs_post_learning', 'spontaneous_licks',
-        'choice', 'whisker_choice', 'baseline_choice', 'baseline_whisker_choice'
+        'choice', 'whisker_choice', 'baseline_choice', 'baseline_whisker_choice',
+        'whisker_pre_vs_post_learning', 'auditory_pre_vs_post_learning'
     ]
 
     metrics = ['absolute', 'fraction', 'sign_positive', 'sign_negative']
@@ -213,7 +217,11 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
     reward_groups = ['R+', 'R-']
     annotation_states = [True, False]
 
-    # SINGLE HEMISPHERE
+    # ---------------------------
+    # SINGLE HEMISPHERE FLATMAPS
+    # ---------------------------
+
+    # Generate template atlas for single hemisphere
     fig, ax = generate_template_atlas(hemisphere='left', annotate=True)
     save_flatmap_figure(fig, "template_annotated", output_dir=single_hemisphere_output, dpi=500)
     plt.close(fig)
@@ -221,23 +229,27 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
     save_flatmap_figure(fig, "template_not_annotated", output_dir=single_hemisphere_output, dpi=500)
     plt.close(fig)
 
+    # Iterate over analysis type and plot
     for analysis in analyses:
         print(f"Processing single hemisphere analyses for {analysis}")
         for reward_group in reward_groups:
             for metric in metrics:
                 for annotate in annotation_states:
                     try:
-                        fig, ax, text = generate_single_hemisphere(
-                            df, analysis, reward_group=reward_group, metric=metric, annotate=annotate
-                        )
-                        if fig is not None:
-                            save_flatmap_figure(fig, text, output_dir=single_hemisphere_output, dpi=500)
-                            plt.close(fig)
+                        pass
+                        #fig, ax, text = generate_single_hemisphere(df, analysis, reward_group=reward_group, metric=metric, annotate=annotate)
+                        #if fig is not None:
+                        #    save_flatmap_figure(fig, text, output_dir=single_hemisphere_output, dpi=500)
+                        #    plt.close(fig)
                     except Exception as e:
                         print(f"Error generating single map for {analysis}, {reward_group}, {metric}, annotate={annotate}: {e}")
 
 
-    # BOTH HEMISPHERES
+    # ------------------------
+    # DUAL HEMISPHERE FLATMAPS
+    # ------------------------
+
+    # Generate template atlas for both hemispheres
     fig, ax = generate_template_atlas(hemisphere='both', annotate=True)
     save_flatmap_figure(fig, "both_template_annotated", output_dir=dual_hemisphere_output, dpi=500)
     plt.close(fig)
@@ -246,9 +258,12 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
     plt.close(fig)
 
     dual_metrics = ['absolute', 'fraction', 'sign']
-    annotation_states = [True, False]
+    #annotation_states = [True, False]
+    annotation_states = [True]
 
-    #one analysis vs the other
+    # -------------------------------------------------------
+    # Comparing different analyses for a given reward group
+    # -------------------------------------------------------
     comparison_pairs = [
         (['whisker_passive_pre', 'whisker_passive_post'], 'R+'),
         (['whisker_passive_pre', 'whisker_passive_post'], 'R-'),
@@ -266,11 +281,13 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
 
     print(f"\nDual hemispheres metrics: {dual_metrics}")
 
+    # Iterate over analysis pairs
     for analyses_pair, reward_group in comparison_pairs:
         print(f"Processing dual map: {analyses_pair[0]} vs {analyses_pair[1]} for {reward_group}")
         for metric in [m for m in dual_metrics if m != 'sign']: #no sign
             for annotate in annotation_states:
                 try:
+                    pass
                     fig, ax, text = generate_dual_hemispheres(df, analyses_pair, color_bar_type, reward_group=reward_group, metric=metric, annotate=annotate)
                     if fig is not None:
                         save_flatmap_figure(fig, text, output_dir=dual_hemisphere_output, dpi=500)
@@ -279,28 +296,40 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
                     print(f"Error generating dual map analysis 1 vs 2: {analyses_pair}, {reward_group}, {metric}, annotate={annotate}: {e}")
 
 
-    # R+ vs R-
+
+    # Comparison R+ vs. R- : iterate over analyses
     for analysis in analyses:
         print(f"Processing dual map: {analysis} R+ vs R-")
         for metric in [m for m in dual_metrics if m != 'sign']:
             for annotate in annotation_states:
                 try:
                     # reward_group=None
-                    fig, ax, text = generate_dual_hemispheres(df, [analysis], color_bar_type, reward_group=None, metric=metric, annotate=annotate)
+                    fig, ax, text = generate_dual_hemispheres(df, [analysis],
+                                                              color_bar_type,
+                                                              reward_group=None,
+                                                              metric=metric,
+                                                              annotate=annotate)
                     if fig is not None:
                         save_flatmap_figure(fig, text, output_dir=dual_hemisphere_output, dpi=500)
                         plt.close(fig)
+
                 except Exception as e:
                     print(f"Error generating dual map R+ vs R-: {analysis}, {metric}, annotate={annotate}: {e}")
 
-    # Sign Comparison
+    # Comparison positive/negative modulation : iterate over analyses
     for analysis in analyses:
         for reward_group in reward_groups:
             print(f"Processing dual map: {analysis} {reward_group} Directional")
             for annotate in annotation_states:
                 try:
-                    # metric='sign' so that we do Positive vs Negative logic
-                    fig, ax, text = generate_dual_hemispheres(df, [analysis], color_bar_type, reward_group=reward_group, metric='sign', annotate=annotate)
+                    pass
+                    # Note: metric='sign' so that we do Positive vs Negative logic
+                    fig, ax, text = generate_dual_hemispheres(df,
+                                                              [analysis],
+                                                              color_bar_type,
+                                                              reward_group=reward_group,
+                                                              metric='sign',
+                                                          annotate=annotate)
                     if fig is not None:
                         save_flatmap_figure(fig, text, output_dir=dual_hemisphere_output, dpi=500)
                         plt.close(fig)
@@ -419,7 +448,7 @@ def get_base_colormap(intensity_range=(0.2, 1.0)):
     colors = base_cmap(np.linspace(intensity_range[0], intensity_range[1], 256))
     return LinearSegmentedColormap.from_list(f'custom_base', colors)
 
-def get_reward_group_colormap(reward_group, intensity_range=(0.2, 1.0)):
+def get_reward_group_colormap(reward_group, intensity_range=(0.01, 1.0)):
     """
     Get colormap based on reward group only.
     Green gradient for R+, red gradient for R-.
@@ -603,6 +632,7 @@ def get_data_and_regions(df_filtered, metric, reward_group=None):
         data = df_mapped['selectivity'].abs().groupby(df_mapped['swanson_region']).mean()
         label = 'Mean absolute selectivity'
         vmin_metric, vmax_metric = compute_vlims(data)
+        vmin_metric, vmax_metric =0,1
 
     elif metric == 'fraction':
         sig_counts = df_mapped[df_mapped['significant']].groupby('swanson_region').size()
@@ -814,6 +844,8 @@ def generate_dual_hemispheres(df, analysis_types, color_bar_type, reward_group=N
         # Shared vmin/vmax
         vmin = min(vmin_left, vmin_right)
         vmax = max(vmax_left, vmax_right)
+        #vmin = 0
+        #vmax = 100
         
         left_title = f'{left_analysis.replace("_", " ").capitalize()} - {reward_group}'
         right_title = f'{right_analysis.replace("_", " ").capitalize()} - {reward_group}'
@@ -878,6 +910,8 @@ def generate_dual_hemispheres(df, analysis_types, color_bar_type, reward_group=N
             elif color_bar_type == 'reward_group_colorbar':
                 cmap_left = get_reward_group_colormap('R+')
                 cmap_right = get_reward_group_colormap('R-')
+                #vmin_right, vmax_right = 0,100
+                #vmin_left, vmax_left = 0,100
                 plot_dual_colorbar(fig, ax, br, all_swanson_regions, df_all_swanson, 
                             left_data, right_data, cmap_left, vmin_left, vmax_left, 
                             cmap_right, vmin_right, vmax_right, label, 
@@ -1192,19 +1226,27 @@ def plot_dual_hemispheres_delta(df,analysis_type_1,analysis_type_2,metric, annot
 
 ## Full run 
 def main(args):
-    thres = args.thres 
+    """Main function to load data, filter, and generate flatmaps."""
+    # Data filtering, number of units and number of mice
+    thres = args.thres
     mouse_thres = args.mouse_thres
-    color_bar_type = args.color_bar_type 
+    print(f"Filtering areas with at least {thres} neurons and {mouse_thres} mice.")
 
-    #pulling mice info 
+    color_bar_type = args.color_bar_type
+
+    # ------------
+    # Loading data
+    # ------------
     print("\nPulling mice information...")
-    mouse_info_path = os.path.join("/Volumes", "Petersen-Lab", "z_LSENS", "Share", "Dana_Shayakhmetova", "mouse_info", "joint_mouse_reference_weight.xlsx")
+    mouse_info_path = os.path.join(r'M:\z_LSENS\Share\Axel_Bisi_Share\dataset_info\joint_mouse_reference_weight.xlsx')
     mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)]
+
     print("Done.")
 
     #pulling ROC data 
@@ -1232,7 +1274,6 @@ def main(args):
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
     print("Done.")
 
-
     #Creating area columns 
     print("\nCreating swanson area column...")
     roc_df = swanson_conversion(roc_df)
@@ -1251,7 +1292,7 @@ def main(args):
     print("Done.")
 
     #Running delta flatmaps
-    print("\nGenerating dual flatmaps...")
+    print("\nGenerating delta flatmaps across conditions...")
     FIGURE_PATH_DELTA_ABS = os.path.join(FIGURE_PATH, "delta_flatmaps", "mean_absolute")
     FIGURE_PATH_DELTA_FRAC = os.path.join(FIGURE_PATH, "delta_flatmaps", "fraction")
 
@@ -1263,7 +1304,7 @@ def main(args):
 
     print("Done.")
 
-    print("\nAll flatmaps generate.")
+    print("\nAll flatmaps generated.")
 
 
 if __name__ == '__main__':
@@ -1272,7 +1313,7 @@ if __name__ == '__main__':
     parser.add_argument(
         '--thres',
         type=int,
-        default=15,
+        default=30,
         help='Minimum number of neurons required for filtering areas.'
     )
 
