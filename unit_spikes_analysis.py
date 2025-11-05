@@ -22,9 +22,9 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 
-ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull')
+ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWBFull')
+                                'NWBFull_new')
 
 
 
@@ -91,7 +91,6 @@ if __name__ == '__main__':
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
     print(f"Subject IDs to do: {subject_ids}")
 
-    subject_ids = ['AB131']
 
     ### -------------------
     # Define analyses to do
