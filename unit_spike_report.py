@@ -107,17 +107,11 @@ def make_title_table(fig, metadata: Dict[str, Any]):
     ax: matplotlib ax where the metadata text will be placed (no axes)
     metadata example keys: cluster_id, neuron_id, area_parent, area, layer, mouse_name
     """
-    lines = []
-    order = ['mouse_id', 'neuron_id', 'ccf_atlas_acronym']
-    for k in order:
-        if k in metadata:
-            lines.append(f"{metadata[k]}")
-    txt = "\n".join(lines)
-    txt_one_line = " , ".join(lines)
-    txt_one_line = f"Mouse {metadata['mouse_id']}, neuron ID {metadata['neuron_id']}, {metadata['ccf_atlas_acronym']}"
+    reward_txt = 'R+' if metadata.get('reward_group', 1) == 1 else 'R-'
+    txt_one_line = f"Mouse {metadata['mouse_id']} ({reward_txt}), neuron ID {metadata['neuron_id']}, {metadata['ccf_atlas_acronym']}"
     # big title text
     fig.suptitle(txt_one_line, x=0.5, y=0.95, ha='center', va='center', fontsize=16, family='monospace', fontweight='semibold')
-    return txt
+    return txt_one_line
 
 def plot_raster(
     ax,
@@ -139,6 +133,7 @@ def plot_raster(
     Colors spikes by trial type (if cmap provided) and/or by context (if context_cmap provided).
     Adds shading for passive trials.
     """
+
     # Select subset
     if condition_mask is None:
         sel_df = trials_df.copy()
@@ -158,46 +153,38 @@ def plot_raster(
 
     n_trials = len(sel_df)
 
-    # Highlight passive trials
+    # Highlight passive trials (NO flip now)
     if context_col in sel_df.columns:
-        passive_idx = sel_df.index[sel_df[context_col].str.contains("passive", case=False, na=False)].to_numpy()
-        for idx in passive_idx:
-            # y-coordinate (flipped so early trials on top)
-            y0 = n_trials - 1 - (sel_df.index.get_loc(idx) if idx in sel_df.index else idx)
-            ax.axhspan(
-                y0 - 0.5, y0 + 0.5,
-                facecolor='lightgray',
-                edgecolor="none",
-                alpha=0.3,
-                zorder=0
-            )
+        passive_mask = sel_df[context_col].str.contains("passive", case=False, na=False)
+        for row_i in np.where(passive_mask)[0]:
+            ax.axhspan(row_i - 0.5, row_i + 0.5,
+                       facecolor='lightgray', edgecolor="none", alpha=0.3, zorder=0)
 
-    # Plot spikes
+    # Plot spikes (NO flip → y = i instead of n_trials-1-i)
     for i, (_, row) in enumerate(sel_df.iterrows()):
-        align = row[align_col]
-        rel_spikes = spikes - align
-        mask = (rel_spikes >= tmin) & (rel_spikes < tmax)
-        xs = rel_spikes[mask]
-        ys = np.full(xs.shape, n_trials - 1 - i)  # flipped y
+        rel_spikes = spikes - row[align_col]
+        xs = rel_spikes[(rel_spikes >= tmin) & (rel_spikes < tmax)]
+        ys = np.full(xs.shape, i)  # first trial = row 0, last = bottom
         if xs.size:
-            # Determine color
-            color = 'k'
-            if context_cmap is not None and context_col in row and pd.notnull(row[context_col]):
+            if context_cmap is not None and pd.notnull(row.get(context_col)):
                 color = context_cmap.get(row[context_col], 'k')
-            elif cmap is not None and trial_type_col in row and pd.notnull(row[trial_type_col]):
+            elif cmap is not None and pd.notnull(row.get(trial_type_col)):
                 color = cmap.get(row[trial_type_col], 'k')
+            else:
+                color = 'k'
             ax.scatter(xs, ys, s=dot_size, marker='o', color=color, edgecolors='none')
 
-    # Formatting
+    # Axis formatting
     ax.set_xlim(tmin, tmax)
-    ax.set_ylim(-1, n_trials)
-    ax.set_ylabel('Trials (early → late)')
-    if 'jaw' in align_col:
-        ax.set_xlabel('Time from jaw (s)')
-    else:
-        ax.set_xlabel('Time from start (s)')
-    ax.axvline(x=0, color='k', linestyle='--', linewidth=1)
+    #ax.set_ylim(-1, n_trials)
+    ax.set_ylabel("Trials (first → last)")
+    ax.set_xlabel(f"Time from {align_col} (s)")
+    ax.axvline(0, color='k', linestyle='--', linewidth=1)
+
+    # Make trial 0 at top
     ax.invert_yaxis()
+
+
     return
 
 def plot_psth(ax,
@@ -286,7 +273,7 @@ def plot_spike_amplitudes(ax,
     ax.set_xlim(tmin, tmax)
     ax.set_title('Spike amplitudes')
 
-def plot_performance(ax, trials_df: pd.DataFrame, block_size: int = 20, time_col: str = 'start_time', type_colors: Optional[Dict[str, str]] = None):
+def plot_performance(ax, trials_df: pd.DataFrame, block_size: int = 20, time_col: str = 'start_time', type_colors: Optional[Dict[str, str]] = None, metadata: Optional[Dict[str, Any]] = None):
     trials_df = trials_df[(trials_df.context=='active')
                         & (trials_df.early_lick==0)]
     trials_df  = trials_df.reset_index(drop=True)
@@ -314,9 +301,15 @@ def plot_performance(ax, trials_df: pd.DataFrame, block_size: int = 20, time_col
 
     # Plot performance
     if type_colors is None:
-        type_colors = {'whisker_trial':'forestgreen',
+        type_colors = {'whisker_trial':'forestgreen' if metadata['reward_group']==1 else 'crimson',
                        'auditory_trial':'mediumblue',
                        'no_stim_trial':'k'}
+    # Update whisker color based on reward group
+    if metadata is not None:
+        if metadata.get('reward_group', 1) == 1:
+            type_colors['whisker_trial'] = 'forestgreen'
+        else:
+            type_colors['whisker_trial'] = 'crimson'
     sns.lineplot(data=trials_df, x='block', y='hr_a', ax=ax, label='Auditory', color=type_colors['auditory_trial'], markers='o', lw=2)
     sns.lineplot(data=trials_df, x='block', y='hr_w', ax=ax, label='Whisker', color=type_colors['whisker_trial'], markers='o', lw=2)
     sns.lineplot(data=trials_df, x='block', y='hr_n', ax=ax, label='False alarm', color=type_colors['no_stim_trial'], markers='o', lw=2)
@@ -328,7 +321,7 @@ def plot_performance(ax, trials_df: pd.DataFrame, block_size: int = 20, time_col
     ax.set_xlabel('Trials')
     ax.set_ylim(-0.05, 1.05)
     ax.set_ylabel('P(lick)')
-    ax.legend(frameon=False, fontsize=8, loc='center right')
+    ax.legend(frameon=False, fontsize=8, loc='center left', bbox_to_anchor=(1.05, 0.5))
     ax.set_title(f'Mouse performance')
     ax.grid(alpha=0.3)
     return
@@ -409,7 +402,7 @@ def generate_neuron_pdf(neuron_id: Any,
          - 'trial_type' (strings like 'whisker'/'auditory')
          - 'is_whisker', 'is_auditory' boolean optional
          - 'jaw_onset' (seconds) (alignment)
-         - 'trial_order' or similar for sorting early->late
+         - 'trial_id' or similar for sorting early->late
          - 'passive_pre'/'passive_post'/'active' booleans or a 'behavioral_state' column
          - 'lick_flag' boolean (or 'licked')
          - 'trial_outcome' or 'correct' column (0/1) for performance
@@ -448,8 +441,9 @@ def generate_neuron_pdf(neuron_id: Any,
     ax_raster_all = add_ax_for_key('raster_all')
     if ax_raster_all is not None:
         plot_raster(ax_raster_all, spikes, trials_df, align_col=align_col_start, tmin=tmin, tmax=tmax,
-                    sort_by='trial_order' if 'trial_order' in trials_df.columns else None,
+                    sort_by='trial_id' if 'trial_id' in trials_df.columns else None,
                     cmap=type_colors, trial_type_col='trial_type')
+        ax_raster_all.set_title('All trials')
 
     # Raster whisker trials
     ax_raster_whisk = add_ax_for_key('raster_whisker')
@@ -465,8 +459,9 @@ def generate_neuron_pdf(neuron_id: Any,
             'passive_post': plutils.adjust_lightness(type_colors['whisker_trial'], 0.4)
         }
         plot_raster(ax_raster_whisk, spikes, trials_df, align_col=align_col_start, tmin=tmin, tmax=tmax,
-                    sort_by='trial_order' if 'trial_order' in trials_df.columns else None,
+                    sort_by='trial_id' if 'trial_id' in trials_df.columns else None,
                     condition_mask=mask, cmap=type_colors, trial_type_col='trial_type', context_cmap=context_cmap)
+        ax_raster_whisk.set_title('Whisker trials')
 
     # Raster auditory trials
     ax_raster_aud = add_ax_for_key('raster_auditory')
@@ -482,8 +477,9 @@ def generate_neuron_pdf(neuron_id: Any,
             'passive_post': plutils.adjust_lightness(type_colors['auditory_trial'], 0.6)
         }
         plot_raster(ax_raster_aud, spikes, trials_df, align_col=align_col_start, tmin=tmin, tmax=tmax,
-                    sort_by='trial_order' if 'trial_order' in trials_df.columns else None,
+                    sort_by='trial_id' if 'trial_id' in trials_df.columns else None,
                     condition_mask=mask, cmap=type_colors, trial_type_col='trial_type', context_cmap=context_cmap)
+        ax_raster_aud.set_title('Auditory trials')
 
     # Raster aligned at jaw onsetY
     align_col_jaw = 'jaw_onset_time' if 'jaw_onset_time' in trials_df.columns else None
@@ -493,8 +489,9 @@ def generate_neuron_pdf(neuron_id: Any,
             ax_raster_jaw.text(0.5,0.5, "No jaw_onset_time column", ha='center', va='center')
         else:
             plot_raster(ax_raster_jaw, spikes, trials_df, align_col=align_col_jaw, tmin=-0.5, tmax=0.2, # different window for jaw
-                        sort_by='trial_order' if 'trial_order' in trials_df.columns else None,
+                        sort_by='trial_id' if 'trial_id' in trials_df.columns else None,
                         cmap=type_colors, trial_type_col='trial_type')
+            ax_raster_jaw.set_title('All trials')
 
     # ============= ROW 2: PSTHs (by context) =============
     # Color adjustment helper
@@ -739,7 +736,7 @@ def generate_neuron_pdf(neuron_id: Any,
 
     ax_perf = add_ax_for_key('performance')
     if ax_perf is not None:
-        plot_performance(ax_perf, trials_df, time_col='start_time', type_colors=type_colors)
+        plot_performance(ax_perf, trials_df, time_col='start_time', type_colors=type_colors, metadata=metadata)
 
     # -----------------------------------
     # Adjust figure, make title, and save
@@ -814,6 +811,7 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, res_path):
     mouse_id = nwb_reader.get_mouse_id(nwb_file)
     session_id = nwb_reader.get_session_id(nwb_file)
     initials = nwb_reader.get_experimenter(nwb_file)
+    sess_metadata = nwb_reader.get_session_metadata(nwb_file)
 
     # Load trial and unit tables from NWB
     trial_df = nwb_reader.get_trial_table(nwb_file)
@@ -834,11 +832,12 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, res_path):
 
     # Load jaw onset, merge onto trial_df
     jaw_data_path = os.path.join(mouse_res_path, 'dlc_jaw_onset_times.pkl')
-    jaw_onset_df = pd.read_pickle(jaw_data_path)
-    trial_df = trial_df.merge(
-        jaw_onset_df[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
-        on=['mouse_id', 'session_id', 'trial_id'], how='left')
-    trial_df['jaw_onset_time'] = trial_df['start_time'] + trial_df['jaw_dlc_onset']
+    if os.path.exists(jaw_data_path):
+        jaw_onset_df = pd.read_pickle(jaw_data_path)
+        trial_df = trial_df.merge(
+            jaw_onset_df[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
+            on=['mouse_id', 'session_id', 'trial_id'], how='left')
+        trial_df['jaw_onset_time'] = trial_df['start_time'] + trial_df['jaw_dlc_onset']
 
     # Filter, format data
     unit_df_subset = unit_df[(unit_df['bc_label']=='good') & (unit_df['firing_rate']>=1)]
@@ -862,6 +861,7 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, res_path):
 
             metadata = {
             'mouse_id':mouse_id,
+            'reward_group':sess_metadata['wh_reward'],
             'neuron_id':row['neuron_id'],
             'ccf_atlas_acronym':row['ccf_atlas_acronym'],
             'waveform_mean': row['waveform_mean'],
