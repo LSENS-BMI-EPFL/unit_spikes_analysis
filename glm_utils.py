@@ -1127,7 +1127,7 @@ def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test,
     if isinstance(lambdas, np.ndarray):
         glmcv = GLMCV(
             distr='gaussian',
-            score_metric='r2',
+            score_metric='pseudo_R2',
             fit_intercept=False,
             alpha=0.0,
             reg_lambda=lambdas,
@@ -1147,7 +1147,7 @@ def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test,
     # -------------------------
     glm_final = GLM(
         distr='gaussian',
-        score_metric='r2',
+        score_metric='pseudo_R2',
         fit_intercept=False,
         alpha=0.0,
         reg_lambda=lambda_opt,
@@ -1414,7 +1414,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_perfs = []
         feature_names_perfs = []
         for perf_predictors in add_perf_pred:
-            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, include_predictors = [perf_predictors])
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE,  include_predictors = [perf_predictors])
             event_defs = predictor_types['event_defs']
             analog_keys = predictor_types['analog_keys']
 
