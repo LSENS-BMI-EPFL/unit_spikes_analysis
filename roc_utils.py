@@ -30,18 +30,15 @@ def process_nwb_tables(nwb_file):
     trials = nwb_file.trials.to_dataframe()
 
     # Keep well-isolated units with a valid brain region label
-    units = units[(units['bc_label'] == 'good')
-                  &
-                  (units['ccf_acronym'].str.contains('[A-Z]'))]
-
+    units = units[(units['bc_label'] == 'good')]
 
     # Keep fewer columns only
-    columns_to_keep = ["cluster_id", "firing_rate", "ccf_acronym", "ccf_name", "ccf_parent_acronym", "ccf_parent_id",
+    columns_to_keep = ["cluster_id", "firing_rate", "ccf_acronym", "ccf_name", "ccf_parent_acronym", "ccf_parent_id", #TODO: update with new CCF fields
                        "ccf_parent_name", "spike_times"]
     units = units[columns_to_keep]
 
-    # Use index as new column named "unit_id", then reset
-    units['unit_id'] = units.index
+    # Use index as new column named "neuron_id", then reset
+    units['neuron_id'] = units.index
     units.reset_index(drop=True, inplace=True)
 
     # If context is only NaNs, set to 'active' for all trials
@@ -126,7 +123,7 @@ def extract_event_times(nwb_file, event_type='whisker', context='passive', has_c
             condition &= trials['context'] == context #add context condition on top of stimulus type
 
         # Keep Hits only in active context
-        condition &= trials['lick_flag'] == 1 if context == 'active' else True
+        #condition &= trials['lick_flag'] == 1 if context == 'active' else True
         event_times = trials[condition]['start_time'].values
 
     elif event_type == 'lick_trial':
@@ -167,10 +164,12 @@ def extract_spike_data(nwb_file):
 
     nwb_file_path = pathlib.Path(nwb_file)
     mouse_name = nwb_file_path.name[:5]
+    session_id = nwb_file_path.stem
     nwb = nwb_reader.read_nwb_file(nwb_file_path)
 
     unit_table, trial_table = process_nwb_tables(nwb)
     unit_table['mouse_id'] = mouse_name
+    unit_table['session_id'] = session_id
 
     # Store processed data
     proc_unit_table = []
@@ -263,7 +262,7 @@ def  select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'whisker_passive_post':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_post')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_post')]['post_spikes']
-    elif analysis_type == 'whisker_active':
+    elif analysis_type == 'whisker_active': # hit and miss trials
         spikes_1 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'active')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'active')]['post_spikes']
     elif analysis_type == 'whisker_pre_vs_post_learning':
@@ -275,7 +274,7 @@ def  select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'auditory_passive_post':
         spikes_1 = unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_post')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_post')]['post_spikes']
-    elif analysis_type == 'auditory_active':
+    elif analysis_type == 'auditory_active': # hit and miss trials
         spikes_1 = unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'active')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'active')]['post_spikes']
     elif analysis_type == 'auditory_pre_vs_post_learning':
@@ -308,7 +307,7 @@ def  select_spike_counts(unit_data, analysis_type):
     elif analysis_type == 'baseline_whisker_choice':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['pre_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['pre_spikes']
-    else:
+    else: #TODO: hit. vs false alarm (per modality?) but aligned at jaw onset
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
     # Make these into flattened arrays
@@ -322,24 +321,24 @@ def  select_spike_counts(unit_data, analysis_type):
     return spikes_counts_1, spikes_counts_2
 
 
-def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
+def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     """
     Process a single unit for ROC analysis.
-    :param unit_id: unit ID
+    :param neuron_id: unit ID
     :param proc_unit_table: processed unit table
     :param analysis_type: type of analysis
     :param results_path: path to save results
     :return:
     """
-    unit_table = proc_unit_table[proc_unit_table['unit_id'] == unit_id]
+    unit_table = proc_unit_table[proc_unit_table['neuron_id'] == neuron_id]
     mouse_id = unit_table['mouse_id'].values[0]
     area = unit_table['ccf_parent_acronym'].values[0]
 
     # Keep relevant columns for results
-    cols_to_keep = ['mouse_id', 'unit_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
+    cols_to_keep = ['mouse_id', 'session_id', 'neuron_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
                     'ccf_parent_acronym', 'ccf_parent_id', 'ccf_parent_name']
     res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
-    res_dict.update({'analysis_type': analysis_type, 'unit_id': unit_id, 'mouse_id': mouse_id, 'area': area})
+    res_dict.update({'analysis_type': analysis_type, 'neuron_id': neuron_id, 'mouse_id': mouse_id, 'area': area})
 
     # Select adequate spike counts and compute ROC
     spikes_1, spikes_2 = select_spike_counts(unit_table, analysis_type)
@@ -391,7 +390,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
             ax.tick_params(axis='both', which='major', labelsize=15)
 
         pval = res_dict['p_value_to_show']
-        suptitle_text = f'ROC Analysis for mouse {mouse_id} unit {unit_id} ({area}) ({analysis_type})\n'
+        suptitle_text = f'ROC Analysis for mouse {mouse_id} unit {neuron_id} ({area}) ({analysis_type})\n'
         suptitle_text += f'AUC = {roc_auc:.2f}, selectivity = {selectivity_index:.2f}, p-value = {pval:.3f}'
         fig.suptitle(suptitle_text)
 
@@ -411,7 +410,7 @@ def process_unit(unit_id, proc_unit_table, analysis_type, results_path):
         # Show
         fig.tight_layout()
         plt.close()
-        fname = f'{mouse_id}_{unit_id}_{analysis_type}.png'
+        fname = f'{mouse_id}_{neuron_id}_{analysis_type}.png'
         results_path_fig = os.path.join(results_path, 'figures')
         os.makedirs(results_path_fig, exist_ok=True)
         fig.savefig(os.path.join(results_path_fig, fname))
@@ -454,7 +453,7 @@ def roc_analysis(nwb_file, results_path):
                           'choice', # comparing post. trial start spikes in lick vs no-lick trials
                           'whisker_choice', # comparing post. stim spikes in whisker hit vs miss trials
                           'baseline_choice', # comparing pre. trial start spikes in lick vs no-lick trials
-                        'baseline_whisker_choice' # comparing pre. stim spikes in whisker hit vs miss trials
+                          'baseline_whisker_choice' # comparing pre. stim spikes in whisker hit vs miss trials
                           ]
 
     # Init. global results
@@ -462,12 +461,12 @@ def roc_analysis(nwb_file, results_path):
 
     for analysis_type in analyses_to_do:
         print(f'ROC analysis type: {analysis_type}')
-        # Use multiprocessing to process each unit_id in parallel
-        unit_ids = proc_unit_table['unit_id'].unique()
+        # Use multiprocessing to process each neuron_id in parallel
+        neuron_ids = proc_unit_table['neuron_id'].unique()
 
-        with multiprocessing.Pool(os.cpu_count()-5) as pool:
+        with multiprocessing.Pool(5) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
-            analysis_results = pool.map(func, unit_ids)
+            analysis_results = pool.map(func, neuron_ids)
             results.extend(analysis_results)
 
     # Create and save individual mouse data

@@ -61,8 +61,8 @@ DARK_GRAY = "#7E7D7D"
 MISSING_DATA_DARK = -2.0
 
 
-DATA_PATH = os.path.join("/Volumes", "Petersen-Lab", "z_LSENS", "Share", "Dana_Shayakhmetova", "new_roc_csv")
-FIGURE_PATH = os.path.join("/Volumes", "Petersen-Lab", "z_LSENS", "Share", "Dana_Shayakhmetova", "flatmap_figures")
+DATA_PATH = os.path.join(r"M:\analysis\Axel_Bisi\combined_data\new_roc_csv")
+FIGURE_PATH = os.path.join(r"M:\analysis\Axel_Bisi\combined_results\roc_flatmaps")
 
 single_analyses = ['auditory_active', 'auditory_passive_pre', 'auditory_passive_post', 'baseline_choice', 'baseline_whisker_choice', 'choice', 'spontaneous_licks', 
                    'wh_vs_aud_pre_vs_post_learning', 'whisker_active', 'whisker_passive_pre', 'whisker_passive_post', 'whisker_choice']
@@ -1233,7 +1233,7 @@ def main(args):
     print("Done.")
 
 
-    #Creating area columns 
+    #Creating area columns
     print("\nCreating swanson area column...")
     roc_df = swanson_conversion(roc_df)
     #else defaults to ccf_parent_acronym 

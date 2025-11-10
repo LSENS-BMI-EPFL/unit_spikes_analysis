@@ -13,16 +13,19 @@ import pandas as pd
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
+from raster_utils import plot_rasters
+from unit_spike_report import generate_unit_spike_report
 # from raster_utils import plot_rasters
 from roc_utils import roc_analysis
-# from waveform_utils import assign_rsu_vs_fsu
+from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
-from glm_utils import run_unit_glm_pipeline_with_pool
+#from glm_utils import run_unit_glm_pipeline_with_pool
+from noise_correl_utils import noise_correlation_analysis
 
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWB')
+                                'NWBFull')
 
 
 
@@ -38,11 +41,9 @@ if __name__ == '__main__':
 
     proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     if experimenter == 'Axel_Bisi':
-         all_nwb_names = os.listdir(ROOT_PATH_AXEL)
+        all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     elif experimenter == 'Myriam_Hamon':
-        all_nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
-    # all_nwb_names.extend(all_nwb_names_bis)
-    all_nwb_names = os.listdir(ROOT_PATH_AXEL)
+        all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
     all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
     if joint_analysis:
@@ -71,7 +72,6 @@ if __name__ == '__main__':
         (mouse_info_df['exclude'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
-
         ]
 
     # Show mouse count per reward group
@@ -80,6 +80,7 @@ if __name__ == '__main__':
         print(f"Reward group {group} has {count} mice.")
 
     # Filter by available NWB files
+    all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
     subject_ids = mouse_info_df['mouse_id'].unique()
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
@@ -101,12 +102,15 @@ if __name__ == '__main__':
 
     # Single-mouse analyses
     analyses_to_do_single = ['unit_raster', 'roc_analysis', 'xcorr_analysis']
-    analyses_to_do_single = ['unit_glm']
+    analyses_to_do_single = ['noise_correlation']
+    analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_single = ['unit_spike_report']
 
     # Multi-mouse analyses
-    analyses_to_do_multi = ['rsu_vs_fsu']
+    analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
     analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe']
+    analyses_to_do_multi = ['striatal_type']
 
 
     # --------------

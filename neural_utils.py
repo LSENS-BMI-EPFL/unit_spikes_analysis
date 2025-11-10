@@ -66,6 +66,10 @@ def process_single_nwb(nwb):
 
 
         unit_table['mouse_id'] = mouse_id
+        unit_table['session_id'] = mouse_id
+        unit_table['day'] = day
+        unit_table['behaviour'] = beh_type
+
         print('Warning: number of root neurons :', mouse_id, len(unit_table[unit_table.ccf_acronym=='root']))
         root_units = unit_table[unit_table.ccf_acronym=='root']
         if not root_units.empty:
