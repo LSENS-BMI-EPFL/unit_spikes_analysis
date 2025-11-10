@@ -4,7 +4,7 @@
     <content url="file://$MODULE_DIR$/../NWB_reader" />
     <content url="file://$MODULE_DIR$/../allen_utils" />
     <content url="file://$MODULE_DIR$" />
-    <orderEntry type="jdk" jdkName="nwb_analysis_env" jdkType="Python SDK" />
+    <orderEntry type="jdk" jdkName="ephys_utils_py39" jdkType="Python SDK" />
     <orderEntry type="sourceFolder" forTests="false" />
   </component>
   <component name="PyDocumentationSettings">

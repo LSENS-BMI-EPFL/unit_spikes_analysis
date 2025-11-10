@@ -27,11 +27,21 @@ if __name__ == '__main__':
     all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
 
 
-    subject_ids = [ "AB131"]
-    # subject_ids = ["AB131"]
-    git_version = '40fbc11'
-    git_version = '1cce900'
-    git_version = '2ce0ecd'
+    subject_ids = [
+         "AB151", "AB157", "AB134", "AB141", "AB120",
+        "AB145", "AB147", "AB162", "AB127", "AB125", "AB107", "AB102", "AB092",
+        "AB154", "AB139", "AB119", "AB153", "AB133", "AB121", "AB156",
+        "AB142", "AB093", "AB140", "AB159", "AB126", "AB122", "AB123", "AB144",
+        "AB152", "AB130", "AB117", "AB164", "AB150", "AB138", "AB129", "AB149",
+        "AB131", "AB136", "AB163","AB087", "AB132", "AB094", "AB095",
+        "AB085", "AB104", "AB143", "AB116", "AB128"
+    ] # bad "AB158" AB107,
+    # subject_ids = [ "AB086", "AB151", "AB157", "AB134", "AB141", "AB120",]
+
+    subject_ids = ["AB107"]
+    # git_version = '40fbc11'
+    git_version = '4227ca6'
+    git_version = 'd0b7dd5'
     # git_version = '807b8e7'
     # git_version = 'd8facbb'
 
@@ -44,7 +54,7 @@ if __name__ == '__main__':
         plots = [ 'average_kernels_by_region']
         # plots = ['metrics'] 'per_unit_kernel_plots',, 'average_predictions_per_trial_types'
         plots = [ 'average_predictions_per_trial_types']
-        plots = [ 'average_predictions_per_trial_types']
+        plots = [ 'metrics']
         for subject_id in subject_ids:
             print(" ")
             print(f"Subject ID : {subject_id}")
@@ -60,8 +70,8 @@ if __name__ == '__main__':
                 print(f"No NWB files found for {subject_id}")
                 continue
 
-            model_paths = os.path.join(output_path, subject_id, 'whisker_0', 'unit_glm', 'models', 'bu')
-            if not os.path.exists(model_paths):
+            model_path = os.path.join(output_path, subject_id, 'whisker_0', 'unit_glm', 'models')
+            if not os.path.exists(model_path):
                 print(f"No models found for {subject_id}")
                 continue
 
@@ -69,10 +79,10 @@ if __name__ == '__main__':
             if not os.path.exists(mouse_results_path):
                 os.makedirs(mouse_results_path)
 
-            mouse_glm_results(nwb_list = nwb_files,model_path = model_paths,plots= plots, output_path =mouse_results_path, git_version =git_version)
+            mouse_glm_results(nwb_list = nwb_files,model_path = model_path,plots= plots, output_path =mouse_results_path, git_version =git_version)
 
     if over_mice:
-        plots = ['average_kernels_by_region']
+        plots = ['metrics']
 
         # Get list of NWB files for each mouse
         nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]

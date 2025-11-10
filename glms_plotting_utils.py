@@ -21,6 +21,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import matplotlib
 matplotlib.use('Agg') # 'TkAgg' 'Agg' 'Qt5Agg'
 from multiprocessing import Pool
+import json
 from scipy.stats import gaussian_kde
 
 
@@ -43,6 +44,7 @@ def load_model_input_output(output_dir):
     commit_hash = data['commit_hash']
     neurons_id = data['neurons_id']
     return X, spikes, feature_names, neurons_id
+ROOT_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'combined_results   ')
 
 
 def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day_to_analyze = 0):
@@ -51,7 +53,10 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
     trial_table, unit_table, ephys_nwb_list = combine_ephys_nwb(nwb_list, day_to_analyze=day_to_analyze, max_workers=8)
     if git_version == '2ce0ecd':
         trial_table = trial_table[trial_table['trial_type'] =='whisker_trial']
-
+    if git_version == '4227ca6':
+        trial_table = load_perf_blocks(trial_table, trial_table['mouse_id'].unique()[0])
+        trial_table = trial_table.reset_index(drop=True)
+    print(trial_table.shape)
 
     # Load all models
     df_models = load_models(unit_table['mouse_id'].unique()[0], model_path, git_version)  # only get the current git version
@@ -60,7 +65,12 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         print('Poisson GLMs not fit with that git version for mouse :', unit_table['mouse_id'].unique()[0])
         return None
 
+    df_git['y_test_array'] = df_git['y_test'].map(lambda s: np.array(json.loads(s)))
+    df_git['y_pred_array'] = df_git['y_pred'].map(lambda s: np.array(json.loads(s)))
+    df_git['predictors'] = df_git['predictors'].apply(lambda s: np.array(json.loads(s)))
+
     merged_df = pd.merge(df_git, unit_table, how='inner', on=["mouse_id", "neuron_id"])
+
 
     area_groups = allen.get_custom_area_groups()
     area_colors = allen.get_custom_area_groups_colors()
@@ -73,25 +83,31 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
             os.makedirs(output_folder)
         plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
 
-        for model_name in df_git['model_name'].unique():
-            if model_name == 'full':
-                continue
-            plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder)
-            # Step 1: compute trial-type correlations for both models
-            corr_full = compute_trialtype_correlations(merged_df[merged_df['model_name'] == 'full'], trial_table)
-            corr_reduced = compute_trialtype_correlations(merged_df[merged_df['model_name'] == model_name], trial_table)
-            corr_all = pd.concat([corr_full, corr_reduced])
-
-            # Step 2: plot
-            plot_full_vs_reduced_per_area_and_trialtype(
-                corr_all,
-                selected_reduced=model_name,
-                area_groups=area_groups,
-                area_colors=area_colors,
-                output_folder=output_folder,
-                threshold=None
-            )
+        plot_box_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder, time_stim=0.0)
         plot_kde_full_vs_reduced(merged_df, output_folder)
+        plot_box_full_vs_reduced(merged_df, output_folder, alpha=0.05)
+        # for model_name in df_git['model_name'].unique():
+        #     if model_name == 'full':
+        #         continue
+        #     # plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder)
+        #     plot_full_vs_reduced_per_area(merged_df, model_name, area_groups, area_colors, output_folder, ev = True)
+        #
+        #     # Step 1: compute trial-type correlations for both models
+        #     corr_full = compute_trialtype_correlations(merged_df[merged_df['model_name'] == 'full'], trial_table)
+        #     corr_reduced = compute_trialtype_correlations(merged_df[merged_df['model_name'] == model_name], trial_table)
+        #     corr_all = pd.concat([corr_full, corr_reduced])
+        #
+        #     # Step 2: plot
+        #     plot_full_vs_reduced_per_area_and_trialtype(
+        #         corr_all,
+        #         selected_reduced=model_name,
+        #         area_groups=area_groups,
+        #         area_colors=area_colors,
+        #         output_folder=output_folder,
+        #         threshold=None
+        #     )
+        plot_kde_full_vs_reduced(merged_df, output_folder)
+        plot_box_full_vs_reduced(merged_df, output_folder, alpha=0.05)
         plot_kde_per_trial_type(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
         plot_corr_per_area_by_trialtype(merged_df[merged_df['model_name'] == 'full'], trial_table, area_groups, output_folder)
 
@@ -114,10 +130,8 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         output_folder = os.path.join(output_path, 'average_predictions_per_trial_types')
         if not os.path.exists(output_folder):
             os.makedirs(output_folder)
-        df_git['y_test_array'] = df_git['y_test'].apply(lambda x: np.array(ast.literal_eval(x)))
-        df_git['y_pred_array'] = df_git['y_pred'].apply(lambda x: np.array(ast.literal_eval(x)))
-        merged_df = pd.merge(df_git, unit_table, on="neuron_id", how="inner")
-        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_type'] == 'reduced'], trial_table,type = 'Normal',output_folder_base= output_folder)
+
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_type'] == 'reduced'], trial_table,type = 'Normal',output_folder_base= output_folder)
         #
         # decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='last_rewards_whisker')
         # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
@@ -139,6 +153,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, day
         plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
         plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '3whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
         plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '4whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'block_perf_type'], trial_table,type = 'session_progression',output_folder_base= output_folder)
 
 
         #
@@ -198,7 +213,9 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
 
     # Load all models
     df_git = df_models[df_models['git_version'] == git_version] # only get the current git version
-
+    df_git['predictors'] = df_git['predictors'].apply(lambda s: np.array(json.loads(s)))
+    df_git['y_test_array'] = df_git['y_test'].map(lambda s: np.array(json.loads(s)))
+    df_git['y_pred_array'] = df_git['y_pred'].map(lambda s: np.array(json.loads(s)))
     merged_df = pd.merge(df_git, unit_table, how='inner', on=["mouse_id", "neuron_id"])
 
     area_groups = allen.get_custom_area_groups()
@@ -234,6 +251,7 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
                 threshold=None
             )
 
+        plot_kde_full_vs_reduced(merged_df, output_folder)
         plot_test_corr_vs_firing_rate(merged_df[merged_df['model_name'] == 'full'], output_folder)
         plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
         plot_avg_kde_per_trial_type_with_sem(merged_df[merged_df['model_name'] == 'full'], trial_table, output_folder)
@@ -300,6 +318,69 @@ def plot_kde_full_vs_reduced(df,output_folder):
 
     return
 
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from scipy.stats import wilcoxon
+
+def plot_box_full_vs_reduced(df, output_folder, alpha=0.05):
+    """
+    Plot boxplots of test correlations for full and reduced models,
+    run paired Wilcoxon tests (per neuron) between full and each reduced model,
+    and mark reduced models that perform significantly worse than full.
+    """
+    import seaborn as sns
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from scipy.stats import wilcoxon
+
+    fig, ax = plt.subplots(figsize=(8, 5), dpi=300)
+
+    # --- Split full vs reduced ---
+    df_full = df[df["model_type"] == "full"]
+    df_reduced = df[df["model_type"] == "reduced"]
+
+    # Get list of reduced models in order of appearance
+    reduced_model_names = sorted(df_reduced["model_name"].unique())
+    ordered_models = ["full"] + reduced_model_names
+
+    # --- Create column for display ---
+    df_plot = df.copy()
+    df_plot["model_display"] = np.where(df_plot["model_type"] == "full", "full", df_plot["model_name"])
+
+    # --- Boxplot ---
+    sns.boxplot(
+        data=df_plot,
+        x="model_display",
+        y="test_corr",
+        order=ordered_models,
+        palette="husl",
+        width=0.6,
+        fliersize=2,
+        ax=ax
+    )
+
+    # --- Styling ---
+    ax.set_xlabel("")
+    ax.set_ylabel("Test correlation")
+    ax.set_title("Full vs Reduced Models (paired Wilcoxon)")
+    ax.grid(False, linestyle="--", alpha=0.4)
+
+    # 🔧 Fix label overlap
+    plt.setp(ax.get_xticklabels(), rotation=35, ha="right", fontsize=9)
+    plt.tight_layout(pad=1.5)
+
+    # --- Save ---
+    putils.save_figure_with_options(
+        fig,
+        file_formats=["png"],
+        filename="Box_full_vs_reduced_significance",
+        output_dir=output_folder,
+        dark_background=True
+    )
+
+    plt.close(fig)
+
 
 def plot_kde_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
     trialtype_corrs = compute_trialtype_correlations(merged, trials_df=trial_table)
@@ -338,6 +419,45 @@ def plot_kde_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
     plt.close(fig)
     return
 
+def plot_box_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
+    trialtype_corrs = compute_trialtype_correlations(merged, trials_df=trial_table)
+    color_map = {
+        "whisker_hit": "forestgreen",
+        "whisker_miss": "crimson",
+        "auditory_hit": "mediumblue",
+        "auditory_miss": "skyblue",
+        "catch": "gray",
+        "correct_rejection": "black"
+    }
+
+    fig, ax = plt.subplots(figsize=(7, 5), dpi=300)
+    ordered_types = [t for t in color_map.keys() if t in trialtype_corrs["trial_type"].unique()]
+    box_colors = [color_map[t] for t in ordered_types]
+
+    data = [trialtype_corrs.loc[trialtype_corrs["trial_type"] == t, "test_corr"] for t in ordered_types]
+    data_clean = [d.dropna().values for d in data]
+    bp = ax.boxplot(data_clean, patch_artist=True, tick_labels=ordered_types)
+
+    for patch, color in zip(bp['boxes'], box_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.5)
+
+    ax.set_ylabel("Test Score")
+    ax.set_title("Boxplot of test correlation by trial type")
+    ax.grid(False, linestyle="--", alpha=0.4)
+    plt.xticks(rotation=45)
+    for median in bp['medians']:
+        median.set_color('black')
+    putils.save_figure_with_options(
+        fig,
+        file_formats=["png"],
+        filename="Box_per_trial_type_full_model",
+        output_dir=output_folder,
+        dark_background=True
+    )
+
+    plt.close(fig)
+    return
 
 
 
@@ -1062,7 +1182,7 @@ def plot_by_recent_whisker_history(
 
 
 
-def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors, output_folder, threshold=None):
+def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors, output_folder, threshold=None,ev = True):
     """
     Plot mean ± SEM test correlations per area for full and one reduced model,
     including significance stars (paired t-test) between models per area.
@@ -1088,6 +1208,15 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
                 ordered_areas.append(area)
                 area_to_color[area] = area_colors[group_name]
 
+    if ev :
+        ev_full = compute_ev(df_full)
+        df_full = df_full.merge(ev_full, on=['mouse_id', 'neuron_id', 'fold', 'area_acronym_custom', 'model_type', 'model_name'],  how='inner')
+        ev_reduced = compute_ev(df_reduced)
+        df_reduced = df_reduced.merge(ev_reduced, on=['mouse_id', 'neuron_id', 'fold', 'area_acronym_custom', 'model_type', 'model_name'],  how='inner')
+        key = 'explained_variance'
+    else :
+        key = 'test_corr'
+
     # Initialize lists
     means_full, sems_full, means_reduced, sems_reduced, bar_colors = [], [], [], [], []
 
@@ -1101,13 +1230,13 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
         full_grp = df_full[df_full['area_acronym_custom'] == area]
 
         fold_means_full = (
-            full_grp.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr']
+            full_grp.groupby(['mouse_id', 'neuron_id'], as_index=False)[key]
             .mean()
         )
 
         # Apply threshold if specified
         if threshold is not None:
-            neurons_to_keep = fold_means_full[fold_means_full['test_corr'] >= threshold]
+            neurons_to_keep = fold_means_full[fold_means_full[key] >= threshold]
         else:
             neurons_to_keep = fold_means_full
 
@@ -1116,12 +1245,12 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
             neurons_to_keep[['mouse_id', 'neuron_id']],
             on=['mouse_id', 'neuron_id'],
             how='inner'
-        )['test_corr'].to_numpy()
+        )[key].to_numpy()
 
         # --- Reduced model ---
         reduced_grp = df_reduced[df_reduced['area_acronym_custom'] == area]
         fold_means_reduced = (
-            reduced_grp.groupby(['mouse_id', 'neuron_id'], as_index=False)['test_corr']
+            reduced_grp.groupby(['mouse_id', 'neuron_id'], as_index=False)[key]
             .mean()
         )
 
@@ -1129,7 +1258,7 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
             neurons_to_keep[['mouse_id', 'neuron_id']],
             on=['mouse_id', 'neuron_id'],
             how='inner'
-        )['test_corr'].to_numpy()
+        )[key].to_numpy()
 
         # Compute means & SEMs
         means_full.append(full_values.mean() if len(full_values) > 0 else np.nan)
@@ -1168,12 +1297,15 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
     ax.set_title(f'Full vs {selected_reduced} per area')
     ax.legend()
     ax.grid(True, linestyle='--', alpha=0.4)
+    ax.set_ylim(-0.2,0.3)
+
     plt.tight_layout()
 
     # Save figure
     name = f'Full vs {selected_reduced} per area'
     if threshold is not None:
         name += f' threshold {threshold}'
+    name += f' {key}'
     putils.save_figure_with_options(fig, file_formats=['png'], filename=name, output_dir=output_folder)
     plt.close(fig)
     return
@@ -1341,6 +1473,7 @@ def classify_trial(row):
 
     else:
         return "other"
+
 def zscore_f(arr):
     return (arr[0:80] - np.mean(arr[0:80])) / (np.std(arr[0:80]) + 1e-8)
 
@@ -1360,8 +1493,8 @@ def compute_trialtype_correlations(merged, trials_df):
         model_name = row["model_name"]
 
         # decode arrays
-        y_test = np.array(ast.literal_eval(row["y_test"]))
-        y_pred = np.array(ast.literal_eval(row["y_pred"]))
+        y_test =row['y_test_array']
+        y_pred = row['y_pred_array']
         n_bins = row["n_bins"]
 
         # reshape into trials x bins
@@ -1396,6 +1529,48 @@ def compute_trialtype_correlations(merged, trials_df):
 
     return pd.DataFrame(rows)
 
+def compute_ev(merged):
+    """
+    Compute explained variance per neuron, per fold, and keeps mouse_id.
+    """
+    rows = []
+    for _, row in merged.iterrows():
+        neuron_id = row["neuron_id"]
+        fold = row["fold"]
+        mouse_id = row.get("mouse_id", "unknown")  # assume merged has mouse_id column
+        area_custom = row.get("area_acronym_custom", None)
+        model_type = row["model_type"]
+        model_name = row["model_name"]
+
+        # decode arrays
+        y_test =row['y_test_array']
+        y_pred = row['y_pred_array']
+        n_bins = row["n_bins"]
+
+        # reshape into trials x bins
+        n_trials = y_pred.shape[0] // n_bins
+
+        # Only compute metrics if variance > 0
+        if np.var(y_test) > 0:
+            # Explained variance
+            residual = y_test - y_pred
+            ev = 1 - np.var(residual) / np.var(y_test)
+
+            rows.append({
+                "mouse_id": mouse_id,
+                "neuron_id": neuron_id,
+                "fold": fold,
+                "explained_variance": ev,
+                "area_acronym_custom": area_custom,
+                "model_type": model_type,
+                "model_name": model_name
+            })
+
+    return pd.DataFrame(rows)
+
+
+
+
 def compute_trialtype_quartile_correlations(merged, trials_df):
     """
     Compute test Pearson correlation per neuron, per fold, per trial type, per quartile.
@@ -1409,9 +1584,8 @@ def compute_trialtype_quartile_correlations(merged, trials_df):
         area_custom = row.get("area_acronym_custom", None)
         model_type = row["model_type"]
         model_name = row["model_name"]
-
-        y_test = np.array(ast.literal_eval(row["y_test"]))
-        y_pred = np.array(ast.literal_eval(row["y_pred"]))
+        y_test =row['y_test_array']
+        y_pred = row['y_pred_array']
         n_bins = row["n_bins"]
         n_trials = y_pred.shape[0] // n_bins
         y_test = y_test.reshape(n_trials, n_bins)
@@ -1588,7 +1762,6 @@ def plot_full_vs_reduced_per_area_and_trialtype(
             ax.set_ylabel('Test correlation')
 
     axes[0].legend()
-    plt.tight_layout()
     plt.suptitle(f'Full vs {selected_reduced} per area and trial type', y=1.02)
     plt.savefig(f"{output_folder}/full_vs_{selected_reduced}_per_area_and_trialtype.png", bbox_inches='tight')
     plt.close(fig)
@@ -2679,3 +2852,200 @@ def neurons_with_consistent_decrease(df, reduced_name, alpha=0.05):
     decreased_neurons = summary[summary["consistent_decrease"]].sort_values("mean", ascending=False)
 
     return decreased_neurons, merged
+
+def assign_expertise_blocks(trial_table, n_consecutive=5):
+    """
+    Assign 'expert' or 'naive' labels to each trial for each mouse based on
+    p_low vs p_chance, separately for reward_group, identifying blocks of at
+    least `n_consecutive` trials.
+
+    Parameters
+    ----------
+    trial_table : pd.DataFrame
+        Must contain ['mouse_id', 'reward_group', 'trial_id', 'p_low', 'p_chance'].
+        Should be sorted by trial_id within each mouse.
+    n_consecutive : int
+        Minimum number of consecutive trials to label as expert.
+
+    Returns
+    -------
+    pd.DataFrame
+        Original dataframe with added column 'block_perf_type' = 'naive' or 'expert'.
+    """
+    trial_table = trial_table.copy()
+    trial_table['block_perf_type'] = 0
+
+    def process_mouse(df_mouse):
+        reward_group = df_mouse['reward_group'].iloc[0]
+
+        # Criterion per trial
+        if reward_group == 1:
+            criterion = df_mouse['p_low'] > df_mouse['p_chance']
+        elif reward_group == 0:
+            criterion = df_mouse['p_low'] < df_mouse['p_chance']
+        else:
+            raise ValueError(f"Unexpected reward_group: {reward_group}")
+
+        # Convert boolean series to runs of consecutive True/False
+        vals = criterion.values
+        expert_mask = np.zeros(len(vals), dtype=bool)
+
+        start_idx = 0
+        while start_idx < len(vals):
+            if vals[start_idx]:
+                # find run of consecutive True
+                end_idx = start_idx
+                while end_idx < len(vals) and vals[end_idx]:
+                    end_idx += 1
+                run_length = end_idx - start_idx
+                if run_length >= n_consecutive:
+                    expert_mask[start_idx:end_idx] = True
+                start_idx = end_idx
+            else:
+                start_idx += 1
+
+        df_mouse.loc[expert_mask, 'block_perf_type'] = 1
+        return df_mouse
+
+    trial_table = trial_table.groupby('mouse_id', group_keys=False).apply(process_mouse)
+    return trial_table
+
+def propagate_expertise_inplace(trial_table):
+    """
+    Propagate 'block_perf_type' (expert/naive) from whisker trials
+    to other trial types in-place based on closest start_time per mouse.
+
+    Parameters
+    ----------
+    trial_table : pd.DataFrame
+        Must contain ['mouse_id', trial_type_col, time_col, 'block_perf_type'].
+        Only whisker trials will have non-null 'block_perf_type' initially.
+    time_col : str
+        Column name for trial start time (used to find nearest whisker trial).
+    trial_type_col : str
+        Column name that identifies trial type (e.g., 'whisker', 'auditory', 'no_stim').
+
+    Returns
+    -------
+    pd.DataFrame
+        The same table with 'block_perf_type' updated for all trials.
+    """
+    trial_table = trial_table.sort_values(['start_time'])
+    updated_trials = []
+
+    for mouse_id, df_mouse in trial_table.groupby('mouse_id', group_keys=False):
+        df_mouse = df_mouse.sort_values('start_time').copy()
+        whisker_df = df_mouse[df_mouse['trial_type'] == 'whisker_trial']
+
+        if whisker_df.empty:
+            df_mouse['block_perf_type'] = np.nan
+        else:
+            # Use merge_asof for nearest whisker match
+            merged = pd.merge_asof(
+                df_mouse,
+                whisker_df[['start_time', 'block_perf_type']].sort_values('start_time'),
+                on='start_time',
+                direction='nearest',
+                suffixes=('', '_whisker')
+            )
+            # Update block_perf_type with nearest whisker label where missing
+            df_mouse['block_perf_type'] = np.where(
+                df_mouse['block_perf_type'].isna(),
+                merged['block_perf_type_whisker'],
+                df_mouse['block_perf_type']
+            )
+
+        updated_trials.append(df_mouse)
+
+    # Combine back into one table
+    updated_table = pd.concat(updated_trials, ignore_index=True)
+    return updated_table
+
+def keep_active_from_whisker_onset(trial_df):
+    """
+    Remove auditory blocks at onset of session, where mice were not yet engaged in the task, before whisker introduction
+    :param trial_df: trial table dataframe with active trials only
+    :return:
+    """
+    print('Keeping active trials and removing auditory onset blocks. Getting whisker trial indices...')
+
+    # Keep active trials
+    trial_df = trial_df[
+        (~trial_df['context'].isin(['passive']))
+        & (trial_df['perf'] != 6)
+        & (trial_df['early_lick'] == 0)]
+
+    df = trial_df.copy()
+
+    # Find first whisker trial per mouse
+    first_whisker_id = (
+        df[df['trial_type'] == 'whisker_trial']
+        .groupby('mouse_id')['trial_id']
+        .min()
+        .rename('first_whisker_id')
+    )
+
+    # Merge to get first whisker trial per mouse
+    df = df.merge(first_whisker_id, on='mouse_id', how='left')
+
+    # Keep only trials >= first whisker trial
+    df = df[df['trial_id'] >= df['first_whisker_id']].copy()
+
+    # Reindex trial_id to start at 0 from first whisker trial
+    df['trial_id'] = df['trial_id'] - df['first_whisker_id']
+
+    # Define also a whisker_trial_id, just for whisker trials
+    df['whisker_trial_id'] = np.nan
+    whisker_mask = df['trial_type'] == 'whisker_trial'
+    df.loc[whisker_mask, 'whisker_trial_id'] = df.loc[whisker_mask].groupby('mouse_id').cumcount()
+    df['whisker_trial_id'] = df['whisker_trial_id'].astype('Int64') # keep as nullable integer
+
+    # Drop helper column
+    df.drop(columns='first_whisker_id', inplace=True)
+
+    return df
+
+
+
+
+def load_perf_blocks(trial_table, mouse_id):
+
+    path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+    # curves_df = load_helpers.load_learning_curves_data(path_to_data=path_to_data, subject_ids=subject_ids)
+
+    file_name = f'{mouse_id}_whisker_0_whisker_trial_learning_curve_interp.h5'
+    path_to_file = os.path.join(ROOT_PATH, mouse_id, file_name)
+    path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
+
+    df_w = pd.read_hdf(path_to_file)
+
+    trial_curves = []
+    array_cols = ['p_mean', 'p_low', 'p_high', 'p_chance']
+    for _, row in df_w.iterrows():
+        n_trials = len(row[array_cols[0]])
+        for t in range(n_trials):
+            trial_dict = {}
+            for col in df_w.columns:
+                if col in array_cols:
+                    trial_dict[col] = row[col][t]
+                else:
+                    trial_dict[col] = row[col]
+            trial_dict['whisker_trial_id'] = t
+            trial_curves.append(trial_dict)
+    trial_curves_df = pd.DataFrame(trial_curves)
+    trial_curves_df = assign_expertise_blocks(trial_curves_df, n_consecutive=5)
+
+    # Merge learning curve data into trial table onto trial_id, for each mouse and onto whisker trials only
+    trial_table = keep_active_from_whisker_onset(trial_table)  # get whisker trial index
+
+    trial_table = trial_table.merge(
+        trial_curves_df[
+            ['mouse_id', 'block_perf_type', 'whisker_trial_id', 'p_mean', 'p_low', 'p_high', 'p_chance', 'mouse_cat',
+             'learning_trial']],
+        on=['mouse_id', 'whisker_trial_id'], how='left'
+    )
+
+    # Assign block_perf_typ to auditory_trial and no_stim_trial depending on the closest previous whisker trial
+    trial_table = propagate_expertise_inplace(trial_table)
+
+    return trial_table

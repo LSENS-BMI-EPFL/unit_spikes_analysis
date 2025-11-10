@@ -3,5 +3,5 @@
   <component name="Black">
     <option name="sdkName" value="nwb_analysis_env" />
   </component>
-  <component name="ProjectRootManager" version="2" project-jdk-name="nwb_analysis_env" project-jdk-type="Python SDK" />
+  <component name="ProjectRootManager" version="2" project-jdk-name="ephys_utils_py39" project-jdk-type="Python SDK" />
 </project>

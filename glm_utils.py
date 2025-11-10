@@ -524,9 +524,11 @@ def load_jaw_onset_data(mouse_id):
     print('Loading jaw onset data...')
 
     jaw_onset_list = []
-    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.h5')
+    path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+
+    file_path = os.path.join(path_to_data, mouse_id, 'dlc_jaw_onset_times.pkl')
     if os.path.exists(file_path):
-        df = pd.read_hdf(file_path)
+        df = pd.read_pickle(file_path)
         jaw_onset_list.append(df)
     else:
         print(f"[WARN] Jaw onset data file not found for {mouse_id} at {file_path}. Skipping.")
@@ -572,13 +574,14 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
-        # unit_table = unit_table.sample(n=2, random_state=None)
+        print('CAREFUL THIS IS ONLY 2 RANDOM UNITS')
+        unit_table = unit_table.sample(n=2, random_state=None)
 
         # Use index as new column named "unit_id", then reset
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
-        unit_table = unit_table.iloc[[21, 34]]
+        # unit_table = unit_table.iloc[[21, 34]]
 
 
 
@@ -788,7 +791,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 'whisker_stim': (whisker_times, (-0.1, 0.6)),
                 'piezo_reward': (piezo_licks, (-0, 0.6)),
             }
-
+            print(all_jaw_onsets)
+            print(whisker_times)
         else :
             event_defs = {
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
@@ -904,7 +908,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             data, times = get_series(long_key)
             # Preprocess data to remove outliers
             data = preprocess_dlc_trace(data)
-            assert np.isfinite(data.shape).all() # make sure there are no NaNs or infs
+            assert np.isfinite(data).all() # make sure there are no NaNs or infs
             data, times = pad_to_equal_length(data, times)
 
             predictors[short_key] = bin_behavior(data, times)
@@ -1204,12 +1208,14 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Build design matrix for entire dataset
     X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE, scale = None)
+    X = np.nan_to_num(X)
+
 
     n_features = X.shape[0]
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = True
+    whisker_kernels = False
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
@@ -1225,7 +1231,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = True
+    reward_kernels = False
     if reward_kernels:
 
         X_rewards = []
@@ -1277,9 +1283,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         debug = False
         if debug:
-            for test_idx in test_ids[10:15]:
-                plot_design_matrix_heatmap_single_trial(X_rewards[1], feature_names_rewards[1], trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
-                plot_design_matrix_vector_single_trial(X_rewards[1], feature_names_rewards[1], trial_index=test_idx, n_bins=n_bins,
+            for test_idx in test_ids[0:5]:
+                plot_design_matrix_heatmap_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins, bin_size=BIN_SIZE)
+                plot_design_matrix_vector_single_trial(X, feature_names, trial_index=test_idx, n_bins=n_bins,
                                                        bin_size=BIN_SIZE)
             return
 

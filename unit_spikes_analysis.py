@@ -13,16 +13,16 @@ import pandas as pd
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
-from raster_utils import plot_rasters
+# from raster_utils import plot_rasters
 from roc_utils import roc_analysis
-from waveform_utils import assign_rsu_vs_fsu
+# from waveform_utils import assign_rsu_vs_fsu
 from unit_desc_utils import *
 from glm_utils import run_unit_glm_pipeline_with_pool
 
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWBFull')
+                                'NWB')
 
 
 
@@ -38,9 +38,11 @@ if __name__ == '__main__':
 
     proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     if experimenter == 'Axel_Bisi':
-        all_nwb_names = os.listdir(ROOT_PATH_AXEL)
+         all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     elif experimenter == 'Myriam_Hamon':
-        all_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
+        all_nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
+    # all_nwb_names.extend(all_nwb_names_bis)
+    all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
     if joint_analysis:
@@ -48,11 +50,11 @@ if __name__ == '__main__':
                                  'dataset_info')
         output_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
                                    'combined_results')
-        if experimenter == 'Axel_Bisi':
-            nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
-        elif experimenter == 'Myriam_Hamon':
-            nwb_names_bis = os.listdir(ROOT_PATH_AXEL)
-        all_nwb_names.extend(nwb_names_bis)
+        # if experimenter == 'Axel_Bisi':
+        #     nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
+        # elif experimenter == 'Myriam_Hamon':
+        #     nwb_names_bis = os.listdir(ROOT_PATH_AXEL)
+        # all_nwb_names.extend(nwb_names_bis)
         #all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
         mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
 
@@ -67,7 +69,6 @@ if __name__ == '__main__':
     # Filter for usable mice
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
-        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
 
@@ -83,16 +84,16 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
-    subject_ids = [s for s in subject_ids if s not in excluded_mice]
+    # excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
+    # subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    subject_ids = ['AB162', 'AB163', 'AB164']
-    subject_ids = ['AB164']
+    # subject_ids = ['AB162', 'AB163', 'AB164']
+    subject_ids = ['AB131']
 
     print(f"Subject IDs to do: {subject_ids}")
 
-    subject_ids = ['AB131']
+    # subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
