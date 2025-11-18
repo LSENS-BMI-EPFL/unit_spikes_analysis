@@ -11,9 +11,9 @@ import os
 import numpy as np
 import pandas as pd
 from pathlib import Path
-import pyarrow as pa
-import pyarrow.parquet as pq
-import dask.dataframe as dd
+#import pyarrow as pa
+#import pyarrow.parquet as pq
+#import dask.dataframe as dd
 
 
 import NWB_reader_functions as nwb_reader

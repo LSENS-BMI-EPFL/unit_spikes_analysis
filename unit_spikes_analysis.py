@@ -10,14 +10,16 @@
 # Imports
 import os
 import pandas as pd
-import NWB_reader_functions as nwb_reader
-import allen_utils as allen_utils
+#import NWB_reader_functions as nwb_reader
+#import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from unit_spike_report import generate_unit_spike_report
 from roc_utils import roc_analysis
+from task_modulation_utils import task_modulation_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
+
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
 
@@ -88,7 +90,10 @@ if __name__ == '__main__':
     excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
+    subject_ids = ['AB150']
+
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
+
     print(f"Subject IDs to do: {subject_ids}")
 
 
@@ -101,6 +106,7 @@ if __name__ == '__main__':
     analyses_to_do_single = ['noise_correlation']
     analyses_to_do_single = ['roc_analysis']
     analyses_to_do_single = ['unit_spike_report']
+    analyses_to_do_single = ['task_modulation']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
@@ -154,6 +160,8 @@ if __name__ == '__main__':
                     if 'roc_analysis' in analyses_to_do_single:
                         roc_analysis(nwb_file, results_path)
 
+                    if 'task_modulation' in analyses_to_do_single:
+                        task_modulation_analysis(nwb_file, results_path)
 
                     if 'xcorr_analysis' in analyses_to_do_single:
                         #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing
