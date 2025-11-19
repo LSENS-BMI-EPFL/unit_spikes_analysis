@@ -38,7 +38,7 @@ def count_spikes(spikes, starts, ends):
     right_idx = np.searchsorted(spikes, ends, side='left')
     return right_idx - left_idx
 
-def analyze_single_unit(neuron_id, units_dict, trial_starts):
+def unit_task_mod(neuron_id, units_dict, trial_starts):
     """
     units_dict: {neuron_id: 1D numpy array of spike times (must be sorted or will be sorted here)}
     trial_starts: 1D numpy array of trial start times (float seconds)
@@ -74,7 +74,7 @@ def analyze_single_unit(neuron_id, units_dict, trial_starts):
                 np.all(epoch_rates == epoch_rates[0])):
             raw_pvals.append(1.0)
         else:
-            _, p = ranksums(baseline_rates, epoch_rates)
+            _, p = ranksums(baseline_rates, epoch_rates, alternative='two-sided')
             raw_pvals.append(p)
 
     return {"neuron_id": neuron_id, "raw_pvals": raw_pvals}
@@ -87,13 +87,13 @@ def analyze_single_unit(neuron_id, units_dict, trial_starts):
 def task_modulation_analysis(nwb_file, results_path):
 
     print("Starting statistical tests task-modulation for:", nwb_file)
-    sig_level = 0.05
+    SIG_LEVEL = 0.05
 
     # Load neural and trial data
     mouse_id = nwb_reader.get_mouse_id(nwb_file)
     unit_table = nwb_reader.get_unit_table(nwb_file)
     unit_table = unit_table[unit_table.columns.intersection(["neuron_id", "spike_times"])]
-    neuron_ids = unit_table["neuron_id"].unique()[:50]
+    neuron_ids = unit_table["neuron_id"].unique()
 
     # Pre-convert data for fast pickling
     units_dict = {
@@ -116,7 +116,7 @@ def task_modulation_analysis(nwb_file, results_path):
     chunksize = max(1, len(neuron_ids) // (num_workers * 4)) # to reduce overhead in imap
 
     with multiprocessing.Pool(num_workers) as pool:
-        func = partial(analyze_single_unit,
+        func = partial(unit_task_mod,
                        units_dict=units_dict,
                        trial_starts=trial_starts)
 
@@ -127,7 +127,7 @@ def task_modulation_analysis(nwb_file, results_path):
             results.append(r)
 
     # Fraction of task-modulated neurons before correction
-    n_task_modulated_raw = sum(np.any(np.array(r["raw_pvals"]) < sig_level) for r in results)
+    n_task_modulated_raw = sum(np.any(np.array(r["raw_pvals"]) < SIG_LEVEL) for r in results)
     n_total = len(results)
     fraction_task_modulated_raw = n_task_modulated_raw / n_total if n_total > 0 else 0.0
     print(f"Mouse {mouse_id}: {n_task_modulated_raw}/{n_total} neurons are task-modulated before correction "
@@ -137,7 +137,7 @@ def task_modulation_analysis(nwb_file, results_path):
     # FDR CORRECTION (across all neurons * all 10 epochs)
     # ------------------------------------------------------
     all_pvals = np.concatenate([r["raw_pvals"] for r in results])
-    reject, corrected = fdrcorrection(all_pvals, alpha=sig_level) # false discovery rate of 1%
+    reject, corrected = fdrcorrection(all_pvals, alpha=SIG_LEVEL) # false discovery rate of 1%
 
     # Assign corrected p-values back to neurons
     idx = 0
