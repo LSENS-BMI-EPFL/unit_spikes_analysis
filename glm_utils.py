@@ -661,7 +661,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 last_no_stim = licks[i]
         # broadcast to bins
         if 'last_false_alarm' in include_predictors:
-            predictors['last_false_alarm'] = np.tile(stim_type[:, None], (1, n_bins))
+            predictors['last_false_alarm'] = np.tile(prev_no_stim[:, None], (1, n_bins))
 
 
         # Compute trial outcome (success vs error)
@@ -737,7 +737,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         scale = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
-        if 'prop_past_whisker_rewarded' in include_predictors :
+        if 'whisker_reward_rate_5' in include_predictors :
             predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
 
@@ -1317,6 +1317,32 @@ def load_model_results(filename, output_dir):
         return None
     return result_df
 
+
+def restrict_predictor_to_bin(X, pred_idx, bin_idx, mask):
+    """
+    Keep only the specified bin(s) for a given predictor, zero out others.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Design matrix of shape (n_features, n_trials, n_bins)
+    pred_idx : int
+        Index of the predictor to mask
+    bin_idx : int
+        Which bin to keep
+    mask : array_like
+        Boolean mask of shape (n_bins,) indicating which bin(s) to keep
+
+    Returns
+    -------
+    X_masked : np.ndarray
+        Copy of X with only the selected bin(s) for pred_idx preserved, others zeroed
+    """
+    X_masked = X.copy()
+    X_masked[pred_idx, :, ~mask] = 0
+    return X_masked
+
+
 def fit_one_reduced_model(combo_name, features_to_remove, spikes_trainval, X_trainval, spikes_test, X_test,
                           feature_names, full_optimal_lambdas, trainval_ids, test_ids, fold_idx, n_jobs):
     # Reduce design matrix
@@ -1392,22 +1418,17 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = False
+    reward_kernels = True
     if reward_kernels:
 
         X_rewards = []
-        feature_names_rewards = []
-        nb_whisker_kernel_rewards = []
-        for number_of_whisker_kernel in [1,2]:
-            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, reward_kernel_per_type = True)
-            event_defs = predictor_types['event_defs']
-            analog_keys = predictor_types['analog_keys']
+        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, reward_kernel_per_type = True)
+        event_defs = predictor_types['event_defs']
+        analog_keys = predictor_types['analog_keys']
 
-            # Build design matrix for entire dataset
-            X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
-            X_rewards.append(X_extra)
-            feature_names_rewards.append(feature_names_extra)
-            nb_whisker_kernel_rewards.append(number_of_whisker_kernel)
+        # Build design matrix for entire dataset
+        X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+        X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
     if add_perf_pred is not None:
@@ -1422,7 +1443,6 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
             X_perfs.append(X_extra)
             feature_names_perfs.append(feature_names_extra)
-
     # ---------------------------------------
     # Train/test data cross-validation splits
     # ---------------------------------------
@@ -1435,25 +1455,27 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         print('Fold', fold_idx)
 
-        # Get data splits
-        X_trainval, X_test = X[:,trainval_ids,:], X[:,test_ids,:]
-        spikes_trainval, spikes_test = spikes[:,trainval_ids,:], spikes[:,test_ids,:]
+        # ------------------------
+        # 1. Split (keep 3D shape)
+        # ------------------------
+        X_trainval_full = X[:, trainval_ids, :]
+        X_test_full = X[:, test_ids, :]
 
-        # Reshape
-        X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-        X_test = X_test.reshape(X_test.shape[0], -1)
+        spikes_trainval = spikes[:, trainval_ids, :]
+        spikes_test = spikes[:, test_ids, :]
 
-        # Standardize DLC features using train statistics, apply on test
-        for dlc_idx in range(n_features-4, n_features):
-            mean = X_trainval[dlc_idx,:].mean()
-            std = X_trainval[dlc_idx,:].std()
-            X_trainval[dlc_idx,:] = (X_trainval[dlc_idx,:] - mean) / std
-            X_test[dlc_idx,:] = (X_test[dlc_idx,:] - mean) / std
+        # ----------------------------------------------
+        # 2. Standardize DLC features using train only
+        # ----------------------------------------------
+        for dlc_idx in range(n_features - 4, n_features):
+            mean = X_trainval_full[dlc_idx].mean()
+            std = X_trainval_full[dlc_idx].std()
 
-            X[dlc_idx,:] = (X[dlc_idx,:] - mean) / std # transform original X for plotting single trial input
+            X_trainval_full[dlc_idx] = (X_trainval_full[dlc_idx] - mean) / std
+            X_test_full[dlc_idx] = (X_test_full[dlc_idx] - mean) / std
 
-        X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1) # reshape
-        X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+        X_trainval_r = X_trainval_full.reshape(n_features, len(trainval_ids), -1)
+        X_test_r = X_test_full.reshape(n_features, len(test_ids), -1)
 
         debug = False
         if debug:
@@ -1471,10 +1493,11 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         #lambdas = np.array([0.001, 0.5])
 
         start_time = time.time()
+
         results = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                    X_trainval=X_trainval,
+                                    X_trainval=X_trainval_r,
                                     spikes_test=spikes_test,
-                                    X_test=X_test,
+                                    X_test=X_test_r,
                                     lambdas=lambdas,
                                     n_jobs=n_jobs)
         print('GLM fitting complete in ', time.time() - start_time)
@@ -1509,58 +1532,58 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # --------------------------------------
 
         # Define reduced encoding model formulations
-        reduced_models = {
-            'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
-            'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
-            'whisker_reward_encoding': ['prev_whisker_reward'],
-            'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
-            'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-            # 'block_perf_type' : ['block_perf_type'],
-            # 'whisker_move': ['whisker_vel'],
-            'session_progress_encoding': ['trial_index_scaled'],
-            # 'last_rewards_whisker': ['last_whisker_reward'],
-            # 'whisker_hit' : ['whisker_hit'],
-            # 'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
-            # 'prop_last_5_whisker': ['whisker_reward_rate_5'],
-            # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
-            # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
-                                        # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
-            'sum_rewards': ['sum_reward_scaled']
-        }
+        # reduced_models = {
+        #     'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
+        #     'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
+        #     'whisker_reward_encoding': ['prev_whisker_reward'],
+        #     'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
+        #     'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
+        #     # 'block_perf_type' : ['block_perf_type'],
+        #     # 'whisker_move': ['whisker_vel'],
+        #     'session_progress_encoding': ['trial_index_scaled'],
+        #     # 'last_rewards_whisker': ['last_whisker_reward'],
+        #     # 'whisker_hit' : ['whisker_hit'],
+        #     # 'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
+        #     # 'prop_last_5_whisker': ['whisker_reward_rate_5'],
+        #     # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
+        #     # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
+        #                                 # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
+        #     'sum_rewards': ['sum_reward_scaled']
+        # }
         # Get full model params for fair comparison
         full_optimal_lambdas = {neuron_id: lambda_opt for neuron_id, lambda_opt in
                                 zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
-
-        # Iterate over reduced model formulations
-        results_reduced_all = []
-        for model_name, features_to_remove in reduced_models.items():
-            # Select subset of feature matrix
-            X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
-            X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
-
-
-            # Fit GLM with reduced feature set
-            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                                X_trainval=X_trainval_reduced,
-                                                spikes_test=spikes_test,
-                                                X_test=X_test_reduced,
-                                                lambdas=full_optimal_lambdas,
-                                                n_jobs=n_jobs)
-            results_reduced_df = pd.DataFrame(results_reduced)
-            results_reduced_df['fold'] = fold_idx
-            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-            results_reduced_df['model_name'] = model_name
-            results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
-            results_reduced_all.append(results_reduced_df)
-
-            # Append reduced model to all models
-            model_res_df_outer.append(results_reduced_df)
-        # Merge results from all reduced models, then save
-        results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
-                           commit_hash=commit_hash,
-                           output_dir=mouse_output_path)
+        #
+        # # Iterate over reduced model formulations
+        # results_reduced_all = []
+        # for model_name, features_to_remove in reduced_models.items():
+        #     # Select subset of feature matrix
+        #     X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
+        #     X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
+        #
+        #
+        #     # Fit GLM with reduced feature set
+        #     results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+        #                                         X_trainval=X_trainval_reduced,
+        #                                         spikes_test=spikes_test,
+        #                                         X_test=X_test_reduced,
+        #                                         lambdas=full_optimal_lambdas,
+        #                                         n_jobs=n_jobs)
+        #     results_reduced_df = pd.DataFrame(results_reduced)
+        #     results_reduced_df['fold'] = fold_idx
+        #     results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+        #     results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+        #     results_reduced_df['model_name'] = model_name
+        #     results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+        #     results_reduced_all.append(results_reduced_df)
+        #
+        #     # Append reduced model to all models
+        #     model_res_df_outer.append(results_reduced_df)
+        # # Merge results from all reduced models, then save
+        # results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
+        # save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
+        #                    commit_hash=commit_hash,
+        #                    output_dir=mouse_output_path)
 
         results_added_all = []
 
@@ -1593,69 +1616,99 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 model_res_df_outer.append(results_added_df)
 
         if reward_kernels:
+            print('fitting mulitple reward kernels')
+            for k_idx, X_rk in enumerate(X_rewards):
+                X_trainval_rk = X_rk[:, trainval_ids, :].copy()
+                X_test_rk = X_rk[:, test_ids, :].copy()
 
-            for number_of_whisker_kernel in range(len(X_rewards)):
-                # Get data splits
-                X_trainval, X_test = X_rewards[number_of_whisker_kernel][:, trainval_ids, :], X_rewards[number_of_whisker_kernel][
-                                                                                           :, test_ids, :]
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-                X_test = X_test.reshape(X_test.shape[0], -1)
+                # Standardize DLC features (train only)
+                for dlc_idx in range(n_features - 4, n_features):
+                    mean = X_trainval_rk[dlc_idx].mean()
+                    std = X_trainval_rk[dlc_idx].std()
+                    if std == 0: std = 1e-6
+                    X_trainval_rk[dlc_idx] = (X_trainval_rk[dlc_idx] - mean) / std
+                    X_test_rk[dlc_idx] = (X_test_rk[dlc_idx] - mean) / std
 
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
-                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+                # reshape for GLM
+                # X_trainval_rk2d = X_trainval_rk.reshape(X_trainval_rk.shape[0], -1)
+                # X_test_rk2d = X_test_rk.reshape(X_test_rk.shape[0], -1)
 
-                # Fit GLM with reduced feature set
-                results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                                    X_trainval=X_trainval,
-                                                    spikes_test=spikes_test,
-                                                    X_test=X_test,
-                                                    lambdas=full_optimal_lambdas,
-                                                    n_jobs=n_jobs)
+                results_added = parallel_fit_glms(
+                    spikes_trainval=spikes_trainval.reshape(spikes_trainval.shape[0], -1),
+                    X_trainval=X_trainval_rk,
+                    spikes_test=spikes_test.reshape(spikes_test.shape[0], -1),
+                    X_test=X_test_rk,
+                    lambdas=full_optimal_lambdas,
+                    n_jobs=n_jobs
+                )
 
                 results_added_df = pd.DataFrame(results_added)
                 results_added_df['fold'] = fold_idx
                 results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
                 results_added_df['test_trials'] = [test_ids] * len(results_added_df)
-                results_added_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
-                results_added_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
-                    results_added_df)
+                results_added_df['model_name'] =  '2_reward_kernels'
+                results_added_df['predictors'] =  [feature_names_extra] * len(results_added_df)
                 results_added_all.append(results_added_df)
 
                 # Append reduced model to all models
                 model_res_df_outer.append(results_added_df)
 
         if add_perf_pred is not None:
+            bin_masks = [np.zeros(n_bins, dtype=bool) for _ in range(n_bins)]
+            for i in range(n_bins):
+                bin_masks[i][i] = True
 
-            for i in range(len(X_perfs)):
-                # Get data splits
-                X_trainval, X_test = X_perfs[i][:, trainval_ids, :], \
-                X_perfs[i][
-                    :, test_ids, :]
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-                X_test = X_test.reshape(X_test.shape[0], -1)
+            for i, Xp in enumerate(X_perfs):
+                predictor_name = add_perf_pred[i]
+                print(predictor_name)
+                print(feature_names_perfs[i])
+                X_trainval_p = Xp[:, trainval_ids, :].copy()
+                X_test_p = Xp[:, test_ids, :].copy()
 
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
-                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+                # Standardize DLC
+                for dlc_idx in range(n_features - 4, n_features):
+                    mean = X_trainval_p[dlc_idx].mean()
+                    std = X_trainval_p[dlc_idx].std()
+                    if std == 0: std = 1e-6
+                    X_trainval_p[dlc_idx] = (X_trainval_p[dlc_idx] - mean) / std
+                    X_test_p[dlc_idx] = (X_test_p[dlc_idx] - mean) / std
+                    # Find index of this predictor in the feature names for this perf predictor set
+                try:
+                    pred_idx = feature_names_perfs[i].index(predictor_name)
+                except ValueError:
+                    raise ValueError(f"Predictor '{predictor_name}' not found in feature_names_perfs[{i}]")
+                print(pred_idx)
 
-                # Fit GLM with reduced feature set
-                results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
-                                                    X_trainval=X_trainval,
-                                                    spikes_test=spikes_test,
-                                                    X_test=X_test,
-                                                    lambdas=full_optimal_lambdas,
-                                                    n_jobs=n_jobs)
+                # Loop across bins
+                for bin_idx in range(n_bins):
+                    print(f"Testing predictor {feature_names[i][pred_idx]} restricted to bin {bin_idx}")
 
-                results_added_df = pd.DataFrame(results_added)
-                results_added_df['fold'] = fold_idx
-                results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
-                results_added_df['test_trials'] = [test_ids] * len(results_added_df)
-                results_added_df['model_name'] = add_perf_pred[i]
-                results_added_df['predictors'] = [list(feature_names_perfs[i])] * len(
-                    results_added_df)
-                results_added_all.append(results_added_df)
+                    X_trainval_variant = restrict_predictor_to_bin(X_trainval_p, pred_idx=pred_idx, bin_idx=bin_idx,
+                                                                    mask=bin_masks[bin_idx])
+                    X_test_variant = restrict_predictor_to_bin(X_test_p, pred_idx=pred_idx, bin_idx=bin_idx,
+                                                                mask=bin_masks[bin_idx])
 
-                # Append reduced model to all models
-                model_res_df_outer.append(results_added_df)
+
+                    results_added = parallel_fit_glms(
+                        spikes_trainval=spikes_trainval.reshape(spikes_trainval.shape[0], -1),
+                        X_trainval=X_trainval_variant,
+                        spikes_test=spikes_test.reshape(spikes_test.shape[0], -1),
+                        X_test=X_test_variant,
+                        lambdas=full_optimal_lambdas,
+                        n_jobs=n_jobs
+                    )
+
+                    results_added_df = pd.DataFrame(results_added)
+                    results_added_df['fold'] = fold_idx
+                    results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
+                    results_added_df['test_trials'] = [test_ids] * len(results_added_df)
+                    results_added_df['model_name'] = f"{add_perf_pred[i]}_{bin_idx}"
+                    results_added_df['predictors'] = [list(feature_names_perfs[i])] * len(results_added_df)
+                    results_added_all.append(results_added_df)
+                    print(results_added_df[describe_cols].describe())
+
+                    # Append reduced model to all models
+                    model_res_df_outer.append(results_added_df)
 
         results_added_all_df = pd.concat(results_added_all, ignore_index=True)
         save_model_results(results_added_all_df, filename='model_added_fold{}'.format(fold_idx),
