@@ -1431,6 +1431,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
+    add_perf_pred = None
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
@@ -1588,14 +1589,19 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         results_added_all = []
 
         if whisker_kernels:
-            for number_of_whisker_kernel in range(len(all_Xs)):
-                # Get data splits
-                X_trainval, X_test = all_Xs[number_of_whisker_kernel][:, trainval_ids, :],  all_Xs[number_of_whisker_kernel][:, test_ids, :]
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
-                X_test = X_test.reshape(X_test.shape[0], -1)
+            for w_idx, X_w in enumerate(all_Xs):
+                n_features_w = X_w.shape[0]
+                X_trainval = X_w[:, trainval_ids, :].copy()
+                X_test = X_w[:, test_ids, :].copy()
 
-                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
-                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+                # Standardize DLC features (train only)
+                for dlc_idx in range(n_features_w - 4, n_features_w):
+                    mean = X_trainval[dlc_idx].mean()
+                    std = X_trainval[dlc_idx].std()
+                    if std == 0: std = 1e-6
+                    X_trainval[dlc_idx] = (X_trainval[dlc_idx] - mean) / std
+                    X_test[dlc_idx] = (X_test[dlc_idx] - mean) / std
 
                 # Fit GLM with reduced feature set
                 results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
@@ -1608,8 +1614,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 results_added_df['fold'] = fold_idx
                 results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
                 results_added_df = [test_ids] * len(results_added_df)
-                results_added_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
-                results_added_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_added_df)
+                results_added_df['model_name'] = str(nb_whisker_kernels[w_idx]) + 'whisker_kernels'
+                results_added_df['predictors'] = [list(feature_namess[w_idx])] * len(results_added_df)
                 results_added_all.append(results_added_df)
 
                 # Append reduced model to all models
@@ -1618,11 +1624,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         if reward_kernels:
             print('fitting mulitple reward kernels')
             for k_idx, X_rk in enumerate(X_rewards):
+                n_features_rk = X_rk.shape[0]
                 X_trainval_rk = X_rk[:, trainval_ids, :].copy()
                 X_test_rk = X_rk[:, test_ids, :].copy()
 
                 # Standardize DLC features (train only)
-                for dlc_idx in range(n_features - 4, n_features):
+                for dlc_idx in range(n_features_rk - 4, n_features_rk):
                     mean = X_trainval_rk[dlc_idx].mean()
                     std = X_trainval_rk[dlc_idx].std()
                     if std == 0: std = 1e-6
@@ -1659,6 +1666,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 bin_masks[i][i] = True
 
             for i, Xp in enumerate(X_perfs):
+                n_features_p = X_p.shape[0]
+
                 predictor_name = add_perf_pred[i]
                 print(predictor_name)
                 print(feature_names_perfs[i])
@@ -1666,7 +1675,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 X_test_p = Xp[:, test_ids, :].copy()
 
                 # Standardize DLC
-                for dlc_idx in range(n_features - 4, n_features):
+                for dlc_idx in range(n_features_p - 4, n_features_p):
                     mean = X_trainval_p[dlc_idx].mean()
                     std = X_trainval_p[dlc_idx].std()
                     if std == 0: std = 1e-6
