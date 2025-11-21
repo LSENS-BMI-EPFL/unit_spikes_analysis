@@ -1418,7 +1418,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = True
+    reward_kernels = False
     if reward_kernels:
 
         X_rewards = []
@@ -1431,7 +1431,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    add_perf_pred = None
+    
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
@@ -1613,8 +1613,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 results_added_df = pd.DataFrame(results_added)
                 results_added_df['fold'] = fold_idx
                 results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
-                results_added_df = [test_ids] * len(results_added_df)
-                results_added_df['model_name'] = str(nb_whisker_kernels[w_idx]) + 'whisker_kernels'
+                results_added_df['test_trials']  = [test_ids] * len(results_added_df)
+                results_added_df['model_name'] = str(np.array(nb_whisker_kernels)[w_idx]) + 'whisker_kernels'
                 results_added_df['predictors'] = [list(feature_namess[w_idx])] * len(results_added_df)
                 results_added_all.append(results_added_df)
 
