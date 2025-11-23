@@ -1666,7 +1666,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 bin_masks[i][i] = True
 
             for i, Xp in enumerate(X_perfs):
-                n_features_p = X_p.shape[0]
+                n_features_p = Xp.shape[0]
 
                 predictor_name = add_perf_pred[i]
                 print(predictor_name)
