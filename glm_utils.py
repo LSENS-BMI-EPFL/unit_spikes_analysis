@@ -1689,16 +1689,14 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 print(pred_idx)
 
                 # Loop across bins
-                for bin_idx in range(n_bins):
-                    print(f"Testing predictor {feature_names[i][pred_idx]} restricted to bin {bin_idx}")
+    #           for bin_idx in range(n_bins):
+                print(f"Testing predictor {feature_names[i][pred_idx]} restricted to bin {bin_idx}")
 
-                    X_trainval_variant = restrict_predictor_to_bin(X_trainval_p, pred_idx=pred_idx, bin_idx=bin_idx,
-                                                                    mask=bin_masks[bin_idx])
-                    X_test_variant = restrict_predictor_to_bin(X_test_p, pred_idx=pred_idx, bin_idx=bin_idx,
-                                                                mask=bin_masks[bin_idx])
+                X_trainval_variant = X_trainval_p
+                X_test_variant = X_test_p
 
 
-                    results_added = parallel_fit_glms(
+                results_added = parallel_fit_glms(
                         spikes_trainval=spikes_trainval.reshape(spikes_trainval.shape[0], -1),
                         X_trainval=X_trainval_variant,
                         spikes_test=spikes_test.reshape(spikes_test.shape[0], -1),
@@ -1707,17 +1705,17 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                         n_jobs=n_jobs
                     )
 
-                    results_added_df = pd.DataFrame(results_added)
-                    results_added_df['fold'] = fold_idx
-                    results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
-                    results_added_df['test_trials'] = [test_ids] * len(results_added_df)
-                    results_added_df['model_name'] = f"{add_perf_pred[i]}_{bin_idx}"
-                    results_added_df['predictors'] = [list(feature_names_perfs[i])] * len(results_added_df)
-                    results_added_all.append(results_added_df)
-                    print(results_added_df[describe_cols].describe())
+                results_added_df = pd.DataFrame(results_added)
+                results_added_df['fold'] = fold_idx
+                results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
+                results_added_df['test_trials'] = [test_ids] * len(results_added_df)
+                results_added_df['model_name'] = f"{add_perf_pred[i]}"
+                results_added_df['predictors'] = [list(feature_names_perfs[i])] * len(results_added_df)
+                results_added_all.append(results_added_df)
+                print(results_added_df[describe_cols].describe())
 
                     # Append reduced model to all models
-                    model_res_df_outer.append(results_added_df)
+                model_res_df_outer.append(results_added_df)
 
         results_added_all_df = pd.concat(results_added_all, ignore_index=True)
         save_model_results(results_added_all_df, filename='model_added_fold{}'.format(fold_idx),
