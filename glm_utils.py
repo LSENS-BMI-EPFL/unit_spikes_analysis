@@ -1690,7 +1690,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
                 # Loop across bins
     #           for bin_idx in range(n_bins):
-                print(f"Testing predictor {feature_names[i][pred_idx]} restricted to bin {bin_idx}")
+    #            print(f"Testing predictor {feature_names[i][pred_idx]} restricted to bin {bin_idx}")
 
                 X_trainval_variant = X_trainval_p
                 X_test_variant = X_test_p
