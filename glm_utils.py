@@ -35,7 +35,7 @@ from pyglmnet import GLM, GLMCV
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 import matplotlib
-matplotlib.use('TkAgg')
+matplotlib.use('Agg')
 
 # Custom imports
 import NWB_reader_functions as nwbreader
@@ -45,7 +45,7 @@ import plotting_utils as putils
 # Set global variables
 BIN_SIZE = 0.1 # in seconds
 
-ROOT_PATH = '/home/mhamon/data/'
+ROOT_PATH = '/scratch/mhamon/results/'
 # ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
 
 def bin_spike_times(spike_times, start_time, end_time, bin_size):
@@ -475,12 +475,12 @@ def keep_active_from_whisker_onset(trial_df):
 
 def load_perf_blocks(trial_table, mouse_id):
 
-    path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+    #path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
     # curves_df = load_helpers.load_learning_curves_data(path_to_data=path_to_data, subject_ids=subject_ids)
 
     file_name = f'{mouse_id}_whisker_0_whisker_trial_learning_curve_interp.h5'
     path_to_file = os.path.join(ROOT_PATH, mouse_id, file_name)
-    path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
+    #path_to_file = os.path.join(path_to_data, mouse_id,  'whisker_0', 'learning_curve',file_name)
 
     df_w = pd.read_hdf(path_to_file)
 
@@ -524,9 +524,9 @@ def load_jaw_onset_data(mouse_id):
     print('Loading jaw onset data...')
 
     jaw_onset_list = []
-    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.h5')
+    file_path = os.path.join(ROOT_PATH, mouse_id, 'dlc_jaw_onset_times.pkl')
     if os.path.exists(file_path):
-        df = pd.read_hdf(file_path)
+        df = pd.read_pickle(file_path)
         jaw_onset_list.append(df)
     else:
         print(f"[WARN] Jaw onset data file not found for {mouse_id} at {file_path}. Skipping.")
@@ -534,7 +534,7 @@ def load_jaw_onset_data(mouse_id):
     jaw_onset_table = pd.concat(jaw_onset_list, ignore_index=True)
     return jaw_onset_table
 
-def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False):
+def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False, include_predictors=[]):
     """
     Loads spike trains from unit table and predictors from an NWB file.
     :param nwb_path: str, path to the NWB file
@@ -578,7 +578,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         unit_table['neuron_id'] = unit_table.index
         unit_table.reset_index(drop=True, inplace=True)
         neurons_ccf = unit_table['ccf_parent_acronym'].values
-        unit_table = unit_table.iloc[[21, 34]]
+    #    unit_table = unit_table.iloc[[21, 34]]
 
 
 
@@ -623,7 +623,6 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         # Binary Predictors
 
-
         # Trial index scaled to total number of trials
         trial_idx_scaled = np.arange(n_trials) / (n_trials-1)
         predictors['trial_index_scaled'] = np.tile(trial_idx_scaled[:, None], (1, n_bins))
@@ -647,11 +646,60 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             prev_whisker_reward[i] = last_whisker_reward
             if stim_type[i] == 'whisker_trial':
                 last_whisker_reward = rewarded[i]
+        # broadcast to bins
+        if 'last_whisker_reward' in include_predictors :
+            predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+
+        # Running memory for last no stim status
+        last_no_stim = 0
+        prev_no_stim = np.zeros(n_trials)
+        licks =  trials_df['lick_flag'].astype(int).fillna(0).values
+        for i in range(n_trials):
+            # Store the most recent reward info
+            prev_no_stim[i] = last_no_stim
+            if stim_type[i] != 'whisker_trial' and stim_type[i] != 'auditory_trial':
+                last_no_stim = licks[i]
+        # broadcast to bins
+        if 'last_false_alarm' in include_predictors:
+            predictors['last_false_alarm'] = np.tile(stim_type[:, None], (1, n_bins))
 
 
-        # Broadcast to bins
-        # predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
-        #  Independent code to get the proportion of past whisker trials that were rewarded
+        # Compute trial outcome (success vs error)
+        stim_type = trials_df['trial_type'].fillna('').values
+        licks = trials_df['lick_flag'].astype(int).fillna(0).values
+        reward_available = trials_df['reward_available'].astype(int).fillna(0).values
+
+        success = np.zeros(n_trials)
+
+        for i in range(n_trials):
+            if stim_type[i] in ['whisker_trial', 'auditory_trial']:
+                # GO trial → success if rewarded lick
+                success[i] = 1 if (reward_available[i] == 1 and licks[i] == 1) else 0
+            else:
+                # NO-GO trial → success if no lick
+                success[i] = 1 if licks[i] == 0 else 0
+
+        # Shift by one trial to get previous trial's success/error
+        prev_success = np.zeros(n_trials)
+        prev_success[1:] = success[:-1]
+
+        # Broadcast to bins if selected
+        if 'prev_success' in include_predictors:
+            predictors['prev_success'] = np.tile(prev_success[:, None], (1, n_bins))
+
+        # get if last trial was rewarded regardless of trial type
+        last_reward = 0
+        prev_reward = np.zeros(n_trials)
+
+        for i in range(n_trials):
+            # Store the most recent reward info
+            prev_reward[i] = last_reward
+            last_reward = rewarded[i]
+
+        if 'last_reward' in include_predictors :
+            predictors['last_reward'] = np.tile(prev_reward[:, None], (1, n_bins))
+
+        # get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
         past_whisker_rewards = 0
         prop_past_whisker_rewarded = np.zeros(n_trials)
@@ -667,9 +715,13 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             if past_whisker_trials > 0:
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
-        # predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+        if 'prop_past_whisker_rewarded' in include_predictors :
+            predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
+
         block_perf_type = trials_df['block_perf_type'].to_numpy()  # shape (n_trials,)
-        predictors['block_perf_type'] = np.tile(block_perf_type[:, None], (1, n_bins))
+
+        if 'block_perf_type' in include_predictors :
+            predictors['block_perf_type'] = np.tile(block_perf_type[:, None], (1, n_bins))
 
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
@@ -682,10 +734,12 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
             else:
                 whisker_reward_rate[i] = 0
-        scale = None
+
         scale = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
-        # predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+        if 'prop_past_whisker_rewarded' in include_predictors :
+            predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
+
 
         total_rewards = np.sum(rewarded > 0)
         total_rewards = total_rewards if total_rewards > 0 else 1
@@ -706,13 +760,11 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         binary_keys ={
             'trial_index_scale':'trial_index_scaled',
-            # 'last_whisker_reward':'last_whisker_reward',
-            # 'prop_past_whisker_rewarded':'prop_past_whisker_rewarded',
-            # 'whisker_reward_rate_5': 'whisker_reward_rate_5',
+            'offset' : 'offset',
             'sum_reward_scaled':'sum_reward_scaled',
-            'block_perf_type':'block_perf_type'
-            # 'whisker_hit': 'whisker_hit'
         }
+        for predictor in include_predictors:
+            binary_keys[predictor] = predictor
 
         # Event-based predictors (rasterized kernels will be applied later)
         def rasterize_event(event_times, first_only=False):
@@ -784,8 +836,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             event_defs = {
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
-                'auditory_stim': (auditory_times, (-0.1, 0.6)),
-                'whisker_stim': (whisker_times, (-0.1, 0.6)),
+                'auditory_stim': (auditory_times, (-0.1, 0.4)),
+                'whisker_stim': (whisker_times, (-0.1, 0.4)),
                 'piezo_reward': (piezo_licks, (-0, 0.6)),
             }
 
@@ -798,7 +850,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             }
             whisker_splits = np.array_split(whisker_times, nb_of_whisker_kernel)
             for nb in range(nb_of_whisker_kernel):
-                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (-0.1, 0.6))
+                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (0, 0.3))
 
 
         for name, (times, _) in event_defs.items():
@@ -1045,10 +1097,125 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
         print(f"GLM failed to converge: {e}")
         return None
 
+def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, lambdas):
+    """
+    Fit a non-Poisson (Gaussian) GLM to the data for a single neuron.
+    Useful when spike data are continuous, z-scored, or approximately normal.
+
+    :param neuron_id: int, ID of the neuron to fit
+    :param spikes_trainval: np.ndarray, (n_neurons, n_trials, n_bins)
+    :param X_trainval: np.ndarray, (n_features, n_trials, n_bins)
+    :param spikes_test: np.ndarray, (n_neurons, n_trials, n_bins)
+    :param X_test: np.ndarray, (n_features, n_trials, n_bins)
+    :param lambdas: float or np.ndarray, regularization parameter(s) for Ridge regression
+    :return: dict, GLM fit results
+    """
+
+    cv_folds = 5
+    n_features = X_trainval.shape[0]
+    n_bins = X_trainval.shape[2]
+
+    # Reshape into GLM-compatible matrices
+    y_trainval = spikes_trainval[neuron_id].reshape(spikes_trainval.shape[1], -1).flatten()
+    X_trainval = X_trainval.transpose(1, 2, 0).reshape(-1, n_features)
+    y_test = spikes_test[neuron_id].reshape(spikes_test.shape[1], -1).flatten()
+    X_test = X_test.transpose(1, 2, 0).reshape(-1, n_features)
+
+    # -------------------------
+    # Cross-validation for lambda
+    # -------------------------
+    if isinstance(lambdas, np.ndarray):
+        glmcv = GLMCV(
+            distr='gaussian',
+            score_metric='pseudo_R2',
+            fit_intercept=False,
+            alpha=0.0,
+            reg_lambda=lambdas,
+            solver='cdfast',
+            cv=cv_folds,
+            tol=1e-4,
+            verbose=False,
+            random_state=42,
+        )
+        glmcv.fit(X_trainval, y_trainval)
+        lambda_opt = glmcv.reg_lambda_opt_
+    else:
+        lambda_opt = float(lambdas)
+
+    # -------------------------
+    # Final model fit
+    # -------------------------
+    glm_final = GLM(
+        distr='gaussian',
+        score_metric='pseudo_R2',
+        fit_intercept=False,
+        alpha=0.0,
+        reg_lambda=lambda_opt,
+        solver='cdfast',
+        tol=1e-4,
+        verbose=False,
+        random_state=42,
+    )
+
+    fit_success = True
+    try:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always", category=ConvergenceWarning)
+            glm_final.fit(X_trainval, y_trainval)
+            for warning in w:
+                if issubclass(warning.category, ConvergenceWarning):
+                    print(f"Warning: GLM did not converge for neuron {neuron_id}: {warning.message}")
+                    fit_success = False
+
+        # -------------------------
+        # Evaluate
+        # -------------------------
+        y_trainval_pred = glm_final.predict(X_trainval)
+        y_test_pred = glm_final.predict(X_test)
+
+        # Scores
+        train_score = glm_final.score(X_trainval, y_trainval)
+        test_score = glm_final.score(X_test, y_test)
+
+        # Log-likelihood (Gaussian)
+        train_ll = -0.5 * np.sum((y_trainval - y_trainval_pred) ** 2)
+        test_ll = -0.5 * np.sum((y_test - y_test_pred) ** 2)
+
+        # Correlations
+        train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
+        test_corr, _ = sp.stats.pearsonr(y_test, y_test_pred)
+
+        # Mutual information (optional)
+        train_mi = compute_mutual_info(y_trainval, y_trainval_pred)
+        test_mi = compute_mutual_info(y_test, y_test_pred)
+
+        return {
+            'neuron_id': neuron_id,
+            'lambda_opt': lambda_opt,
+            'train_ll': train_ll,
+            'train_score': train_score,
+            'train_corr': train_corr,
+            'train_mi': train_mi,
+            'test_ll': test_ll,
+            'test_score': test_score,
+            'test_corr': test_corr,
+            'test_mi': test_mi,
+            'coef': glm_final.beta_.copy(),
+            'y_train': y_trainval,
+            'y_train_pred': y_trainval_pred,
+            'y_test': y_test,
+            'y_test_pred': y_test_pred,
+            'n_bins': n_bins,
+            'fit_success': fit_success,
+        }
+
+    except Exception as e:
+        print(f"GLM (Gaussian) failed for neuron {neuron_id}: {e}")
+        return None
 
 
 def fit_neuron_glm_wrapper(args):
-    return fit_neuron_glm(*args)  # small wrapper because map needs a single argument
+    return fit_neuron_glm_gaussian(*args)  # small wrapper because map needs a single argument
 
 def parallel_fit_glms(spikes_trainval, X_trainval, spikes_test, X_test, lambdas, n_jobs=10):
 
@@ -1204,12 +1371,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Build design matrix for entire dataset
     X, feature_names = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE, scale = None)
-
+    X = np.nan_to_num(X)
     n_features = X.shape[0]
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = True
+    whisker_kernels = False
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
@@ -1225,7 +1392,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = True
+    reward_kernels = False
     if reward_kernels:
 
         X_rewards = []
@@ -1242,6 +1409,19 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_names_rewards.append(feature_names_extra)
             nb_whisker_kernel_rewards.append(number_of_whisker_kernel)
 
+    add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
+    if add_perf_pred is not None:
+        X_perfs = []
+        feature_names_perfs = []
+        for perf_predictors in add_perf_pred:
+            spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE,  include_predictors = [perf_predictors])
+            event_defs = predictor_types['event_defs']
+            analog_keys = predictor_types['analog_keys']
+
+            # Build design matrix for entire dataset
+            X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+            X_perfs.append(X_extra)
+            feature_names_perfs.append(feature_names_extra)
 
     # ---------------------------------------
     # Train/test data cross-validation splits
@@ -1287,7 +1467,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # Fit full GLMs using multiprocessing
         # -----------------------------------
 
-        lambdas = np.exp(np.linspace(np.log(0.5), np.log(1e-5), 5)) # regul. strength hyperparam.
+        lambdas = np.exp(np.linspace(np.log(10), np.log(1e-5), 10)) # regul. strength hyperparam.
         #lambdas = np.array([0.001, 0.5])
 
         start_time = time.time()
@@ -1335,7 +1515,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'whisker_reward_encoding': ['prev_whisker_reward'],
             'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
             'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-            'block_perf_type' : ['block_perf_type'],
+            # 'block_perf_type' : ['block_perf_type'],
             # 'whisker_move': ['whisker_vel'],
             'session_progress_encoding': ['trial_index_scaled'],
             # 'last_rewards_whisker': ['last_whisker_reward'],
@@ -1376,6 +1556,13 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
             # Append reduced model to all models
             model_res_df_outer.append(results_reduced_df)
+        # Merge results from all reduced models, then save
+        results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
+        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
+                           commit_hash=commit_hash,
+                           output_dir=mouse_output_path)
+
+        results_added_all = []
 
         if whisker_kernels:
             for number_of_whisker_kernel in range(len(all_Xs)):
@@ -1388,22 +1575,22 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
                 # Fit GLM with reduced feature set
-                results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
                                                     X_trainval=X_trainval,
                                                     spikes_test=spikes_test,
                                                     X_test=X_test,
                                                     lambdas=full_optimal_lambdas,
                                                     n_jobs=n_jobs)
-                results_reduced_df = pd.DataFrame(results_reduced)
-                results_reduced_df['fold'] = fold_idx
-                results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-                results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-                results_reduced_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
-                results_reduced_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_reduced_df)
-                results_reduced_all.append(results_reduced_df)
+                results_added_df = pd.DataFrame(results_added)
+                results_added_df['fold'] = fold_idx
+                results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
+                results_added_df = [test_ids] * len(results_added_df)
+                results_added_df['model_name'] = str(nb_whisker_kernels[number_of_whisker_kernel]) + 'whisker_kernels'
+                results_added_df['predictors'] = [list(feature_namess[number_of_whisker_kernel])] * len(results_added_df)
+                results_added_all.append(results_added_df)
 
                 # Append reduced model to all models
-                model_res_df_outer.append(results_reduced_df)
+                model_res_df_outer.append(results_added_df)
 
         if reward_kernels:
 
@@ -1418,31 +1605,63 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
 
                 # Fit GLM with reduced feature set
-                results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
                                                     X_trainval=X_trainval,
                                                     spikes_test=spikes_test,
                                                     X_test=X_test,
                                                     lambdas=full_optimal_lambdas,
                                                     n_jobs=n_jobs)
 
-                results_reduced_df = pd.DataFrame(results_reduced)
-                results_reduced_df['fold'] = fold_idx
-                results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-                results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-                results_reduced_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
-                results_reduced_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
-                    results_reduced_df)
-                results_reduced_all.append(results_reduced_df)
+                results_added_df = pd.DataFrame(results_added)
+                results_added_df['fold'] = fold_idx
+                results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
+                results_added_df['test_trials'] = [test_ids] * len(results_added_df)
+                results_added_df['model_name'] =  str(nb_whisker_kernel_rewards[number_of_whisker_kernel]) + 'whisker_kernels_2_rewards'
+                results_added_df['predictors'] = [list(feature_names_rewards[number_of_whisker_kernel])] * len(
+                    results_added_df)
+                results_added_all.append(results_added_df)
 
                 # Append reduced model to all models
-                model_res_df_outer.append(results_reduced_df)
+                model_res_df_outer.append(results_added_df)
 
-        # Merge results from all reduced models, then save
-        results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx), commit_hash = commit_hash,
+        if add_perf_pred is not None:
+
+            for i in range(len(X_perfs)):
+                # Get data splits
+                X_trainval, X_test = X_perfs[i][:, trainval_ids, :], \
+                X_perfs[i][
+                    :, test_ids, :]
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], -1)
+                X_test = X_test.reshape(X_test.shape[0], -1)
+
+                X_trainval = X_trainval.reshape(X_trainval.shape[0], len(trainval_ids), -1)  # reshape
+                X_test = X_test.reshape(X_test.shape[0], len(test_ids), -1)
+
+                # Fit GLM with reduced feature set
+                results_added = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                    X_trainval=X_trainval,
+                                                    spikes_test=spikes_test,
+                                                    X_test=X_test,
+                                                    lambdas=full_optimal_lambdas,
+                                                    n_jobs=n_jobs)
+
+                results_added_df = pd.DataFrame(results_added)
+                results_added_df['fold'] = fold_idx
+                results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
+                results_added_df['test_trials'] = [test_ids] * len(results_added_df)
+                results_added_df['model_name'] = add_perf_pred[i]
+                results_added_df['predictors'] = [list(feature_names_perfs[i])] * len(
+                    results_added_df)
+                results_added_all.append(results_added_df)
+
+                # Append reduced model to all models
+                model_res_df_outer.append(results_added_df)
+
+        results_added_all_df = pd.concat(results_added_all, ignore_index=True)
+        save_model_results(results_added_all_df, filename='model_added_fold{}'.format(fold_idx),
+                           commit_hash=commit_hash,
                            output_dir=mouse_output_path)
 
-        model_res_df_outer.append(results_reduced_all_df)
 
         debug=False
         if debug:
