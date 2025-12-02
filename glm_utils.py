@@ -43,7 +43,7 @@ import allen_utils
 import plotting_utils as putils
 
 # Set global variables
-BIN_SIZE = 0.05 # in seconds
+BIN_SIZE = 0.1 # in seconds
 
 ROOT_PATH = '/scratch/mhamon/results/'
 # ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
@@ -556,6 +556,12 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         trials_df['mouse_id'] = nwbreader.get_mouse_id(nwb_path)
         trials_df['session_id'] = nwbreader.get_session_id(nwb_path)
         #
+
+        jaw_onset_table = load_jaw_onset_data(trials_df['mouse_id'].unique()[0] )
+
+        trials_df = trials_df.merge(jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
+                                on=['mouse_id', 'session_id', 'trial_id'], how='left')
+
         trials_df = load_perf_blocks(trials_df, trials_df['mouse_id'].unique()[0])
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
@@ -635,7 +641,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 * trials_df['reward_available'].astype(int)
                 * trials_df['lick_flag'].astype(int)
         ).fillna(0).values
-
+        lick = trials_df['lick_flag'].astype(int)
         prev_whisker_reward = np.zeros(n_trials)
 
         # Running memory for last reward status
@@ -645,7 +651,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             # Store the most recent reward info
             prev_whisker_reward[i] = last_whisker_reward
             if stim_type[i] == 'whisker_trial':
-                last_whisker_reward = rewarded[i]
+                last_whisker_reward = lick[i]
         # broadcast to bins
         if 'last_whisker_reward' in include_predictors :
             predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
@@ -694,7 +700,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         for i in range(n_trials):
             # Store the most recent reward info
             prev_reward[i] = last_reward
-            last_reward = rewarded[i]
+            last_reward = lick[i]
 
         if 'last_reward' in include_predictors :
             predictors['last_reward'] = np.tile(prev_reward[:, None], (1, n_bins))
@@ -708,7 +714,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             # Whisker trial history
             if stim_type[i - 1] == 'whisker_trial':
                 past_whisker_trials += 1
-                if rewarded[i - 1] > 0:
+                if lick[i - 1] > 0:
                     past_whisker_rewards += 1
 
             # Avoid divide-by-zero
@@ -728,7 +734,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         for i in range(n_trials):
             start_idx = max(0, i - 5)
             recent_trials = stim_type[start_idx:i]
-            recent_rewards = rewarded[start_idx:i]
+            recent_rewards = lick[start_idx:i]
             whisker_mask = recent_trials == 'whisker_trial'
             if np.sum(whisker_mask) > 0:
                 whisker_reward_rate[i] = np.sum(recent_rewards[whisker_mask]) / np.sum(whisker_mask)
@@ -747,7 +753,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         reward_so_far = 0
         for i in range(n_trials):
             cum_reward[i] = reward_so_far / total_rewards
-            if rewarded[i] > 0:
+            if lick[i] > 0:
                 reward_so_far += 1
 
         # Add to predictors (scaled cumulative rewards across all trial types)
@@ -811,12 +817,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         piezo_licks = np.array(list(get_events('piezo_lick_times')[1]))
         # tongue_dlc_licks = np.array(list(get_events('tongue_dlc_licks')[1])) / 200 + video_start_time
 
-        jaw_onset_table = load_jaw_onset_data(trials_df['mouse_id'].unique()[0] )
-
-        trials_df = trials_df.merge(jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
-                                on=['mouse_id', 'session_id', 'trial_id'], how='left')
-
-        all_jaw_onsets = trials_df['jaw_dlc_onset'].values + trials_df['start_time'].values
+        lick_trials = trials_df[trials_df['lick_flag'] == 1]
+        all_jaw_onsets = lick_trials['jaw_dlc_onset'].values + lick_trials['start_time'].values
 
         # Get available stimulus times
         try:
@@ -1377,7 +1379,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = True
+    whisker_kernels = False
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
@@ -1393,7 +1395,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = True
+    reward_kernels = False
     if reward_kernels:
 
         X_rewards = []
@@ -1406,7 +1408,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    add_perf_pred = None
+    # add_perf_pred = None
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
