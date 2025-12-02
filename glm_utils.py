@@ -43,7 +43,7 @@ import allen_utils
 import plotting_utils as putils
 
 # Set global variables
-BIN_SIZE = 0.1 # in seconds
+BIN_SIZE = 0.05 # in seconds
 
 ROOT_PATH = '/scratch/mhamon/results/'
 # ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
@@ -1097,10 +1097,11 @@ def fit_neuron_glm(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, 
         print(f"GLM failed to converge: {e}")
         return None
 
+
 def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test, X_test, lambdas):
     """
-    Fit a non-Poisson (Gaussian) GLM to the data for a single neuron.
-    Useful when spike data are continuous, z-scored, or approximately normal.
+    Fit a non-Poisson (Gaussian) GLM to the data for a single neuron using closed-form ridge regression.
+    Much faster than iterative GLM fitting.
 
     :param neuron_id: int, ID of the neuron to fit
     :param spikes_trainval: np.ndarray, (n_neurons, n_trials, n_bins)
@@ -1110,6 +1111,8 @@ def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test,
     :param lambdas: float or np.ndarray, regularization parameter(s) for Ridge regression
     :return: dict, GLM fit results
     """
+    from sklearn.linear_model import RidgeCV, Ridge
+    from sklearn.metrics import r2_score
 
     cv_folds = 5
     n_features = X_trainval.shape[0]
@@ -1117,101 +1120,73 @@ def fit_neuron_glm_gaussian(neuron_id, spikes_trainval, X_trainval, spikes_test,
 
     # Reshape into GLM-compatible matrices
     y_trainval = spikes_trainval[neuron_id].reshape(spikes_trainval.shape[1], -1).flatten()
-    X_trainval = X_trainval.transpose(1, 2, 0).reshape(-1, n_features)
+    X_trainval_reshaped = X_trainval.transpose(1, 2, 0).reshape(-1, n_features)
     y_test = spikes_test[neuron_id].reshape(spikes_test.shape[1], -1).flatten()
-    X_test = X_test.transpose(1, 2, 0).reshape(-1, n_features)
+    X_test_reshaped = X_test.transpose(1, 2, 0).reshape(-1, n_features)
 
     # -------------------------
-    # Cross-validation for lambda
+    # Cross-validation for lambda (if needed)
     # -------------------------
     if isinstance(lambdas, np.ndarray):
-        glmcv = GLMCV(
-            distr='gaussian',
-            score_metric='pseudo_R2',
-            fit_intercept=False,
-            alpha=0.0,
-            reg_lambda=lambdas,
-            solver='cdfast',
+        ridge_cv = RidgeCV(
+            alphas=lambdas,
             cv=cv_folds,
-            tol=1e-4,
-            verbose=False,
-            random_state=42,
+            fit_intercept=False,
+            scoring='r2',
         )
-        glmcv.fit(X_trainval, y_trainval)
-        lambda_opt = glmcv.reg_lambda_opt_
+        ridge_cv.fit(X_trainval_reshaped, y_trainval)
+        lambda_opt = ridge_cv.alpha_
+        model = ridge_cv
     else:
         lambda_opt = float(lambdas)
-
-    # -------------------------
-    # Final model fit
-    # -------------------------
-    glm_final = GLM(
-        distr='gaussian',
-        score_metric='pseudo_R2',
-        fit_intercept=False,
-        alpha=0.0,
-        reg_lambda=lambda_opt,
-        solver='cdfast',
-        tol=1e-4,
-        verbose=False,
-        random_state=42,
-    )
+        model = Ridge(alpha=lambda_opt, fit_intercept=False)
+        model.fit(X_trainval_reshaped, y_trainval)
 
     fit_success = True
-    try:
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always", category=ConvergenceWarning)
-            glm_final.fit(X_trainval, y_trainval)
-            for warning in w:
-                if issubclass(warning.category, ConvergenceWarning):
-                    print(f"Warning: GLM did not converge for neuron {neuron_id}: {warning.message}")
-                    fit_success = False
 
-        # -------------------------
-        # Evaluate
-        # -------------------------
-        y_trainval_pred = glm_final.predict(X_trainval)
-        y_test_pred = glm_final.predict(X_test)
+    # -------------------------
+    # Predictions
+    # -------------------------
+    y_trainval_pred = model.predict(X_trainval_reshaped)
+    y_test_pred = model.predict(X_test_reshaped)
 
-        # Scores
-        train_score = glm_final.score(X_trainval, y_trainval)
-        test_score = glm_final.score(X_test, y_test)
+    # -------------------------
+    # Scores (pseudo R²)
+    # -------------------------
+    train_score = r2_score(y_trainval, y_trainval_pred)
+    test_score = r2_score(y_test, y_test_pred)
 
-        # Log-likelihood (Gaussian)
-        train_ll = -0.5 * np.sum((y_trainval - y_trainval_pred) ** 2)
-        test_ll = -0.5 * np.sum((y_test - y_test_pred) ** 2)
+    # Log-likelihood (Gaussian) - proportional to negative MSE
+    train_ll = -0.5 * np.sum((y_trainval - y_trainval_pred) ** 2)
+    test_ll = -0.5 * np.sum((y_test - y_test_pred) ** 2)
 
-        # Correlations
-        train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
-        test_corr, _ = sp.stats.pearsonr(y_test, y_test_pred)
+    # Correlations
+    train_corr, _ = sp.stats.pearsonr(y_trainval, y_trainval_pred)
+    test_corr, _ = sp.stats.pearsonr(y_test, y_test_pred)
 
-        # Mutual information (optional)
-        train_mi = compute_mutual_info(y_trainval, y_trainval_pred)
-        test_mi = compute_mutual_info(y_test, y_test_pred)
+    # Mutual information (optional)
+    train_mi = compute_mutual_info(y_trainval, y_trainval_pred)
+    test_mi = compute_mutual_info(y_test, y_test_pred)
 
-        return {
-            'neuron_id': neuron_id,
-            'lambda_opt': lambda_opt,
-            'train_ll': train_ll,
-            'train_score': train_score,
-            'train_corr': train_corr,
-            'train_mi': train_mi,
-            'test_ll': test_ll,
-            'test_score': test_score,
-            'test_corr': test_corr,
-            'test_mi': test_mi,
-            'coef': glm_final.beta_.copy(),
-            'y_train': y_trainval,
-            'y_train_pred': y_trainval_pred,
-            'y_test': y_test,
-            'y_test_pred': y_test_pred,
-            'n_bins': n_bins,
-            'fit_success': fit_success,
-        }
-
-    except Exception as e:
-        print(f"GLM (Gaussian) failed for neuron {neuron_id}: {e}")
-        return None
+    return {
+        'neuron_id': neuron_id,
+        'lambda_opt': lambda_opt,
+        'train_ll': train_ll,
+        'train_score': train_score,
+        'train_corr': train_corr,
+        'train_mi': train_mi,
+        'test_ll': test_ll,
+        'test_score': test_score,
+        'test_corr': test_corr,
+        'test_mi': test_mi,
+        'coef': model.coef_.copy(),
+        'y_train': y_trainval,
+        'y_train_pred': y_trainval_pred,
+        'y_test': y_test,
+        'y_test_pred': y_test_pred,
+        'n_bins': n_bins,
+        'fit_success': fit_success,
+    }
 
 
 def fit_neuron_glm_wrapper(args):
@@ -1402,12 +1377,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = False
+    whisker_kernels = True
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
         nb_whisker_kernels = []
-        for number_of_whisker_kernel in range(2,5):
+        for number_of_whisker_kernel in range(2,10):
             spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
             event_defs = predictor_types['event_defs']
             analog_keys = predictor_types['analog_keys']
@@ -1418,7 +1393,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
 
-    reward_kernels = False
+    reward_kernels = True
     if reward_kernels:
 
         X_rewards = []
@@ -1431,7 +1406,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    
+    add_perf_pred = None
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
