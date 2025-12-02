@@ -17,6 +17,9 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import matplotlib.colors as mc
 from scipy.stats import wilcoxon, ttest_rel, pearsonr
+import pprint
+
+import allen_utils
 #from statannotations.Annotator import Annotator
 
 
@@ -824,16 +827,24 @@ def main():
     # LOAD DATA
     # ---------
     print('Loading data...')
-    data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results') #TODO: double check
-    roc_results_files = glob.glob(os.path.join(data_path_axel, '**', '*_roc_results_new.csv'),
-                                  recursive=True)  # find all roc results files
-    roc_df_axel = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
-    data_path_myriam = os.path.join(DATA_PATH, 'Myriam_Hamon', 'results')
-    roc_results_files = glob.glob(os.path.join(data_path_myriam, '**', '*_roc_results_new.csv'),
-                                            recursive=True)
-    roc_df_myriam = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
+    # --- Load data ---
+    data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
+    roc_df = load_roc_results(data_path_axel)
 
-    roc_df = pd.concat([roc_df_axel, roc_df_myriam], ignore_index=True)
+    # --- Load Myriam data ---
+    #data_path_myriam = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
+    #roc_df_myriam = load_roc_results(data_path_myriam)
+
+    #data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results') #TODO: double check
+    #roc_results_files = glob.glob(os.path.join(data_path_axel, '**', '*_roc_results_new.csv'),
+    #                              recursive=True)  # find all roc results files
+    #roc_df_axel = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
+    #data_path_myriam = os.path.join(DATA_PATH, 'Myriam_Hamon', 'results')
+    #roc_results_files = glob.glob(os.path.join(data_path_myriam, '**', '*_roc_results_new.csv'),
+    #                                        recursive=True)
+    #roc_df_myriam = pd.concat([pd.read_csv(f) for f in roc_results_files], ignore_index=True)
+
+    #roc_df = pd.concat([roc_df_axel, roc_df_myriam], ignore_index=True)
     roc_df = roc_df.merge(mouse_info_df[['mouse_id', 'reward_group']], on='mouse_id', how='left')
 
     # Create unique unit identifier based on index
@@ -845,6 +856,7 @@ def main():
 
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
+    print(roc_df.columns)
 
     # -----------------------
     # PROCESS AND FILTER DATA
@@ -854,25 +866,29 @@ def main():
     N_MICE_PER_AREA_MIN = 3         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
-    roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
+    # Remove excluded areas
+    roc_df = roc_df[~roc_df['area'].isin(allen.get_excluded_areas())]
+    #roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True) #TODO: fix area acronym custom
+
+    #roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
 
     # Create color list based on areas that are present
-    shared_areas = roc_df['area_acronym_custom'].unique()
-    area_order = allen.get_custom_area_order()
-    area_order_shared = [a for a in area_order if a in shared_areas]
+    #shared_areas = roc_df['area_acronym_custom'].unique()
+    #area_order = allen.get_custom_area_order()
+    #area_order_shared = [a for a in area_order if a in shared_areas]
 
     # Make a color dict for the group of areas
     area_groups = allen.get_custom_area_groups()
 
     # Keep areas that present in dataset
-    area_groups = {k: [i for i in v if i in area_order_shared] for k, v in area_groups.items()}
+    #area_groups = {k: [i for i in v if i in area_order_shared] for k, v in area_groups.items()}
 
     # Generate a colormap with as many colors as the number of area groups
     color_palette_dict = allen.get_custom_area_groups_colors()
     color_palette = list(color_palette_dict.values())
 
     colors = [color_palette[i % len(color_palette)] for i in range(len(area_groups))]  # hex
-    print('Equality ensured', len(colors) == len(area_groups.keys()))
+    print('Equality ensured #colors vs. #area groups: ', len(colors) == len(area_groups.keys()))
 
     # Create a dictionary mapping each area to its group color
     area_color_dict = {}
@@ -884,8 +900,8 @@ def main():
     # -------------------------------------------------
     # COMPUTE PROPORTIONS OF SIGNIFICANT UNITS PER AREA
     # -------------------------------------------------
-    roc_df_perc = compute_prop_significant(roc_df, per_subject=False)
-    roc_df_perc_subjects = compute_prop_significant(roc_df, per_subject=True)
+    #roc_df_perc = compute_prop_significant(roc_df, per_subject=False)
+    #roc_df_perc_subjects = compute_prop_significant(roc_df, per_subject=True)
 
     # ----------------------------------------
     # PERFORM COMPARISONS ON SIGNIFICANT UNITS
@@ -963,7 +979,7 @@ def main():
     figures_to_do = [
         #'abs_si_across_areas',
         #'abs_si_across_areas_reward_group',
-        'abs_si_before_vs_after_across_areas',
+        #'abs_si_before_vs_after_across_areas',
     ]
 
     if 'abs_si_across_areas' in figures_to_do:
@@ -1026,12 +1042,12 @@ def main():
     # PERFORM CORRELATIONS ON SINGLE-UNITS
     # ---------------------------------------------
 
-    roc_df_delta = compute_si_differences(roc_df)
+    #roc_df_delta = compute_si_differences(roc_df)
 
     figures_to_do = [
-        'si_delta_correlation_grid_across_areas',
-        'si_delta_correlation_grid_across_areas_multimodal',
-        'si_correlation_grid_across_areas'
+        #'si_delta_correlation_grid_across_areas',
+        #'si_delta_correlation_grid_across_areas_multimodal',
+        #'si_correlation_grid_across_areas'
     ]
 
     if 'si_delta_correlation_grid_across_areas' in figures_to_do:
@@ -1101,10 +1117,641 @@ def main():
     else:
         print('Functions not implemented.')
 
+    # --------------------------------
+    # PERFORM NESTED PERMUTATION TESTS
+    # --------------------------------
+    reward_group_mapper = {'R+': 1, 'R-': 0}
+    roc_df['reward_group'] = roc_df['reward_group'].map(reward_group_mapper)
+
+    tests_to_do = [
+        #'increased_si_across_reward_group',
+        #'change_si_across_reward_group',
+        #'crossmodal_change_si_across_reward_group',
+        'run_reward_group_hypotheses'
+                   ]
+
+    if 'increased_si_across_reward_group' in tests_to_do:
+        run_permutation_test_increase_reward_group(roc_df=roc_df)
+
+    if 'change_si_across_reward_group' in tests_to_do:
+        run_permutation_test_change_reward_group(roc_df=roc_df)
+
+    if 'crossmodal_change_si_across_reward_group' in tests_to_do:
+        test_cross_modality_reward_effect(roc_df=roc_df)
+
+    if 'run_reward_group_hypotheses' in tests_to_do:
+        run_reward_group_hypotheses(roc_df=roc_df)
+
+
     return
 
 
+def run_permutation_test_increase_reward_group(roc_df):
+    print('Running permutation test for reward group comparison...')
 
+    # Column names for SI pre/post (change here to match your dataframe)
+    col_pre = 'whisker_passive_pre'
+    col_post = 'whisker_passive_post'
+    #col_pre = 'auditory_passive_pre'
+    #col_post = 'auditory_passive_post'
+    mouse_col = 'mouse_id'
+    area_col = 'area' #TODO: check consistency across ROC runs
+    group_col = 'reward_group'  # must be 0/1 or two distinct labels
+
+    # Parameters
+    min_units_per_mouse_area = 5  # minimum neurons per mouse-area to include mouse-area cell
+    min_mice_per_area = 3  # minimum number of mice that have that area to include area in omnibus/post-hoc
+    n_perms = 2000  # number of permutations (increase in production)
+
+    np.random.seed(42)
+
+    # --- 1. Filter and pivot ---
+    df_w = roc_df[roc_df['analysis_type'].isin([col_pre, col_post])].copy()
+    df_w = df_w.pivot_table(
+        index=[mouse_col, area_col, 'neuron_id', group_col],
+        columns='analysis_type',
+        values='selectivity'
+    ).reset_index()
+
+    df_w['delta_absSI'] = df_w[col_post].abs() - df_w[col_pre].abs()
+
+    # --- 2. Aggregate to mouse × area ---
+    mouse_area = (
+        df_w.groupby([mouse_col, area_col])
+        .agg(mean_delta=('delta_absSI', 'mean'),
+             n_units=('delta_absSI', 'size'),
+             reward_group=(group_col, 'first'))
+        .reset_index()
+    )
+
+    # Filter low-sampled mouse × area entries
+    mouse_area = mouse_area[mouse_area['n_units'] >= min_units_per_mouse_area]
+
+    # Keep only areas recorded in enough mice
+    area_counts = mouse_area.groupby(area_col)[mouse_col].nunique()
+    valid_areas = area_counts[area_counts >= min_mice_per_area].index
+    mouse_area = mouse_area[mouse_area[area_col].isin(valid_areas)].copy()
+
+    # --- 3. Omnibus test (all areas together, two-sided) ---
+    mouse_to_rows = {m: sub.copy() for m, sub in mouse_area.groupby(mouse_col)}
+    unique_mice = list(mouse_to_rows.keys())
+    orig_labels = mouse_area.groupby(mouse_col)[group_col].first().to_dict()
+
+    # Observed overall difference
+    group_means_obs = mouse_area.groupby(group_col)['mean_delta'].mean().to_dict()
+    stat_obs = group_means_obs.get(1, 0) - group_means_obs.get(0, 0)
+
+    # Permutations
+    perm_stats = []
+    for _ in tqdm(range(n_perms), desc='Omnibus permutations'):
+        shuffled_labels = dict(zip(unique_mice, np.random.permutation([orig_labels[m] for m in unique_mice])))
+        perm_rows = pd.concat([sub.assign(**{group_col: shuffled_labels[m]}) for m, sub in mouse_to_rows.items()],
+                              ignore_index=True)
+        gm = perm_rows.groupby(group_col)['mean_delta'].mean().to_dict()
+        perm_stats.append(gm.get(1, 0) - gm.get(0, 0))
+    perm_stats = np.array(perm_stats)
+
+    # Two-sided p-value
+    pval_omnibus = (np.sum(np.abs(perm_stats) >= np.abs(stat_obs)) + 1) / (n_perms + 1)
+
+    omnibus_results = {
+        'stat_obs': stat_obs,
+        'pval': pval_omnibus,
+        'perm_stats': perm_stats
+    }
+
+    # --- 4. Post-hoc area-level permutation tests (two-sided) ---
+    area_results = []
+    for area, sub in tqdm(mouse_area.groupby(area_col), desc='Post-hoc per-area'):
+        mice_here = list(sub[mouse_col].unique())
+        if len(mice_here) < 2:
+            continue
+        obs_means = sub.groupby(group_col)['mean_delta'].mean().to_dict()
+        obs_diff = obs_means.get(1, 0) - obs_means.get(0, 0)
+        orig_area_labels = sub.groupby(mouse_col)[group_col].first().to_dict()
+
+        perm_diffs = []
+        for _ in range(n_perms):
+            shuffled = dict(zip(mice_here, np.random.permutation([orig_area_labels[m] for m in mice_here])))
+            tmp = sub.copy()
+            tmp[group_col] = tmp[mouse_col].map(shuffled)
+            pm = tmp.groupby(group_col)['mean_delta'].mean().to_dict()
+            perm_diffs.append(pm.get(1, 0) - pm.get(0, 0))
+        perm_diffs = np.array(perm_diffs)
+
+        # Two-sided p-value
+        p_two_sided = (np.sum(np.abs(perm_diffs) >= np.abs(obs_diff)) + 1) / (n_perms + 1)
+        area_results.append({'area': area, 'obs_diff': obs_diff, 'p_two_sided': p_two_sided})
+
+    area_posthoc = pd.DataFrame(area_results).sort_values('p_two_sided')
+
+    # --- 5. Benjamini-Hochberg FDR ---
+    pvals = area_posthoc['p_two_sided'].values
+    n = len(pvals)
+    order = np.argsort(pvals)
+    sorted_p = pvals[order]
+    thresholds = (np.arange(1, n + 1) / n) * 0.05
+    below = sorted_p <= thresholds
+    reject = np.zeros(n, dtype=bool)
+    if np.any(below):
+        max_i = np.max(np.where(below)[0])
+        reject[order[:max_i + 1]] = True
+    # Adjusted p-values
+    cummin = 1.0
+    adj_p = np.empty(n)
+    for i in range(n - 1, -1, -1):
+        pi = sorted_p[i]
+        adj = min(cummin, pi * n / (i + 1))
+        cummin = adj
+        adj_p[i] = adj
+    adj_p_orig = np.empty(n)
+    adj_p_orig[order] = adj_p
+    area_posthoc['reject_H0_FDR'] = reject
+    area_posthoc['p_adjusted_BH'] = adj_p_orig
+
+    # --- 6. Prepare results ---
+    results = {
+        'mouse_area': mouse_area,
+        'omnibus': omnibus_results,
+        'area_posthoc': area_posthoc
+    }
+
+    pp = pprint.PrettyPrinter(indent=4, width=120)
+    print("\n=== Omnibus Test Results (Two-sided) ===")
+    pp.pprint({
+        'Observed difference (reward - control)': stat_obs,
+        'Permutation p-value (two-sided)': pval_omnibus
+    })
+
+    print("\n=== Post-hoc Area-level Results (Two-sided, first 20 rows) ===")
+    pp.pprint(area_posthoc.head(1000).to_dict(orient='records'))
+
+    return
+
+
+def run_permutation_test_change_reward_group(roc_df):
+
+    # Column names for SI pre/post (change here to match your dataframe)
+    col_pre = 'whisker_passive_pre'
+    col_post = 'whisker_passive_post'
+    #col_pre = 'auditory_passive_pre'
+    #col_post = 'auditory_passive_post'
+    mouse_col = 'mouse_id'
+    area_col = 'area' #TODO: check consistency across ROC runs
+    group_col = 'reward_group'  # must be 0/1 or two distinct labels
+
+    np.random.seed(42)
+
+    # Parameters
+    min_units_per_mouse_area = 5  # minimum neurons per mouse-area to include mouse-area cell
+    min_mice_per_area = 3  # minimum number of mice that have that area to include area in omnibus/post-hoc
+    n_perms = 2000  # number of permutations (increase in production)
+
+
+    # --- 1. Filter and pivot ---
+    df_w = roc_df[roc_df['analysis_type'].isin([col_pre, col_post])].copy()
+    df_w = df_w.pivot_table(
+        index=[mouse_col, area_col, 'neuron_id', group_col],
+        columns='analysis_type',
+        values='selectivity'
+    ).reset_index()
+
+    # Compute neuron-level delta (change in magnitude of selectivity)
+    df_w['delta_absSI'] = df_w[col_post].abs() - df_w[col_pre].abs()
+
+    # --- 2. Aggregate to mouse × area ---
+    mouse_area = (
+        df_w.groupby([mouse_col, area_col])
+        .agg(mean_delta=('delta_absSI', 'mean'),
+             n_units=('delta_absSI', 'size'),
+             reward_group=(group_col, 'first'))
+        .reset_index()
+    )
+
+    # Filter low-sampled mouse × area entries
+    mouse_area = mouse_area[mouse_area['n_units'] >= min_units_per_mouse_area]
+
+    # Keep only areas recorded in enough mice
+    area_counts = mouse_area.groupby(area_col)[mouse_col].nunique()
+    valid_areas = area_counts[area_counts >= min_mice_per_area].index
+    mouse_area = mouse_area[mouse_area[area_col].isin(valid_areas)].copy()
+
+    # --- 3. Omnibus test (all areas together) ---
+    mouse_to_rows = {m: sub.copy() for m, sub in mouse_area.groupby(mouse_col)}
+    unique_mice = list(mouse_to_rows.keys())
+    orig_labels = mouse_area.groupby(mouse_col)[group_col].first().to_dict()
+
+    # Observed overall difference
+    group_means_obs = mouse_area.groupby(group_col)['mean_delta'].mean().to_dict()
+    stat_obs = group_means_obs.get(1, 0) - group_means_obs.get(0, 0)
+
+    # Permutations
+    perm_stats = []
+    for _ in tqdm(range(n_perms), desc='Omnibus permutations'):
+        shuffled_labels = dict(zip(unique_mice, np.random.permutation([orig_labels[m] for m in unique_mice])))
+        perm_rows = pd.concat([sub.assign(**{group_col: shuffled_labels[m]}) for m, sub in mouse_to_rows.items()],
+                              ignore_index=True)
+        gm = perm_rows.groupby(group_col)['mean_delta'].mean().to_dict()
+        perm_stats.append(gm.get(1, 0) - gm.get(0, 0))
+    perm_stats = np.array(perm_stats)
+
+    # One-sided p-value
+    pval_omnibus = (np.sum(perm_stats >= stat_obs) + 1) / (n_perms + 1)
+
+    omnibus_results = {
+        'stat_obs': stat_obs,
+        'pval': pval_omnibus,
+        'perm_stats': perm_stats
+    }
+
+    # --- 4. Post-hoc area-level permutation tests ---
+    area_results = []
+    for area, sub in tqdm(mouse_area.groupby(area_col), desc='Post-hoc per-area'):
+        mice_here = list(sub[mouse_col].unique())
+        if len(mice_here) < 2:
+            continue
+        obs_means = sub.groupby(group_col)['mean_delta'].mean().to_dict()
+        obs_diff = obs_means.get(1, 0) - obs_means.get(0, 0)
+        orig_area_labels = sub.groupby(mouse_col)[group_col].first().to_dict()
+
+        perm_diffs = []
+        for _ in range(n_perms):
+            shuffled = dict(zip(mice_here, np.random.permutation([orig_area_labels[m] for m in mice_here])))
+            tmp = sub.copy()
+            tmp[group_col] = tmp[mouse_col].map(shuffled)
+            pm = tmp.groupby(group_col)['mean_delta'].mean().to_dict()
+            perm_diffs.append(pm.get(1, 0) - pm.get(0, 0))
+        perm_diffs = np.array(perm_diffs)
+        p_one_sided = (np.sum(perm_diffs >= obs_diff) + 1) / (n_perms + 1)
+        area_results.append({'area': area, 'obs_diff': obs_diff, 'p_one_sided': p_one_sided})
+
+    area_posthoc = pd.DataFrame(area_results).sort_values('p_one_sided')
+
+    # --- 5. Benjamini-Hochberg FDR ---
+    pvals = area_posthoc['p_one_sided'].values
+    n = len(pvals)
+    order = np.argsort(pvals)
+    sorted_p = pvals[order]
+    thresholds = (np.arange(1, n + 1) / n) * 0.05
+    below = sorted_p <= thresholds
+    reject = np.zeros(n, dtype=bool)
+    if np.any(below):
+        max_i = np.max(np.where(below)[0])
+        reject[order[:max_i + 1]] = True
+    # Adjusted p-values (optional)
+    cummin = 1.0
+    adj_p = np.empty(n)
+    for i in range(n - 1, -1, -1):
+        pi = sorted_p[i]
+        adj = min(cummin, pi * n / (i + 1))
+        cummin = adj
+        adj_p[i] = adj
+    adj_p_orig = np.empty(n)
+    adj_p_orig[order] = adj_p
+    area_posthoc['reject_H0_FDR'] = reject
+    area_posthoc['p_adjusted_BH'] = adj_p_orig
+
+    # --- Return ---
+    results = {
+        'mouse_area': mouse_area,
+        'omnibus': omnibus_results,
+        'area_posthoc': area_posthoc
+    }
+
+    pp = pprint.PrettyPrinter(indent=4)
+    print('Omnibus test results:')
+    pp.pprint(results)
+
+    return results
+
+
+def test_cross_modality_reward_effect(roc_df,
+                                      whisker_cols=('whisker_passive_pre', 'whisker_passive_post'),
+                                      auditory_cols=('auditory_passive_pre', 'auditory_passive_post'),
+                                      mouse_col='mouse_id',
+                                      area_col='area',
+                                      group_col='reward_group',
+                                      min_units_per_mouse_area=3,
+                                      min_mice_per_area=4,
+                                      n_perms=2000,
+                                      seed=42,
+                                      print_results=True):
+    """
+    Test the null hypothesis:
+    The reward effect on whisker ΔSI is the same as the reward effect on auditory ΔSI.
+    Alternative: whisker changes more across reward groups than auditory.
+    """
+    np.random.seed(seed)
+
+    # --- 1. Compute ΔSI for whisker ---
+    pre_w, post_w = whisker_cols
+    df_w = roc_df[roc_df['analysis_type'].isin([pre_w, post_w])].copy()
+    df_w = df_w.pivot_table(
+        index=[mouse_col, area_col, 'neuron_id', group_col],
+        columns='analysis_type',
+        values='selectivity'
+    ).reset_index()
+    df_w['delta_whisker'] = df_w[post_w].abs() - df_w[pre_w].abs()
+
+    # --- 2. Compute ΔSI for auditory ---
+    pre_a, post_a = auditory_cols
+    df_a = roc_df[roc_df['analysis_type'].isin([pre_a, post_a])].copy()
+    df_a = df_a.pivot_table(
+        index=[mouse_col, area_col, 'neuron_id', group_col],
+        columns='analysis_type',
+        values='selectivity'
+    ).reset_index()
+    df_a['delta_auditory'] = df_a[post_a].abs() - df_a[pre_a].abs()
+
+    # --- 3. Aggregate to mouse × area ---
+    agg_w = df_w.groupby([mouse_col, area_col]).agg(
+        mean_delta_whisker=('delta_whisker', 'mean'),
+        n_units=('delta_whisker', 'size'),
+        reward_group=(group_col, 'first')
+    ).reset_index()
+    agg_w = agg_w[agg_w['n_units'] >= min_units_per_mouse_area]
+
+    agg_a = df_a.groupby([mouse_col, area_col]).agg(
+        mean_delta_auditory=('delta_auditory', 'mean'),
+        n_units=('delta_auditory', 'size'),
+        reward_group=(group_col, 'first')
+    ).reset_index()
+    agg_a = agg_a[agg_a['n_units'] >= min_units_per_mouse_area]
+
+    # Keep only areas present in enough mice
+    valid_areas_w = agg_w.groupby(area_col)[mouse_col].nunique()
+    valid_areas_w = valid_areas_w[valid_areas_w >= min_mice_per_area].index
+    agg_w = agg_w[agg_w[area_col].isin(valid_areas_w)]
+
+    valid_areas_a = agg_a.groupby(area_col)[mouse_col].nunique()
+    valid_areas_a = valid_areas_a[valid_areas_a >= min_mice_per_area].index
+    agg_a = agg_a[agg_a[area_col].isin(valid_areas_a)]
+
+    # Merge whisker and auditory by mouse × area (inner join)
+    merged = pd.merge(agg_w[[mouse_col, area_col, 'mean_delta_whisker', 'reward_group']],
+                      agg_a[[mouse_col, area_col, 'mean_delta_auditory']],
+                      on=[mouse_col, area_col], how='inner')
+
+    # --- 4. Observed statistic: difference of differences ---
+    group_means = merged.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+    stat_obs = (group_means.loc[1, 'mean_delta_whisker'] - group_means.loc[0, 'mean_delta_whisker']) - \
+               (group_means.loc[1, 'mean_delta_auditory'] - group_means.loc[0, 'mean_delta_auditory'])
+
+    # --- 5. Permutations ---
+    mouse_to_rows = {m: sub.copy() for m, sub in merged.groupby(mouse_col)}
+    unique_mice = list(mouse_to_rows.keys())
+    orig_labels = merged.groupby(mouse_col)['reward_group'].first().to_dict()
+
+    perm_stats = []
+    for _ in tqdm(range(n_perms), desc='Cross-modality permutations'):
+        shuffled_labels = dict(zip(unique_mice, np.random.permutation([orig_labels[m] for m in unique_mice])))
+        perm_rows = pd.concat([sub.assign(reward_group=shuffled_labels[m]) for m, sub in mouse_to_rows.items()],
+                              ignore_index=True)
+        group_means_perm = perm_rows.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+        perm_stat = (group_means_perm.loc[1, 'mean_delta_whisker'] - group_means_perm.loc[0, 'mean_delta_whisker']) - \
+                    (group_means_perm.loc[1, 'mean_delta_auditory'] - group_means_perm.loc[0, 'mean_delta_auditory'])
+        perm_stats.append(perm_stat)
+    perm_stats = np.array(perm_stats)
+
+    # Two-sided p-value
+    pval = (np.sum(np.abs(perm_stats) >= np.abs(stat_obs)) + 1) / (n_perms + 1)
+
+    # --- 6. Print results ---
+    pp = pprint.PrettyPrinter(indent=4, width=120)
+    print("\n=== Cross-modality Reward Effect Test ===")
+    pp.pprint({
+        'Observed statistic (ΔSI_whisker_reward-control - ΔSI_auditory_reward-control)': stat_obs,
+        'Permutation p-value (two-sided)': pval
+    })
+
+    return {'obs_stat': stat_obs, 'pval': pval, 'perm_stats': perm_stats, 'merged': merged}
+
+
+def run_reward_group_hypotheses(roc_df,
+                                conditions=[('whisker_passive_pre', 'whisker_passive_post'),
+                                            ('auditory_passive_pre', 'auditory_passive_post')],
+                                mouse_col='mouse_id',
+                                area_col='area',
+                                group_col='reward_group',
+                                min_units_per_mouse_area=3,
+                                min_mice_per_area=4,
+                                n_perms=2000,
+                                seed=42,
+                                print_results=True):
+    """
+    Run a battery of reward-group-based hypotheses:
+    1. Whisker ΔSI reward vs control
+    2. Auditory ΔSI reward vs control
+    3. Cross-modality difference (ΔSI_whisker - ΔSI_auditory) reward effect
+    Includes omnibus tests and area-level post-hoc tests with BH-FDR correction.
+    """
+    np.random.seed(seed)
+    results = {}
+
+    # --- Step 1: Compute ΔSI for each condition ---
+    delta_dfs = {}
+    for pre_col, post_col in conditions:
+        cond_name = pre_col.replace('_pre', '')
+        df_cond = roc_df[roc_df['analysis_type'].isin([pre_col, post_col])].copy()
+        df_cond = df_cond.pivot_table(
+            index=[mouse_col, area_col, 'neuron_id', group_col],
+            columns='analysis_type',
+            values='selectivity'
+        ).reset_index()
+        df_cond['delta'] = df_cond[post_col].abs() - df_cond[pre_col].abs()
+        delta_dfs[cond_name] = df_cond
+
+    # --- Step 2: Aggregate to mouse × area ---
+    agg_dfs = {}
+    for cond_name, df_cond in delta_dfs.items():
+        agg = df_cond.groupby([mouse_col, area_col]).agg(
+            mean_delta=('delta', 'mean'),
+            n_units=('delta', 'size'),
+            reward_group=(group_col, 'first')
+        ).reset_index()
+        agg = agg[agg['n_units'] >= min_units_per_mouse_area]
+        # Keep areas with enough mice
+        area_counts = agg.groupby(area_col)[mouse_col].nunique()
+        valid_areas = area_counts[area_counts >= min_mice_per_area].index
+        agg = agg[agg[area_col].isin(valid_areas)]
+        agg_dfs[cond_name] = agg
+
+    # --- Step 3: Omnibus tests per condition ---
+    for cond_name, agg in agg_dfs.items():
+        mouse_to_rows = {m: sub.copy() for m, sub in agg.groupby(mouse_col)}
+        unique_mice = list(mouse_to_rows.keys())
+        orig_labels = agg.groupby(mouse_col)['reward_group'].first().to_dict()
+
+        group_means_obs = agg.groupby(group_col)['mean_delta'].mean().to_dict()
+        stat_obs = group_means_obs.get(1, 0) - group_means_obs.get(0, 0)
+
+        # Permutations
+        perm_stats = []
+        for _ in tqdm(range(n_perms), desc=f"Omnibus permutations ({cond_name})"):
+            shuffled_labels = dict(zip(unique_mice, np.random.permutation([orig_labels[m] for m in unique_mice])))
+            perm_rows = pd.concat([sub.assign(reward_group=shuffled_labels[m]) for m, sub in mouse_to_rows.items()],
+                                  ignore_index=True)
+            gm = perm_rows.groupby(group_col)['mean_delta'].mean().to_dict()
+            perm_stats.append(gm.get(1, 0) - gm.get(0, 0))
+        perm_stats = np.array(perm_stats)
+        pval = (np.sum(np.abs(perm_stats) >= np.abs(stat_obs)) + 1) / (n_perms + 1)
+
+        # Store omnibus results
+        results[cond_name] = {'omnibus': {'stat_obs': stat_obs, 'pval': pval, 'perm_stats': perm_stats}}
+
+        # Post-hoc area-level test
+        area_results = []
+        for area, sub in agg.groupby(area_col):
+            mice_here = list(sub[mouse_col].unique())
+            if len(mice_here) < 2:
+                continue
+            obs_diff = sub.groupby(group_col)['mean_delta'].mean().diff().iloc[-1]  # reward - control
+            orig_area_labels = sub.groupby(mouse_col)['reward_group'].first().to_dict()
+
+            perm_diffs = []
+            for _ in range(n_perms):
+                shuffled = dict(zip(mice_here, np.random.permutation([orig_area_labels[m] for m in mice_here])))
+                tmp = sub.copy()
+                tmp[group_col] = tmp[mouse_col].map(shuffled)
+                pm = tmp.groupby(group_col)['mean_delta'].mean().diff().iloc[-1]
+                perm_diffs.append(pm)
+            perm_diffs = np.array(perm_diffs)
+            p_two_sided = (np.sum(np.abs(perm_diffs) >= np.abs(obs_diff)) + 1) / (n_perms + 1)
+            area_results.append({'area': area, 'obs_diff': obs_diff, 'p_two_sided': p_two_sided})
+
+        area_posthoc = pd.DataFrame(area_results).sort_values('p_two_sided')
+
+        # BH-FDR correction
+        if len(area_posthoc) > 0:
+            pvals = area_posthoc['p_two_sided'].values
+            n = len(pvals)
+            order = np.argsort(pvals)
+            sorted_p = pvals[order]
+            thresholds = (np.arange(1, n + 1) / n) * 0.05
+            below = sorted_p <= thresholds
+            reject = np.zeros(n, dtype=bool)
+            if np.any(below):
+                max_i = np.max(np.where(below)[0])
+                reject[order[:max_i + 1]] = True
+            # Adjusted p-values
+            cummin = 1.0
+            adj_p = np.empty(n)
+            for i in range(n - 1, -1, -1):
+                pi = sorted_p[i]
+                adj = min(cummin, pi * n / (i + 1))
+                cummin = adj
+                adj_p[i] = adj
+            adj_p_orig = np.empty(n)
+            adj_p_orig[order] = adj_p
+            area_posthoc['reject_H0_FDR'] = reject
+            area_posthoc['p_adjusted_BH'] = adj_p_orig
+
+        results[cond_name]['area_posthoc'] = area_posthoc
+
+    # --- Step 4: Cross-modality reward effect (difference-of-differences) ---
+    # Merge whisker and auditory mouse × area
+    merged = pd.merge(agg_dfs['whisker_passive'][['mouse_id', 'area', 'mean_delta', 'reward_group']],
+                      agg_dfs['auditory_passive'][['mouse_id', 'area', 'mean_delta']],
+                      on=['mouse_id', 'area'], suffixes=('_whisker', '_auditory'))
+    # Observed difference of differences
+    group_means = merged.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+    stat_obs_diff = (group_means.loc[1, 'mean_delta_whisker'] - group_means.loc[0, 'mean_delta_whisker']) - \
+                    (group_means.loc[1, 'mean_delta_auditory'] - group_means.loc[0, 'mean_delta_auditory'])
+
+    # Permutations
+    mouse_to_rows = {m: sub.copy() for m, sub in merged.groupby(mouse_col)}
+    unique_mice = list(mouse_to_rows.keys())
+    orig_labels = merged.groupby(mouse_col)['reward_group'].first().to_dict()
+
+    perm_stats = []
+    for _ in tqdm(range(n_perms), desc='Cross-modality permutations'):
+        shuffled_labels = dict(zip(unique_mice, np.random.permutation([orig_labels[m] for m in unique_mice])))
+        perm_rows = pd.concat([sub.assign(reward_group=shuffled_labels[m]) for m, sub in mouse_to_rows.items()],
+                              ignore_index=True)
+        gm = perm_rows.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+        perm_stat = (gm.loc[1, 'mean_delta_whisker'] - gm.loc[0, 'mean_delta_whisker']) - \
+                    (gm.loc[1, 'mean_delta_auditory'] - gm.loc[0, 'mean_delta_auditory'])
+        perm_stats.append(perm_stat)
+    perm_stats = np.array(perm_stats)
+    pval_cross = (np.sum(np.abs(perm_stats) >= np.abs(stat_obs_diff)) + 1) / (n_perms + 1)
+
+    results['cross_modality'] = {'stat_obs': stat_obs_diff, 'pval': pval_cross, 'perm_stats': perm_stats,
+                                 'merged': merged}
+
+    # --- Step 5: Cross-modality area-level post-hoc ---
+    area_results = []
+    for area, sub in merged.groupby(area_col):
+        mice_here = list(sub[mouse_col].unique())
+        if len(mice_here) < 2:
+            continue
+        # difference-of-differences per area
+        group_means_area = sub.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+        obs_diff_area = (group_means_area.loc[1, 'mean_delta_whisker'] - group_means_area.loc[
+            0, 'mean_delta_whisker']) - \
+                        (group_means_area.loc[1, 'mean_delta_auditory'] - group_means_area.loc[
+                            0, 'mean_delta_auditory'])
+
+        orig_area_labels = sub.groupby(mouse_col)['reward_group'].first().to_dict()
+
+        perm_diffs = []
+        for _ in range(n_perms):
+            shuffled = dict(zip(mice_here, np.random.permutation([orig_area_labels[m] for m in mice_here])))
+            tmp = sub.copy()
+            tmp[group_col] = tmp[mouse_col].map(shuffled)
+            gm = tmp.groupby(group_col)[['mean_delta_whisker', 'mean_delta_auditory']].mean()
+            perm_stat_area = (gm.loc[1, 'mean_delta_whisker'] - gm.loc[0, 'mean_delta_whisker']) - \
+                             (gm.loc[1, 'mean_delta_auditory'] - gm.loc[0, 'mean_delta_auditory'])
+            perm_diffs.append(perm_stat_area)
+        perm_diffs = np.array(perm_diffs)
+
+        p_two_sided = (np.sum(np.abs(perm_diffs) >= np.abs(obs_diff_area)) + 1) / (n_perms + 1)
+        area_results.append({'area': area, 'obs_diff': obs_diff_area, 'p_two_sided': p_two_sided})
+
+    # BH-FDR correction for cross-modality area-level
+    area_posthoc_cross = pd.DataFrame(area_results).sort_values('p_two_sided')
+    if len(area_posthoc_cross) > 0:
+        pvals = area_posthoc_cross['p_two_sided'].values
+        n = len(pvals)
+        order = np.argsort(pvals)
+        sorted_p = pvals[order]
+        thresholds = (np.arange(1, n + 1) / n) * 0.05
+        below = sorted_p <= thresholds
+        reject = np.zeros(n, dtype=bool)
+        if np.any(below):
+            max_i = np.max(np.where(below)[0])
+            reject[order[:max_i + 1]] = True
+        cummin = 1.0
+        adj_p = np.empty(n)
+        for i in range(n - 1, -1, -1):
+            pi = sorted_p[i]
+            adj = min(cummin, pi * n / (i + 1))
+            cummin = adj
+            adj_p[i] = adj
+        adj_p_orig = np.empty(n)
+        adj_p_orig[order] = adj_p
+        area_posthoc_cross['reject_H0_FDR'] = reject
+        area_posthoc_cross['p_adjusted_BH'] = adj_p_orig
+
+    results['cross_modality']['area_posthoc'] = area_posthoc_cross
+
+    # --- Step 5: Print nicely ---
+    if print_results:
+        pp = pprint.PrettyPrinter(indent=4, width=120)
+        for cond_name, res in results.items():
+            print(f"\n=== Hypothesis: {cond_name} ===")
+            if cond_name == 'cross_modality':
+                pp.pprint({'Observed diff-of-diffs': res['stat_obs'], 'Permutation p-value': res['pval']})
+                if not res['area_posthoc'].empty:
+                    print("Post-hoc area-level :")
+                    pp.pprint(res['area_posthoc'].to_dict(orient='records'))
+            else:
+                pp.pprint({'Omnibus stat_obs': res['omnibus']['stat_obs'], 'Omnibus pval': res['omnibus']['pval']})
+                if not res['area_posthoc'].empty:
+                    print("Post-hoc area-level :")
+                    pp.pprint(res['area_posthoc'].to_dict(orient='records'))
+
+
+    return results
 
 if __name__ == '__main__':
         parser = argparse.ArgumentParser()
