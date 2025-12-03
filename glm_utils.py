@@ -829,9 +829,13 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         try:
             whisker_times = list(get_events('whisker_hit_trial')[1]) + list(get_events('whisker_miss_trial')[1])
+            whiskers_hits = list(get_events('whisker_hit_trial')[1])
+            whiskers_misses = list(get_events('whisker_miss_trial')[1])
         except:
             whisker_times = list(get_events('whisker_hit_trial')[1])
         whisker_times = np.array(sorted(whisker_times))
+        whisker_misses_times = np.array(whiskers_misses)
+        whisker_hits_times = np.array(whiskers_hits)
 
         if nb_of_whisker_kernel is None:
             # Define event kernels for single trial events
@@ -839,7 +843,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
                 'auditory_stim': (auditory_times, (-0.1, 0.4)),
-                'whisker_stim': (whisker_times, (-0.1, 0.4)),
+                'whisker_hits': (whisker_hits_times, (-0.1, 0.4)),
+                'whisker_misses': (whisker_misses_times, (-0.1,0.4)),
                 'piezo_reward': (piezo_licks, (-0, 0.6)),
             }
 
@@ -849,11 +854,13 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
                 'auditory_stim': (auditory_times, (-0.1, 0.6)),
                 'piezo_reward': (piezo_licks, (-0, 0.6)),
+                
             }
-            whisker_splits = np.array_split(whisker_times, nb_of_whisker_kernel)
+            whisker_hits_splits = np.array_split(whisker_hits_times, nb_of_whisker_kernel)
+            whisker_misses_splits = np.array_split(whisker_misses_times, nb_of_whisker_kernel)
             for nb in range(nb_of_whisker_kernel):
-                event_defs[f'whisker_stim_{nb}'] = (whisker_splits[nb], (0, 0.3))
-
+                event_defs[f'whisker_hits_stim_{nb}'] = (whisker_hits_splits[nb], (0, 0.3))
+                event_defs[f'whisker_misses_stim{nb}'] = (whisker_misses_splits[nb], (0, 0.3))
 
         for name, (times, _) in event_defs.items():
             if name=='dlc_lick_onset':
@@ -1379,12 +1386,12 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = False
+    whisker_kernels = True
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
         nb_whisker_kernels = []
-        for number_of_whisker_kernel in range(2,10):
+        for number_of_whisker_kernel in range(2,4):
             spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel)
             event_defs = predictor_types['event_defs']
             analog_keys = predictor_types['analog_keys']
@@ -1408,7 +1415,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    # add_perf_pred = None
+    add_perf_pred = None
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
@@ -1419,6 +1426,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
             # Build design matrix for entire dataset
             X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+            X_extra = np.nan_to_num(X_extra)
             X_perfs.append(X_extra)
             feature_names_perfs.append(feature_names_extra)
     # ---------------------------------------
@@ -1510,58 +1518,58 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # --------------------------------------
 
         # Define reduced encoding model formulations
-        # reduced_models = {
-        #     'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
-        #     'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
-        #     'whisker_reward_encoding': ['prev_whisker_reward'],
-        #     'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
-        #     'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
-        #     # 'block_perf_type' : ['block_perf_type'],
-        #     # 'whisker_move': ['whisker_vel'],
-        #     'session_progress_encoding': ['trial_index_scaled'],
-        #     # 'last_rewards_whisker': ['last_whisker_reward'],
-        #     # 'whisker_hit' : ['whisker_hit'],
-        #     # 'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
-        #     # 'prop_last_5_whisker': ['whisker_reward_rate_5'],
-        #     # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
-        #     # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
-        #                                 # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
-        #     'sum_rewards': ['sum_reward_scaled']
-        # }
+        reduced_models = {
+            'whisker_encoding': [f for f in feature_names if 'whisker_stim_t' in f],
+            'auditory_encoding': [f for f in feature_names if 'auditory_stim_t' in f],
+            # 'whisker_reward_encoding': ['prev_whisker_reward'],
+            'jaw_onset_encoding': [f for f in feature_names if 'jaw_onset' in f],
+            'motor_encoding': [f for f in feature_names if 'dist' in f or 'vel' in f],
+            # 'block_perf_type' : ['block_perf_type'],
+            # 'whisker_move': ['whisker_vel'],
+            'session_progress_encoding': ['trial_index_scaled'],
+            # 'last_rewards_whisker': ['last_whisker_reward'],
+            # 'whisker_hit' : ['whisker_hit'],
+            # 'prop_rewards_whiskers': ['prop_past_whisker_rewarded'],
+            # 'prop_last_5_whisker': ['whisker_reward_rate_5'],
+            # 'cum_rewards_whisker': ['sum_whisker_reward_scaled'],
+            # 'all_whisker_progression': ['prev_whisker_reward', 'last_whisker_reward', 'prop_past_whisker_rewarded',
+                                        # 'whisker_reward_rate_5', 'sum_whisker_reward_scaled'],
+            'sum_rewards': ['sum_reward_scaled']
+        }
         # Get full model params for fair comparison
         full_optimal_lambdas = {neuron_id: lambda_opt for neuron_id, lambda_opt in
                                 zip(model_res_df['neuron_id'], model_res_df['lambda_opt'])}
         #
-        # # Iterate over reduced model formulations
-        # results_reduced_all = []
-        # for model_name, features_to_remove in reduced_models.items():
-        #     # Select subset of feature matrix
-        #     X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval, feature_names, features_to_remove)
-        #     X_test_reduced, kept_features = get_reduced_matrix(X_test, feature_names, features_to_remove)
-        #
-        #
-        #     # Fit GLM with reduced feature set
-        #     results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
-        #                                         X_trainval=X_trainval_reduced,
-        #                                         spikes_test=spikes_test,
-        #                                         X_test=X_test_reduced,
-        #                                         lambdas=full_optimal_lambdas,
-        #                                         n_jobs=n_jobs)
-        #     results_reduced_df = pd.DataFrame(results_reduced)
-        #     results_reduced_df['fold'] = fold_idx
-        #     results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
-        #     results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
-        #     results_reduced_df['model_name'] = model_name
-        #     results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
-        #     results_reduced_all.append(results_reduced_df)
-        #
-        #     # Append reduced model to all models
-        #     model_res_df_outer.append(results_reduced_df)
-        # # Merge results from all reduced models, then save
-        # results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
-        # save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
-        #                    commit_hash=commit_hash,
-        #                    output_dir=mouse_output_path)
+        # Iterate over reduced model formulations
+        #results_reduced_all = []
+        #for model_name, features_to_remove in reduced_models.items():
+            # Select subset of feature matrix
+            #X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval_r, feature_names, features_to_remove)
+            #X_test_reduced, kept_features = get_reduced_matrix(X_test_r, feature_names, features_to_remove)
+
+
+            # Fit GLM with reduced feature set
+            #results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                #                                X_trainval=X_trainval_reduced,
+               #                                 spikes_test=spikes_test,
+              #                                  X_test=X_test_reduced,
+             #                                   lambdas=full_optimal_lambdas,
+            #                                    n_jobs=n_jobs)
+           # results_reduced_df = pd.DataFrame(results_reduced)
+          #  results_reduced_df['fold'] = fold_idx
+         #   results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+        #    results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+       #     results_reduced_df['model_name'] = model_name
+      #      results_reduced_df['predictors'] = [list(kept_features)] * len(results_reduced_df)
+     #       results_reduced_all.append(results_reduced_df)
+
+            # Append reduced model to all models
+    #        model_res_df_outer.append(results_reduced_df)
+        # Merge results from all reduced models, then save
+        #results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
+        #save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
+         #                  commit_hash=commit_hash,
+          #                 output_dir=mouse_output_path)
 
         results_added_all = []
 
