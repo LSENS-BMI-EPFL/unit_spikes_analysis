@@ -534,6 +534,19 @@ def load_jaw_onset_data(mouse_id):
     jaw_onset_table = pd.concat(jaw_onset_list, ignore_index=True)
     return jaw_onset_table
 
+def expand_scalar_predictor_to_time_kernel(values, n_bins, prefix):
+    """
+    values: shape (n_trials,) scalar predictor
+    returns: dict of {f"{prefix}_bin{i}": (n_trials, n_bins)}
+    """
+    out = {}
+    for b in range(n_bins):
+        mat = np.zeros((len(values), n_bins), dtype=np.float32)
+        mat[:, b] = values  # inject scalar per trial into one bin
+        out[f"{prefix}_bin{b}"] = mat
+    return out
+
+
 def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False, include_predictors=[]):
     """
     Loads spike trains from unit table and predictors from an NWB file.
@@ -654,7 +667,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 last_whisker_reward = lick[i]
         # broadcast to bins
         if 'last_whisker_reward' in include_predictors :
-            predictors['last_whisker_reward'] = np.tile(prev_whisker_reward[:, None], (1, n_bins))
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(prev_whisker_reward, n_bins, 'last_whisker_reward')
+            )
 
         # Running memory for last no stim status
         last_no_stim = 0
@@ -667,7 +682,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 last_no_stim = licks[i]
         # broadcast to bins
         if 'last_false_alarm' in include_predictors:
-            predictors['last_false_alarm'] = np.tile(prev_no_stim[:, None], (1, n_bins))
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(prev_no_stim, n_bins, 'last_false_alarm')
+            )
+
 
 
         # Compute trial outcome (success vs error)
@@ -691,7 +709,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         # Broadcast to bins if selected
         if 'prev_success' in include_predictors:
-            predictors['prev_success'] = np.tile(prev_success[:, None], (1, n_bins))
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(prev_success, n_bins, 'prev_success')
+            )
+
 
         # get if last trial was rewarded regardless of trial type
         last_reward = 0
@@ -703,7 +724,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             last_reward = lick[i]
 
         if 'last_reward' in include_predictors :
-            predictors['last_reward'] = np.tile(prev_reward[:, None], (1, n_bins))
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(prev_reward, n_bins, 'last_reward')
+            )
 
         # get the proportion of past whisker trials that were rewarded
         past_whisker_trials = 0
@@ -722,13 +745,15 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 prop_past_whisker_rewarded[i] = past_whisker_rewards / past_whisker_trials
 
         if 'prop_past_whisker_rewarded' in include_predictors :
-            predictors['prop_past_whisker_rewarded'] = np.tile(prop_past_whisker_rewarded[:, None], (1, n_bins))
-
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(prop_past_whisker_rewarded, n_bins, 'prop_past_whisker_rewarded')
+            )
         block_perf_type = trials_df['block_perf_type'].to_numpy()  # shape (n_trials,)
 
         if 'block_perf_type' in include_predictors :
-            predictors['block_perf_type'] = np.tile(block_perf_type[:, None], (1, n_bins))
-
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(block_perf_type, n_bins, 'block_perf_type')
+            )
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
         for i in range(n_trials):
@@ -744,8 +769,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         scale = np.tile(whisker_reward_rate[:, None], (1, n_bins))
 
         if 'whisker_reward_rate_5' in include_predictors :
-            predictors['whisker_reward_rate_5'] = np.tile(whisker_reward_rate[:, None], (1, n_bins))
-
+            predictors.update(
+                expand_scalar_predictor_to_time_kernel(whisker_reward_rate, n_bins, 'whisker_reward_rate_5')
+            )
 
         total_rewards = np.sum(rewarded > 0)
         total_rewards = total_rewards if total_rewards > 0 else 1
@@ -868,7 +894,6 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
             else:
                 predictors[name] = rasterize_event(times, first_only=False)
-
         # Rasterize the rewards, only for hit trials and only auditory if non-rewarded mouse
         all_piezo_events = np.array(list(get_events('piezo_lick_times')[1]))
 
@@ -1398,6 +1423,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
             # Build design matrix for entire dataset
             X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+            X_extra = np.nan_to_num(X_extra)
             all_Xs.append(X_extra)
             feature_namess.append(feature_names_extra)
             nb_whisker_kernels.append(number_of_whisker_kernel)
