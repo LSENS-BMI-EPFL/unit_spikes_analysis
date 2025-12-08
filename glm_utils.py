@@ -868,10 +868,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             event_defs = {
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
-                'auditory_stim': (auditory_times, (-0.1, 0.4)),
-                'whisker_hits': (whisker_hits_times, (-0.1, 0.4)),
-                'whisker_misses': (whisker_misses_times, (-0.1,0.4)),
-                'piezo_reward': (piezo_licks, (-0, 0.6)),
+                'auditory_stim': (auditory_times, (-0.1, 1)),
+                'whisker_hits': (whisker_hits_times, (-0.1, 1)),
+                'whisker_misses': (whisker_misses_times, (-0.1,1)),
+                'piezo_reward': (piezo_licks, (-0, 1.5)),
             }
 
         else :
@@ -1411,7 +1411,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
     # Save input/output data
     save_model_input_output(X, spikes, feature_names, mouse_output_path, neurons_ccf)
-    whisker_kernels = True
+    whisker_kernels = False
     if whisker_kernels:
         all_Xs = []
         feature_namess = []
@@ -1441,7 +1441,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    add_perf_pred = None
+    add_perf_pred = True
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
