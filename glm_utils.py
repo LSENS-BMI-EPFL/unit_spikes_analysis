@@ -43,7 +43,7 @@ import allen_utils
 import plotting_utils as putils
 
 # Set global variables
-BIN_SIZE = 0.1 # in seconds
+BIN_SIZE = 0.05 # in seconds
 
 ROOT_PATH = '/scratch/mhamon/results/'
 # ROOT_PATH = os.path.join(r'C:\Users\mhamon/')
@@ -576,6 +576,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                                 on=['mouse_id', 'session_id', 'trial_id'], how='left')
 
         trials_df = load_perf_blocks(trials_df, trials_df['mouse_id'].unique()[0])
+        trials_df = trials_df[trials_df['trial_type'] == 'whisker_trial']
         trial_starts = trials_df['start_time'].values + window_bounds_sec[0]
         trial_ends = trials_df['start_time'].values + window_bounds_sec[1]
         #
@@ -868,10 +869,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             event_defs = {
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
-                'auditory_stim': (auditory_times, (-0.1, 1)),
-                'whisker_hits': (whisker_hits_times, (-0.1, 1)),
-                'whisker_misses': (whisker_misses_times, (-0.1,1)),
-                'piezo_reward': (piezo_licks, (-0, 1.5)),
+                'auditory_stim': (auditory_times, (-0.1, 1.5)),
+                'whisker_hits': (whisker_hits_times, (-0.1, 1.5)),
+                'whisker_misses': (whisker_misses_times, (-0.1,1.5)),
+                'piezo_reward': (piezo_licks, (-0, 2.5)),
             }
 
         else :
@@ -1393,7 +1394,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     trials_df = trials_df[(trials_df['context'] != 'passif') &(trials_df['perf'] != 6)].copy()
     trials_df['mouse_id'] = mouse_id
     trials_df = load_perf_blocks(trials_df, mouse_id)
-
+    trials_df = trials_df[trials_df['trial_type'] == 'whisker_trial']
     trials_df = trials_df.reset_index(drop=True)
     #try: #uncomment when design matrix fixed, so that no need to recompute it
     #    X, spikes, feature_names = load_model_input_output(output_dir)
@@ -1441,7 +1442,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         X_rewards.append(X_extra)
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
-    add_perf_pred = True
+    #add_perf_pred = None
     if add_perf_pred is not None:
         X_perfs = []
         feature_names_perfs = []
@@ -1693,11 +1694,11 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                     X_trainval_p[dlc_idx] = (X_trainval_p[dlc_idx] - mean) / std
                     X_test_p[dlc_idx] = (X_test_p[dlc_idx] - mean) / std
                     # Find index of this predictor in the feature names for this perf predictor set
-                try:
-                    pred_idx = feature_names_perfs[i].index(predictor_name)
-                except ValueError:
-                    raise ValueError(f"Predictor '{predictor_name}' not found in feature_names_perfs[{i}]")
-                print(pred_idx)
+       #         try:
+      #              pred_idx = feature_names_perfs[i].index(predictor_name)
+     #           except ValueError:
+    #                raise ValueError(f"Predictor '{predictor_name}' not found in feature_names_perfs[{i}]")
+        #        print(pred_idx)
 
                 # Loop across bins
     #           for bin_idx in range(n_bins):
