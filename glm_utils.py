@@ -547,7 +547,7 @@ def expand_scalar_predictor_to_time_kernel(values, n_bins, prefix):
     return out
 
 
-def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False, include_predictors=[]):
+def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel= None, reward_kernel_per_type = False, include_predictors=[], random_split = False):
     """
     Loads spike trains from unit table and predictors from an NWB file.
     :param nwb_path: str, path to the NWB file
@@ -870,10 +870,10 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
             event_defs = {
                 # 'dlc_lick_onset': (tongue_dlc_licks, (-0.3, 0.6)), # in seconds
                 'jaw_onset' : (all_jaw_onsets, (-0.5, 0)),
-                'auditory_stim': (auditory_times, (-0.1, 1.5)),
-                'whisker_hits': (whisker_hits_times, (-0.1, 1.5)),
-                'whisker_misses': (whisker_misses_times, (-0.1,1.5)),
-                'piezo_reward': (piezo_licks, (-0, 2.5)),
+                'auditory_stim': (auditory_times, (-0.1, 0.5)),
+                'whisker_hits': (whisker_hits_times, (-0.1, 0.5)),
+                'whisker_misses': (whisker_misses_times, (-0.1,0.5)),
+                'piezo_reward': (piezo_licks, (-0, 1)),
             }
 
         else :
@@ -883,13 +883,26 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
                 'piezo_reward': (piezo_licks, (-0, 1)),
                 
             }
-            whisker_hits_splits = np.array_split(whisker_hits_times, nb_of_whisker_kernel)
-            whisker_misses_splits = np.array_split(whisker_misses_times, nb_of_whisker_kernel)
-            auditory_stim_splits = np.array_split(auditory_times, nb_of_whisker_kernel)
+            if not random_split:
+                whisker_hits_splits = np.array_split(whisker_hits_times, nb_of_whisker_kernel)
+                whisker_misses_splits = np.array_split(whisker_misses_times, nb_of_whisker_kernel)
+                auditory_stim_splits = np.array_split(auditory_times, nb_of_whisker_kernel)
+            else :
+                rng = np.random.default_rng(seed=0)  # set seed or remove for true randomness
+
+                def random_split(arr, n_splits, rng):
+                    arr = np.asarray(arr)
+                    perm = rng.permutation(len(arr))
+                    return np.array_split(arr[perm], n_splits)
+
+                whisker_hits_splits   = random_split(whisker_hits_times, nb_of_whisker_kernel, rng)
+                whisker_misses_splits = random_split(whisker_misses_times, nb_of_whisker_kernel, rng)
+                auditory_stim_splits  = random_split(auditory_times, nb_of_whisker_kernel, rng)
+
             for nb in range(nb_of_whisker_kernel):
-                event_defs[f'whisker_hits_stim_{nb}'] = (whisker_hits_splits[nb], (0, 0.3))
-                event_defs[f'whisker_misses_stim{nb}'] = (whisker_misses_splits[nb], (0, 0.3))
-                event_defs[f'auditory_stim{nb}'] = (auditory_stim_splits[nb], (0, 0.3))
+                event_defs[f'whisker_hits_stim_{nb}'] = (whisker_hits_splits[nb], (-0.1, 0.5))
+                event_defs[f'whisker_misses_stim{nb}'] = (whisker_misses_splits[nb], (-0.1, 0.5))
+                event_defs[f'auditory_stim{nb}'] = (auditory_stim_splits[nb], (-0.1, 0.5))
         for name, (times, _) in event_defs.items():
             if name=='dlc_lick_onset':
                 predictors['dlc_lick_onset'] = rasterize_event(times, first_only=True)
@@ -1442,6 +1455,21 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # Build design matrix for entire dataset
         X_extra, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
         X_rewards.append(X_extra)
+    
+    random_split = True
+    if random_split :
+        nb_whisker_kernels = []
+        number_of_whisker_kernel = 2
+        #for number_of_whisker_kernel in [2]:
+        spikes, predictors, predictor_types, n_bins, bin_size, neurons_ccf, _ = load_nwb_spikes_and_predictors(nwb_path, bin_size=BIN_SIZE, nb_of_whisker_kernel = number_of_whisker_kernel, random_split = True)
+        event_defs = predictor_types['event_defs']
+        analog_keys = predictor_types['analog_keys']
+
+        # Build design matrix for entire dataset
+        X_random, feature_names_extra = build_design_matrix(predictors, event_defs, analog_keys, bin_size=BIN_SIZE)
+        X_random = np.nan_to_num(X_random)
+        feature_namess = feature_names_extra
+        nb_whisker_kernels = number_of_whisker_kernel
 
     add_perf_pred =  ['last_whisker_reward','last_false_alarm','prev_success','last_reward','prop_past_whisker_rewarded', 'block_perf_type','prop_past_whisker_rewarded','whisker_reward_rate_5']
     add_perf_pred = None
@@ -1475,7 +1503,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         # ------------------------
         X_trainval_full = all_Xs[:, trainval_ids, :]
         X_test_full = all_Xs[:, test_ids, :]
-
+        
         spikes_trainval = spikes[:, trainval_ids, :]
         spikes_test = spikes[:, test_ids, :]
         n_features = all_Xs.shape[0]
@@ -1491,7 +1519,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         X_trainval_r = X_trainval_full.reshape(n_features, len(trainval_ids), -1)
         X_test_r = X_test_full.reshape(n_features, len(test_ids), -1)
-
+    
         debug = False
         if debug:
             for test_idx in test_ids[10:15]:
@@ -1525,7 +1553,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         model_res_df['train_trials'] = [trainval_ids] * len(model_res_df)
         model_res_df['test_trials'] = [test_ids] * len(model_res_df)
         model_res_df['model_name'] = 'full'
-        model_res_df['predictors'] = [feature_names] * len(model_res_df)
+        model_res_df['predictors'] = [feature_namess] * len(model_res_df)
         describe_cols = ['neuron_id', 'fold', 'train_score', 'test_score', 'train_corr', 'test_corr',
                          'train_mi', 'test_mi']
         print(model_res_df[describe_cols].describe())
@@ -1548,9 +1576,9 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
         # Define reduced encoding model formulations
         reduced_models = {
-            'whisker_encoding': [f for f in feature_namess if 'whisker_stim' in f],
+            'whisker_encoding': [f for f in feature_namess if ('whisker_hits_stim' in f) or ('whisker_misses_stim' in f ) ],
             'auditory_encoding': [f for f in feature_namess if 'auditory_stim' in f],
-            # 'whisker_reward_encoding': ['prev_whisker_reward'],
+            'reward_encoding': [f for f in feature_namess if 'piezo_reward' in f],
             'jaw_onset_encoding': [f for f in feature_namess if 'jaw_onset' in f],
             'motor_encoding': [f for f in feature_namess if 'dist' in f or 'vel' in f],
             # 'block_perf_type' : ['block_perf_type'],
@@ -1573,8 +1601,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
         results_reduced_all = []
         for model_name, features_to_remove in reduced_models.items():
             # Select subset of feature matrix
-            X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval_r, feature_names, features_to_remove)
-            X_test_reduced, kept_features = get_reduced_matrix(X_test_r, feature_names, features_to_remove)
+            X_trainval_reduced, kept_features = get_reduced_matrix(X_trainval_r, feature_namess, features_to_remove)
+            X_test_reduced, kept_features = get_reduced_matrix(X_test_r, feature_namess, features_to_remove)
 
 
             # Fit GLM with reduced feature set
@@ -1594,6 +1622,37 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
 
             # Append reduced model to all models
             model_res_df_outer.append(results_reduced_df)
+
+        if random_split :
+            X_trainval_full = X_random[:, trainval_ids, :]
+            X_test_full = X_random[:, test_ids, :]
+
+            n_features = X_random.shape[0]
+            for dlc_idx in range(n_features - 4, n_features):
+                mean = X_trainval_full[dlc_idx].mean()
+                std = X_trainval_full[dlc_idx].std()
+
+                X_trainval_full[dlc_idx] = (X_trainval_full[dlc_idx] - mean) / std
+                X_test_full[dlc_idx] = (X_test_full[dlc_idx] - mean) / std
+   
+            # Fit GLM with reduced feature set
+            results_reduced = parallel_fit_glms(spikes_trainval=spikes_trainval,
+                                                X_trainval=X_trainval_full,
+                                                spikes_test=spikes_test,
+                                                X_test=X_test_full,
+                                                lambdas=full_optimal_lambdas,
+                                                n_jobs=n_jobs)
+            results_reduced_df = pd.DataFrame(results_reduced)
+            results_reduced_df['fold'] = fold_idx
+            results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
+            results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
+            results_reduced_df['model_name'] = 'random_split'
+            results_reduced_df['predictors'] = ['feature_namess'] * len(results_reduced_df)
+            results_reduced_all.append(results_reduced_df)
+
+            # Append reduced model to all models
+            model_res_df_outer.append(results_reduced_df)
+
         # Merge results from all reduced models, then save
         results_reduced_all_df = pd.concat(results_reduced_all, ignore_index=True)
         save_model_results(results_reduced_all_df, filename='model_reduced_fold{}'.format(fold_idx),
@@ -1628,8 +1687,8 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
                 results_added_df['fold'] = fold_idx
                 results_added_df['train_trials'] = [trainval_ids] * len(results_added_df)
                 results_added_df['test_trials']  = [test_ids] * len(results_added_df)
-                results_added_df['model_name'] = str(np.array(nb_whisker_kernels)[w_idx]) + 'whisker_kernels'
-                results_added_df['predictors'] = [list(feature_namess[w_idx])] * len(results_added_df)
+                results_added_df['model_name'] = str(1) + 'whisker_kernel'
+                results_added_df['predictors'] = [list(feature_names)] * len(results_added_df)
                 results_added_all.append(results_added_df)
 
                 # Append reduced model to all models
