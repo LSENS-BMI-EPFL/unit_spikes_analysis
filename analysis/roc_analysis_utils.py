@@ -5,11 +5,25 @@
 @file: roc_analysis_utils.py
 @time: 9/13/2025 2:10 PM
 """
-
+import os, glob
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 import allen_utils as allen
+
+def load_roc_results(root_path):
+    files = glob.glob(os.path.join(root_path, '**', '*_roc_results_new.csv'), recursive=True)
+    print(f"  Found {len(files)} files in: {root_path}")
+    dfs = []
+    for f in tqdm(files, desc="  Loading ROC CSV files", unit="file"):
+        try:
+            dfs.append(pd.read_csv(f))
+        except Exception as e:
+            print(f"    Skipped corrupted file: {f} ({e})")
+    if len(dfs) == 0:
+        return pd.DataFrame()
+    return pd.concat(dfs, ignore_index=True)
 
 def remove_subjects_without_passive(df):
     """Remove subjects that do not have any passive trials from the dataframe."""

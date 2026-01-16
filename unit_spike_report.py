@@ -108,7 +108,7 @@ def make_title_table(fig, metadata: Dict[str, Any]):
     metadata example keys: cluster_id, neuron_id, area_parent, area, layer, mouse_name
     """
     reward_txt = 'R+' if metadata.get('reward_group', 1) == 1 else 'R-'
-    txt_one_line = f"Mouse {metadata['mouse_id']} ({reward_txt}), neuron ID {metadata['neuron_id']}, {metadata['ccf_atlas_acronym']}"
+    txt_one_line = f"Mouse {metadata['mouse_id']} ({reward_txt}), neuron ID {metadata['neuron_id']}, cluster ID {metadata['cluster_id']} {metadata['ccf_atlas_acronym']}"
     # big title text
     fig.suptitle(txt_one_line, x=0.5, y=0.95, ha='center', va='center', fontsize=16, family='monospace', fontweight='semibold')
     return txt_one_line
@@ -727,7 +727,7 @@ def generate_neuron_pdf(neuron_id: Any,
         waveform_mean = metadata['waveform_mean']
         ax_wf.plot(waveform_mean, lw=2.5)
         ax_wf.set_xlabel('Time (ms)')
-        ax_wf.set_ylabel('Amplitude')
+        ax_wf.set_ylabel(r'Amplitude ($mu$V)')
         ax_wf.set_xlim(tmin, tmax)
         n_points = len(waveform_mean)
         ax_wf.set_xticks(np.linspace(0, n_points, 5))
@@ -863,6 +863,7 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, res_path):
             'mouse_id':mouse_id,
             'reward_group':sess_metadata['wh_reward'],
             'neuron_id':row['neuron_id'],
+            'cluster_id':row['cluster_id'],
             'ccf_atlas_acronym':row['ccf_atlas_acronym'],
             'waveform_mean': row['waveform_mean'],
             }
@@ -874,7 +875,7 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, res_path):
             # Get cluster spikes
             spike_clusters = np.load(ks_paths['spike_clusters'])
             spike_clusters = np.array(spike_clusters)
-            amplitudes = np.load(ks_paths['amplitudes'])
+            amplitudes = np.load(ks_paths['amplitudes']) #Note: these are spike TEMPLATE amplitudes
             amplitudes = np.array(amplitudes)
 
             spike_indices = np.where(spike_clusters==cluster_id)

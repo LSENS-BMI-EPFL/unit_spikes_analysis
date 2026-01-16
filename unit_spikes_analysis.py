@@ -10,15 +10,17 @@
 # Imports
 import os
 import pandas as pd
-import NWB_reader_functions as nwb_reader
-import allen_utils as allen_utils
+#import NWB_reader_functions as nwb_reader
+#import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from unit_spike_report import generate_unit_spike_report
 # from raster_utils import plot_rasters
 from roc_utils import roc_analysis
+from task_modulation_utils import task_modulation_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
+
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
 
@@ -105,6 +107,7 @@ if __name__ == '__main__':
     analyses_to_do_single = ['noise_correlation']
     analyses_to_do_single = ['roc_analysis']
     analyses_to_do_single = ['unit_spike_report']
+    analyses_to_do_single = ['task_modulation']
 
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']

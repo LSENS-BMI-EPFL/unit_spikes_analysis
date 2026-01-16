@@ -464,7 +464,7 @@ def roc_analysis(nwb_file, results_path):
         # Use multiprocessing to process each neuron_id in parallel
         neuron_ids = proc_unit_table['neuron_id'].unique()
 
-        with multiprocessing.Pool(5) as pool:
+        with multiprocessing.Pool(os.cpu_count()-10) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, neuron_ids)
             results.extend(analysis_results)
