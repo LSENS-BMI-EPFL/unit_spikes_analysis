@@ -1490,7 +1490,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
     # Train/test data cross-validation splits
     # ---------------------------------------
     model_res_df_outer = []
-    cv_outer_folds = 5
+    cv_outer_folds = 10
 
     outer_kf = KFold(n_splits=cv_outer_folds, shuffle=True, random_state=42)
 
@@ -1647,7 +1647,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             results_reduced_df['train_trials'] = [trainval_ids] * len(results_reduced_df)
             results_reduced_df['test_trials'] = [test_ids] * len(results_reduced_df)
             results_reduced_df['model_name'] = 'random_split'
-            results_reduced_df['predictors'] = ['feature_namess'] * len(results_reduced_df)
+            results_reduced_df['predictors'] = [feature_namess] * len(results_reduced_df)
             results_reduced_all.append(results_reduced_df)
 
             # Append reduced model to all models
