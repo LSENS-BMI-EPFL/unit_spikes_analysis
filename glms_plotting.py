@@ -78,7 +78,7 @@ if __name__ == '__main__':
     compare_gits = False
     git_versions = ['15127ae', 'b394470']
     git_versions = ['b394470', 'b394470'] 
-    git_versions = [ 'acbce87' ]
+    git_versions = [ 'f849441' ]
 
     if single_mouse:
 
@@ -117,7 +117,7 @@ if __name__ == '__main__':
     if over_mice:
         plots = ['metrics']
         plots = ['average_kernels_by_region']
-        plots= [ 'kernel_consistency' ]
+        plots= [ 'metrics' ]
         # Get list of NWB files for each mouse
         for git_version in git_versions:
             nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]

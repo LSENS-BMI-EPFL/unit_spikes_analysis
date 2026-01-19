@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"path": "."
+		},
+		{
+			"path": "../allen_utils"
+		},
+		{
+			"path": "../NWB_reader"
+		}
+	],
+	"settings": {}
+}
