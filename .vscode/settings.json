@@ -1,6 +1,0 @@
-{
-    "python.analysis.extraPaths": [
-        "${workspaceFolder}/../allen_utils", "${workspaceFolder}/../NWB_reader"
-    ],
-
-}
