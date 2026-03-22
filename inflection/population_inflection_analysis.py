@@ -4,7 +4,7 @@ Population-Level Inflection Analysis for Neuropixels Data (NWB)
 
 Analyzes whether POPULATION neural activity follows the behavioral inflection
 trial using the pseudosession method. Pools across all neurons (including 
-multi-units) to compute a single population-level test.
+multi-units) to compute a single population-level debug.
 
 Key difference from single-neuron analysis:
 - Aggregates responses across all neurons per trial
@@ -34,6 +34,11 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from collections import defaultdict
 
+# Custome imports
+import NWB_reader_functions
+import neural_utils
+import allen_utils
+
 # Try to import optional dependencies
 try:
     import cmasher as cmr
@@ -55,7 +60,7 @@ class PopulationAnalysisConfig:
 
     # Time windows for PSTH (seconds)
     psth_window: tuple = (-0.1, 0.2)      # -100ms to 200ms for visualization
-    baseline_window: tuple = (-0.1, 0)     # -100ms to 0 for baseline subtraction
+    baseline_window: tuple = (-0.1, -0.005)     # -100ms to 0 for baseline subtraction
     response_window: tuple = (0.005, 0.05) # 5-50ms for statistics
 
     # PSTH binning
@@ -72,7 +77,12 @@ class PopulationAnalysisConfig:
     aggregation_method: str = 'mean'  # 'mean', 'median', or 'sum'
     
     # Normalization per neuron before aggregation
-    normalize_neurons: bool = True  # z-score each neuron's responses
+    normalize_neurons: bool = False  # z-score each neuron's responses
+
+    # Artifact correction parameters
+    artifact_correction: bool = True  # Apply artifact correction
+    artifact_window: tuple = (-0.005, 0.005)  # -1ms to 4ms relative to stim
+    artifact_estimate_window: tuple = (-0.1, -0.005)  # Window to estimate FR from
 
 
 @dataclass
@@ -254,7 +264,11 @@ def load_nwb_session_all_units(nwb_path: Path, config: PopulationAnalysisConfig)
         # =====================================================================
         # Extract ALL units (good + mua)
         # =====================================================================
-        units_table = nwbfile.units
+        #units_table = nwbfile.units
+        units_table = NWB_reader_functions.get_unit_table(nwb_path)
+        #units_table = neural_utils.convert_electrode_group_object_to_columns(units_table)
+        units_table = allen_utils.process_allen_labels(units_table, subdivide_areas=True)
+
         if units_table is None:
             raise ValueError(f"No units table found in {nwb_path}")
 
@@ -263,13 +277,13 @@ def load_nwb_session_all_units(nwb_path: Path, config: PopulationAnalysisConfig)
         n_good = 0
         n_mua = 0
 
-        unit_colnames = units_table.colnames
+        unit_colnames = units_table.columns
 
-        for unit_idx in range(n_units):
+        for neuron_id in units_table.neuron_id.unique():
             # Get bc_label
             bc_label = 'unknown'
             if 'bc_label' in unit_colnames:
-                bc_label = units_table['bc_label'][unit_idx]
+                bc_label = units_table['bc_label'][neuron_id]
                 if isinstance(bc_label, bytes):
                     bc_label = bc_label.decode()
             
@@ -285,28 +299,29 @@ def load_nwb_session_all_units(nwb_path: Path, config: PopulationAnalysisConfig)
                 n_mua += 1
 
             # Get spike times
-            spike_times = units_table['spike_times'][unit_idx]
+            spike_times = units_table['spike_times'][neuron_id]
             if len(spike_times) == 0:
                 continue
 
             # Get area
-            area = 'unknown'
-            for area_col in ['ccf_atlas_acronym', 'area_custom_acronym', 'location', 'brain_area', 'area']:
+            area = 'area_acronym_custom'
+            #for area_col in ['ccf_atlas_acronym', 'area_acronym_custom', 'location', 'brain_area', 'area']:
+            for area_col in ['area_acronym_custom']:
                 if area_col in unit_colnames:
-                    area = units_table[area_col][unit_idx]
+                    area = units_table[area_col][neuron_id]
                     if isinstance(area, bytes):
                         area = area.decode()
                     break
 
             # Get unit ID
             if 'neuron_id' in unit_colnames:
-                neuron_id = units_table['neuron_id'][unit_idx]
+                neuron_id = units_table['neuron_id'][neuron_id]
             else:
-                neuron_id = unit_idx
+                neuron_id = neuron_id
 
             units.append({
                 'neuron_id': neuron_id,
-                'neuron_index': unit_idx,
+                'neuron_index': neuron_id,
                 'spike_times': np.array(spike_times),
                 'area': area,
                 'bc_label': bc_label,
@@ -321,6 +336,181 @@ def load_nwb_session_all_units(nwb_path: Path, config: PopulationAnalysisConfig)
             'trials': trial_data,
             'metadata': metadata
         }
+
+
+# =============================================================================
+# Artifact Correction
+# =============================================================================
+
+def correct_artifact_window(
+        spike_times: np.ndarray,
+        stim_times: np.ndarray,
+        artifact_window: tuple = (-0.001, 0.004),
+        estimate_window: tuple = (-0.050, -0.010),
+        random_state: Optional[int] = None
+) -> np.ndarray:
+    """
+    Correct artifact by blanking and replacing spikes in artifact window.
+
+    For each trial:
+    1. REMOVE all existing spikes in the artifact window
+    2. Estimate firing rate from a clean window (pre-stimulus baseline)
+    3. Generate Poisson-distributed spikes to fill the artifact window
+
+    This creates a smooth transition across stimulus time.
+
+    Parameters
+    ----------
+    spike_times : array of spike times (seconds) for a single neuron
+    stim_times : array of stimulus onset times (seconds)
+    artifact_window : (start, end) in seconds relative to stim onset
+                      Default: (-0.001, 0.004) = -1ms to 4ms
+    estimate_window : (start, end) in seconds relative to stim onset
+                      Window to estimate firing rate from (should be clean, pre-stim)
+                      Default: (-0.050, -0.010) = -50ms to -10ms (pre-stimulus baseline)
+    random_state : random seed for reproducibility
+
+    Returns
+    -------
+    corrected_spike_times : array of spike times with artifact window blanked
+                           and filled with synthetic Poisson spikes
+    n_removed : number of spikes removed from artifact window
+    n_synthetic : number of synthetic spikes added
+    """
+    if random_state is not None:
+        rng = np.random.RandomState(random_state)
+    else:
+        rng = np.random.RandomState()
+
+    artifact_duration = artifact_window[1] - artifact_window[0]
+    estimate_duration = estimate_window[1] - estimate_window[0]
+
+    # First, identify and remove all spikes in artifact windows
+    spike_mask = np.ones(len(spike_times), dtype=bool)
+
+    for t_stim in stim_times:
+        artifact_start = t_stim + artifact_window[0]
+        artifact_end = t_stim + artifact_window[1]
+
+        # Mark spikes in artifact window for removal
+        in_artifact = (spike_times >= artifact_start) & (spike_times < artifact_end)
+        spike_mask &= ~in_artifact
+
+    # Keep only spikes outside artifact windows
+    cleaned_spikes = spike_times[spike_mask]
+    n_removed = len(spike_times) - len(cleaned_spikes)
+
+    # Now generate synthetic spikes for each trial
+    synthetic_spikes = []
+
+    for t_stim in stim_times:
+        # Define windows relative to this stimulus
+        artifact_start = t_stim + artifact_window[0]
+        artifact_end = t_stim + artifact_window[1]
+        estimate_start = t_stim + estimate_window[0]
+        estimate_end = t_stim + estimate_window[1]
+
+        # Count spikes in estimation window (using cleaned spikes)
+        mask_estimate = (cleaned_spikes >= estimate_start) & (cleaned_spikes < estimate_end)
+        n_spikes_estimate = np.sum(mask_estimate)
+
+        # Estimate firing rate (spikes/second)
+        firing_rate = n_spikes_estimate / estimate_duration
+
+        # Expected number of spikes in artifact window
+        expected_spikes = firing_rate * artifact_duration
+
+        # Generate Poisson number of spikes
+        n_synthetic = rng.poisson(expected_spikes)
+
+        if n_synthetic > 0:
+            # Generate uniformly distributed spike times in artifact window
+            trial_synthetic = rng.uniform(artifact_start, artifact_end, n_synthetic)
+            synthetic_spikes.extend(trial_synthetic)
+
+    # Combine cleaned spikes with synthetic spikes
+    if len(synthetic_spikes) > 0:
+        all_spikes = np.concatenate([cleaned_spikes, np.array(synthetic_spikes)])
+    else:
+        all_spikes = cleaned_spikes
+
+    # Sort all spikes
+    corrected_spikes = np.sort(all_spikes)
+
+    return corrected_spikes, n_removed, len(synthetic_spikes)
+
+
+def correct_artifact_all_units(
+        units: List[Dict],
+        stim_times: np.ndarray,
+        artifact_window: tuple = (-0.001, 0.004),
+        estimate_window: tuple = (-0.050, -0.001),
+        random_state: Optional[int] = None,
+        verbose: bool = True
+) -> List[Dict]:
+    """
+    Apply artifact correction to all units.
+
+    Blanks out all spikes in artifact window and replaces with Poisson-generated
+    spikes based on pre-stimulus baseline firing rate.
+
+    Parameters
+    ----------
+    units : list of unit dicts, each with 'spike_times' key
+    stim_times : array of stimulus onset times
+    artifact_window : artifact window relative to stim (default: -1ms to 4ms)
+    estimate_window : clean window to estimate firing rate (default: -50ms to -1ms)
+    random_state : random seed for reproducibility
+    verbose : print summary statistics
+
+    Returns
+    -------
+    corrected_units : list of unit dicts with corrected spike_times
+    """
+    if random_state is not None:
+        rng = np.random.RandomState(random_state)
+    else:
+        rng = np.random.RandomState()
+
+    corrected_units = []
+    total_original = 0
+    total_removed = 0
+    total_synthetic = 0
+
+    for i, unit in enumerate(units):
+        # Use different seed for each unit but reproducible
+        unit_seed = rng.randint(0, 2 ** 31) if random_state is not None else None
+
+        original_spikes = unit['spike_times']
+        corrected_spikes, n_removed, n_synthetic = correct_artifact_window(
+            original_spikes, stim_times,
+            artifact_window, estimate_window,
+            random_state=unit_seed
+        )
+
+        total_original += len(original_spikes)
+        total_removed += n_removed
+        total_synthetic += n_synthetic
+
+        # Create new unit dict with corrected spikes
+        corrected_unit = unit.copy()
+        corrected_unit['spike_times'] = corrected_spikes
+        corrected_unit['n_spikes'] = len(corrected_spikes)
+        corrected_unit['n_spikes_original'] = len(original_spikes)
+        corrected_unit['n_spikes_removed'] = n_removed
+        corrected_unit['n_spikes_synthetic'] = n_synthetic
+
+        corrected_units.append(corrected_unit)
+
+    if verbose:
+        print(f"  Artifact correction ({artifact_window[0] * 1000:.1f} to {artifact_window[1] * 1000:.1f} ms):")
+        print(f"    Original spikes: {total_original}")
+        print(f"    Removed from artifact window: {total_removed}")
+        print(f"    Synthetic spikes added: {total_synthetic}")
+        print(f"    Net change: {total_synthetic - total_removed:+d}")
+        print(f"    Estimation window: {estimate_window[0] * 1000:.1f} to {estimate_window[1] * 1000:.1f} ms")
+
+    return corrected_units
 
 
 # =============================================================================
@@ -474,7 +664,7 @@ def compute_population_responses(
         )
         
         # Convert to firing rate
-        fr = psth_to_firing_rate(psth, config.bin_size, smooth_sigma=1)
+        fr = psth_to_firing_rate(psth, config.bin_size, smooth_sigma=0.0)
         
         # Baseline subtract
         fr_baselined = baseline_subtract(fr, bin_centers, config.baseline_window)
@@ -525,7 +715,7 @@ def compute_population_test_statistic(
     post_window: tuple
 ) -> float:
     """
-    Compute R² test statistic for population response at given inflection point.
+    Compute R² debug statistic for population response at given inflection point.
     """
     pre_idx, post_idx = get_trial_indices(
         inflection_trial, n_total_trials, pre_window, post_window
@@ -587,7 +777,7 @@ def run_population_pseudosession_test(
     config: PopulationAnalysisConfig
 ) -> Tuple[float, float, np.ndarray]:
     """
-    Run pseudosession test for population response.
+    Run pseudosession debug for population response.
     
     Returns
     -------
@@ -629,7 +819,8 @@ def run_population_pseudosession_test(
 def analyze_population(
     session_data: Dict[str, Any],
     config: PopulationAnalysisConfig,
-    area_filter: Optional[str] = None
+    area_filter: Optional[str] = None,
+    random_state: Optional[int] = 42
 ) -> Tuple[PopulationResult, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Analyze population response for a session.
@@ -664,6 +855,16 @@ def analyze_population(
     
     if len(units) == 0:
         raise ValueError("No units to analyze after filtering")
+
+    # Apply artifact correction if enabled
+    if config.artifact_correction:
+        units = correct_artifact_all_units(
+            units, stim_times,
+            artifact_window=config.artifact_window,
+            estimate_window=config.artifact_estimate_window,
+            random_state=random_state,
+            verbose=True
+        )
     
     # Get unique areas
     areas = sorted(set(u['area'] for u in units))
@@ -690,7 +891,7 @@ def analyze_population(
     post_mean = np.nanmean(population_response[post_idx]) if len(post_idx) > 0 else np.nan
     shift = post_mean - pre_mean
     
-    # Run pseudosession test
+    # Run pseudosession debug
     observed_r2, p_value, null_dist = run_population_pseudosession_test(
         population_response, inflection_trial, config
     )
@@ -768,10 +969,10 @@ def plot_population_analysis(
     
     # Colors
     c_whisker = 'forestgreen' if result.reward_group == 1 else 'crimson'
-    c_pre = '#3498db'
-    c_post = '#e74c3c'
+    c_pre = '#e240ff'
+    c_post = '#5200bd'
     c_null = '#bdc3c7'
-    c_obs = '#27ae60'
+    c_obs = '#ff3f14'
     
     # =========================================================================
     # Panel 1: Population PSTH Heatmap
@@ -783,20 +984,26 @@ def plot_population_analysis(
         vmax = 1
     
     cmap = cmr.sunburst if HAS_CMASHER else 'viridis'
-    im = ax1.imshow(population_psth, aspect='auto', cmap=cmap,
+    im = ax1.imshow(population_psth,
+                    aspect='auto',
+                    vmin=0,
+                    cmap=cmap,
                     extent=[times_ms[0], times_ms[-1], n_trials, 0])
     
     # Mark inflection and windows
     ax1.axhline(inflection_trial, color=c_whisker, linewidth=2, linestyle='-')
     if len(pre_idx) > 0:
         ax1.axhspan(pre_idx[0], pre_idx[-1]+1, alpha=0.15, color=c_pre)
+        ax1.axhline(pre_idx[0], color=c_pre)
+        ax1.axhline(pre_idx[-1]+1, color=c_pre)
     if len(post_idx) > 0:
         ax1.axhspan(post_idx[0], post_idx[-1]+1, alpha=0.15, color=c_post)
+        ax1.axhline(post_idx[0], color=c_post)
+        ax1.axhline(post_idx[-1] + 1, color=c_post)
+    ax1.axvline(0, color='white', linewidth=1, linestyle='--')
+    #ax1.axvline(config.response_window[1]*1000, color='orange', linewidth=1.5, linestyle=':')
     
-    ax1.axvline(0, color='k', linewidth=1, linestyle='--')
-    ax1.axvline(config.response_window[1]*1000, color='orange', linewidth=1.5, linestyle=':')
-    
-    ax1.set_xlabel('Time from stimulus (ms)')
+    ax1.set_xlabel('Time from whisker stimulus (ms)')
     ax1.set_ylabel('Trial number')
     ax1.set_title(f'Population PSTH (n={result.n_neurons} neurons)')
     
@@ -923,7 +1130,7 @@ def plot_population_analysis(
              ha='center', va='top', fontsize=10, fontweight='bold',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
     
-    ax5.set_xlabel('R² (test statistic)')
+    ax5.set_xlabel('R² (debug statistic)')
     ax5.set_ylabel('Density')
     ax5.set_title(f'Pseudosession Test (n={config.n_pseudosessions})')
     ax5.legend(loc='upper right', frameon=False)
@@ -996,7 +1203,8 @@ def analyze_session_population(
     session_data: Dict[str, Any],
     config: PopulationAnalysisConfig,
     save_dir: Optional[Path] = None,
-    area_filter: Optional[str] = None
+    area_filter: Optional[str] = None,
+    random_state: Optional[int] = 42
 ) -> PopulationResult:
     """
     Analyze population response for a session.
@@ -1093,51 +1301,106 @@ def save_population_results_to_csv(results: List[PopulationResult], save_path: P
 if __name__ == "__main__":
     print("Population Inflection Analysis")
     print("=" * 70)
-    print("""
-This script performs population-level inflection analysis.
 
-Usage with your NWB files:
---------------------------
-
-from population_inflection_analysis import (
-    load_nwb_session_all_units,
-    analyze_session_population,
-    PopulationAnalysisConfig,
-    save_population_results_to_csv
-)
-
-# Configure - bc_label_filter=None includes ALL units (good + mua)
-config = PopulationAnalysisConfig(
-    pre_trials=(-15, -6),
-    post_trials=(0, 9),
-    response_window=(0.005, 0.05),
-    n_pseudosessions=10000,
-    bc_label_filter=None,        # None = all units, 'good' = only good
-    normalize_neurons=True,       # z-score each neuron before averaging
-    aggregation_method='mean'     # 'mean', 'median', or 'sum'
-)
-
-# Load NWB (includes all units)
-session_data = load_nwb_session_all_units(nwb_path, config)
-
-# Add behavioral data
-session_data['trials']['inflection_trial'] = your_inflection_trial
-session_data['trials']['p_mean'] = your_p_mean  # optional
-
-# Run population analysis
-result = analyze_session_population(
-    session_data, 
-    config, 
-    save_dir=Path('./output'),
-    area_filter=None  # or 'wS1' to analyze only that area
-)
-
-# For multiple areas, loop:
-for area in ['wS1', 'wS2', 'wM1']:
-    result = analyze_session_population(
-        session_data, config, save_dir, area_filter=area
+    from population_inflection_analysis import (
+        load_nwb_session_all_units,
+        analyze_session_population,
+        PopulationAnalysisConfig,
+        save_population_results_to_csv
     )
-    results.append(result)
 
-save_population_results_to_csv(results, Path('./output/population_results.csv'))
-""")
+    # Configure - bc_label_filter=None includes ALL units (good + mua)
+    config = PopulationAnalysisConfig(
+        pre_trials=(-15, -6),
+        post_trials=(0, 9),
+        response_window=(0.005, 0.05),
+        n_pseudosessions=10000,
+        bc_label_filter=None,  # None = all units, 'good' = only good
+        normalize_neurons=False,  # z-score each neuron before averaging
+        aggregation_method='mean',  # 'mean', 'median', or 'sum'
+        artifact_correction=True
+    )
+
+    # Output directory
+    OUTPUT_DIR = r'M:\analysis\Axel_Bisi\combined_results'
+
+    # Load and format NWB file + add HMM results
+    # ---------------------------------------
+    import glob
+    import os
+    import NWB_reader_functions
+    import load_hmm_results
+
+    nwb_file_list = glob.glob(os.path.join(r"M:\analysis\Axel_Bisi\NWBFull_bis", '*.nwb'))
+    nwb_file_list = list(set(nwb_file_list))
+    exclude = ['AB068', 'AB068', 'AB144']
+    nwb_file_list = [f for f in nwb_file_list if not any(m in str(f) for m in exclude)]
+    #nwb_file_list = [f for f in nwb_file_list if 'AB131' in f]
+
+    print(f'Available files ({len(nwb_file_list)}):', nwb_file_list)
+    for nwb_file in nwb_file_list:
+        print('Processing:', nwb_file)
+        try:
+            unit_table = NWB_reader_functions.get_unit_table(nwb_file)
+            if unit_table is None:
+                continue
+        except Exception as err:
+            print(err)
+        mouse_id = NWB_reader_functions.get_mouse_id(nwb_file)
+
+        unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+        print(len(unit_table))
+
+        # Load NWB (includes all units)
+        session_data = load_nwb_session_all_units(nwb_path=nwb_file, config=config)
+
+        # Load HMM results
+        mouse_id = NWB_reader_functions.get_mouse_id(nwb_file)
+        reward_group = NWB_reader_functions.get_session_metadata(nwb_file)['wh_reward']
+        curves_df = load_hmm_results.load_mouse_hmm_results([mouse_id])
+        inflection_trial = curves_df['learning_trial'].unique()[0]
+        if np.isnan(inflection_trial):
+            print(f'No inflection trial found for {mouse_id}. SKipping.')
+            continue
+
+        p_mean = curves_df['p_mean'].values[0]
+        p_chance = curves_df['p_chance'].values[0]
+        assert len(p_mean) == len(session_data['trials']['stim_time'])
+
+        # Step 2: Add your behavioral data by updating the dict
+        session_data['trials'].update({
+            'p_mean': p_mean,  # optional, for plotting
+            'p_chance': p_chance,  # optional, for plotting
+            'inflection_trial': inflection_trial,  # required
+            'reward_group': reward_group
+        })
+
+        # Add behavioral data (same as before)
+        #session_data['trials']['inflection_trial'] = inflection_trial
+        #session_data['trials']['p_mean'] = p_mean  # optional
+
+        mouse_output_dir = Path(OUTPUT_DIR, mouse_id, 'whisker_0', 'pop_inflection_analysis')
+        if os.path.exists(mouse_output_dir):
+            print('Skipping mouse', mouse_id, 'already done.')
+            continue
+
+        mouse_output_dir.mkdir(exist_ok=True)
+
+
+        # Run population analysis (all areas)
+        #result = analyze_session_population(
+        #    session_data,
+        #    config,
+        #    save_dir=mouse_output_dir
+        #)
+
+        # Or analyze specific areas separately
+        results = []
+        for area in unit_table['area_acronym_custom'].unique():
+            print('Area:', area)
+            result = analyze_session_population(
+                session_data, config, mouse_output_dir, area_filter=area
+            )
+            results.append(result)
+
+            save_population_results_to_csv([result], mouse_output_dir / f'{area}_population_results.csv')
