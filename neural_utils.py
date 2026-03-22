@@ -132,7 +132,6 @@ def convert_electrode_group_object_to_columns(data):
     :return: 
     """
     elec_group_list = data['electrode_group'].values
-    #elec_group_name = [e.name for e in elec_group_list]
     elec_group_name = [e.name for e in elec_group_list]
     data['electrode_group'] = elec_group_name
 

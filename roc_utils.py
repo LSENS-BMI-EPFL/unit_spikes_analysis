@@ -360,7 +360,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     permuted_aucs = np.array(permuted_aucs)
 
     # Calculate p-values as proportion of permuted AUCs greater than or equal to the observed AUC
-    p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed test: AUC greater than chance
+    p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed debug: AUC greater than chance
     p_value_neg = np.sum(permuted_aucs <= roc_auc) / n_permutations
 
     # Determine significance and direction of signifiance based on p-values and analysis type
