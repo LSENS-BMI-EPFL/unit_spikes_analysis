@@ -15,6 +15,7 @@ import pandas as pd
 
 from raster_utils import plot_rasters
 from unit_spike_report import generate_unit_spike_report
+# from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from task_modulation_utils import task_modulation_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
@@ -26,7 +27,7 @@ from noise_correl_utils import noise_correlation_analysis
 
 ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
 ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWBFull_new')
+                                'NWBFull')
 
 
 
@@ -38,7 +39,7 @@ if __name__ == '__main__':
     expert_day = False
 
     # Set paths
-    experimenter = 'Axel_Bisi'
+    experimenter = 'Myriam_Hamon'
 
     proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     if experimenter == 'Axel_Bisi':
@@ -52,11 +53,11 @@ if __name__ == '__main__':
                                  'dataset_info')
         output_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
                                    'combined_results')
-        if experimenter == 'Axel_Bisi':
-            nwb_names_to_add = os.listdir(ROOT_PATH_MYRIAM)
-        elif experimenter == 'Myriam_Hamon':
-            nwb_names_to_add = os.listdir(ROOT_PATH_AXEL)
-        all_nwb_names.extend(nwb_names_to_add)
+        # if experimenter == 'Axel_Bisi':
+        #     nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
+        # elif experimenter == 'Myriam_Hamon':
+        #     nwb_names_bis = os.listdir(ROOT_PATH_AXEL)
+        # all_nwb_names.extend(nwb_names_bis)
         #all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
         mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
 
@@ -71,7 +72,6 @@ if __name__ == '__main__':
     # Filter for usable mice
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
-        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
         ]
@@ -87,17 +87,18 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
-    subject_ids = [s for s in subject_ids if s not in excluded_mice]
-
-    subject_ids = ['AB150']
+    # excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
+    # subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
+    # subject_ids = ['AB162', 'AB163', 'AB164']
+    subject_ids = ['AB131']
 
     print(f"Subject IDs to do: {subject_ids}")
 
+    # subject_ids = ['AB131']
 
-    ### -------------------
+    ### --------------------
     # Define analyses to do
     ### -------------------
 
@@ -154,14 +155,8 @@ if __name__ == '__main__':
                     if 'unit_raster' in analyses_to_do_single:
                         plot_rasters(nwb_file, results_path)
 
-                    if 'unit_spike_report' in analyses_to_do_single:
-                        generate_unit_spike_report(nwb_file, mouse_results_path, results_path)
-
                     if 'roc_analysis' in analyses_to_do_single:
                         roc_analysis(nwb_file, results_path)
-
-                    if 'task_modulation' in analyses_to_do_single:
-                        task_modulation_analysis(nwb_file, results_path)
 
                     if 'xcorr_analysis' in analyses_to_do_single:
                         #xcorr_analysis(nwb_file, results_path) # on cluster, otherwise adapt xcorr_analysis_mpi for multiprocessing
@@ -169,9 +164,6 @@ if __name__ == '__main__':
 
                     if 'unit_glm' in analyses_to_do_single:
                         run_unit_glm_pipeline_with_pool(nwb_file, results_path)
-
-                    if 'noise_correlation' in analyses_to_do_single:
-                        noise_correlation_analysis(nwb_file, results_path)
 
     ### ------------------------------------------
     # Analyses aggregating data from multiple mice
@@ -191,9 +183,5 @@ if __name__ == '__main__':
             plot_number_area_pairs_heatmap(trial_table, unit_table, output_path)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            classify_rsu_vs_fsu(unit_table, output_path)
-
-        if 'striatal_type' in analyses_to_do_multi:
-            classify_striatal_units(unit_table, output_path)
-
+            assign_rsu_vs_fsu(unit_table, output_path)
 

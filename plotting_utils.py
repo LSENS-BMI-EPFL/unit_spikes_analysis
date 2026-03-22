@@ -40,7 +40,7 @@ def save_figure_with_options(figure, file_formats, filename, output_dir='', dark
     # Save the figure in each specified file format
     for file_format in file_formats:
         file_path = os.path.join(output_dir, f"{filename}.{file_format}")
-        figure.savefig(file_path, transparent=transparent, bbox_inches='tight', dpi='figure')
+        figure.savefig(file_path, transparent=transparent, bbox_inches='tight', dpi=300)
 
     return
 
