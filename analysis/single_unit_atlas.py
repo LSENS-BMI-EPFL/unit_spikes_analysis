@@ -211,7 +211,7 @@ def get_metric_value(unit_row, mode, logp_min, logp_max):
 
     return metric
 
-def plot_single_neuron_atlas(data, params=None, saving_path=None):
+def plot_single_neuron_atlas_old(data, params=None, saving_path=None):
     """
     Plot ROC analysis results on the Allen CCF atlas using brainrender.
     :param data: pd.DataFrame containing ROC results and neuron locations.
@@ -302,7 +302,7 @@ def plot_single_neuron_atlas(data, params=None, saving_path=None):
     if data_type == 'roc':
         size_min, size_max = 50, 150  # Adjust these values as needed
     elif data_type == 'glm':
-        size_min, size_max = 10, 100  # Adjust these values as needed
+        size_min, size_max = 5, 130  # Adjust these values as needed
         #sizes = size_min + (size_max - size_min) * -normalized_vals
         # Linearly interpolate sizes between size_min and size_max based on min/max of vals
         # Make size proportional to delta_test_corr (larger size for more negative delta)
@@ -375,7 +375,7 @@ def plot_single_neuron_atlas(data, params=None, saving_path=None):
     return
 
 
-def plot_single_neuron_atlas_fast(data, params=None, saving_path=None):
+def plot_single_neuron_atlas(data, params=None, saving_path=None):
     """
     Plot ROC/GLM analysis results on the Allen CCF atlas using brainrender.
     Optimized for speed.
@@ -394,7 +394,7 @@ def plot_single_neuron_atlas_fast(data, params=None, saving_path=None):
         cmap = plt.get_cmap('plasma_r')
     elif data_type == 'glm':
         mode = 'delta_test_corr'
-        vmin, vmax = -0.15, 0.05
+        vmin, vmax = -0.05, 0.01
         size_min, size_max = 10, 120
         cmap = plt.get_cmap('plasma_r')
 
@@ -467,9 +467,12 @@ def plot_single_neuron_atlas_fast(data, params=None, saving_path=None):
     cb.ax.tick_params(labelsize=15)
     plt.tight_layout()
 
-    plotting_utils.save_figure_with_options(
-        fig, ['png', 'pdf', 'svg'], figname, saving_path, dark_background=False
-    )
+    plotting_utils.save_figure_with_options(fig,
+                                            ['png', 'pdf', 'svg'],
+                                            figname,
+                                            saving_path,
+                                            dark_background=False
+                                            )
     plt.close(fig)
 
     return
@@ -503,6 +506,7 @@ def plot_significant_fraction_heatmap(data_df, per_mouse, saving_path):
             frac_significant=('significant', 'mean'),
             n_units=('significant', 'size')
         ).reset_index()
+        frac_per_mouse = None  # Not used in this case
 
     # Plot separately for each reward group
     for reward_group in ['R+', 'R-']:
@@ -513,22 +517,36 @@ def plot_significant_fraction_heatmap(data_df, per_mouse, saving_path):
         heatmap_data = heatmap_data.apply(pd.to_numeric, errors='coerce')
 
         # Make dict to rename variables - choose which to include
-        model_name_dict = {
-            'auditory_encoding': 'Auditory stimulus',
-            'whisker_encoding': 'Whisker stimulus',
-            'jaw_onset_encoding': 'Lick initiation',
-            'motor_encoding': 'Orofacial motion',
-            #'last_reward': 'Prev. trial rewarded',
-            'last_whisker_reward': 'Prev. whisker trial rewarded',
-            #'last_false_alarm': 'Prev. trial false alarm',
-            'prev_success': 'Previous trial success',
-            'block_perf_type': 'High/low performance',
-            #'prop_past_whisker_reward':'Prop. past whisker rewards',
-            #'session_progress_encoding':'Trial index',
-            'sum_rewards':'Cumulative rewards',
-            'whisker_reward_rate_5':'Perf. last 5 whisker trials',
+        git_version = data_df['git_version'].iloc[0]
+        if git_version == 'f849441':
+            model_name_dict = {
+                'auditory_encoding': 'Auditory stimulus',
+                'whisker_encoding': 'Whisker stimulus',
+                'jaw_onset_encoding': 'Lick initiation',
+                'motor_encoding': 'Orofacial motion',
+                #'last_reward': 'Prev. trial rewarded',
+                'last_whisker_reward': 'Prev. whisker trial rewarded',
+                #'last_false_alarm': 'Prev. trial false alarm',
+                'prev_success': 'Previous trial success',
+                'block_perf_type': 'High/low performance',
+                #'prop_past_whisker_reward':'Prop. past whisker rewards',
+                #'session_progress_encoding':'Trial index',
+                'sum_rewards':'Cumulative rewards',
+                'whisker_reward_rate_5':'Perf. last 5 whisker trials',
+            }
+        elif git_version== '1b14083':
+            model_name_dict = {
+                'auditory_encoding': 'Auditory stimulus',
+                'whisker_encoding': 'Whisker stimulus',
+                'jaw_onset_encoding': 'Lick initiation',
+                'reward_encoding': 'Reward time',
+                'motor_encoding': 'Orofacial motion',
+                'pupil_area': 'Pupil area',
+                'time_since_whisker_reward': 'Whisker reward recency',
+                'block_perf_type': 'High/low performance',
+                'session_progress_encoding': 'Trial index',
+            }
 
-        }
         # Rename rows
         heatmap_data = heatmap_data.rename(index=model_name_dict)
         # Order like in dict
@@ -548,8 +566,8 @@ def plot_significant_fraction_heatmap(data_df, per_mouse, saving_path):
                     fmt='.2f',
                     cmap='PuRd',
                     vmin=0,
-                    vmax=1,
-                    cbar_kws={'label': 'Fraction significant units', 'shrink': 0.5, 'pad': 0.02},
+                    vmax=0.8,
+                    cbar_kws={'label': 'Fraction significant units', 'shrink': 0.5, 'pad': 0.02, 'aspect':20*0.5}, #default aspect is 20
                     linewidths=0,
                     )
         # Update colorbar
@@ -578,7 +596,7 @@ def plot_significant_fraction_heatmap(data_df, per_mouse, saving_path):
                                                 saving_path,
                                                 dark_background=False)
 
-    return
+    return frac_per_mouse, frac_sig
 
 
 if __name__ == '__main__':
@@ -653,7 +671,7 @@ if __name__ == '__main__':
         print(f'Loaded data from {len(ephys_nwb_list)} NWB files.')
 
         # -------------------------------
-        # LOADNEURON METRICS DATA
+        # LOAD NEURON METRICS DATA
         #---------------------------------
         if plot_roc:
             print('Loading ROC data...')
@@ -668,6 +686,7 @@ if __name__ == '__main__':
         elif plot_glm:
 
             git_version = 'f849441'
+            git_version = '1b14083'
             glm_dfs = []
             for mouse_id in subject_ids:
                 mouse_results_path = os.path.join(DATA_PATH, mouse_id, 'whisker_0', 'unit_glm', git_version)
@@ -692,9 +711,9 @@ if __name__ == '__main__':
             raise ValueError('Either plot_roc or plot_glm must be True.')
 
 
-        # test
-        test=False
-        if test:
+        # debug
+        debug=False
+        if debug:
           unit_table = NWB_reader_functions.get_unit_table(r"M:\analysis\Axel_Bisi\NWBFull_bis\AB164_20250422_115457.nwb")
           unit_table = nutils.convert_electrode_group_object_to_columns(unit_table)
           unit_table = allen.process_allen_labels(unit_table, subdivide_areas=False)
@@ -728,13 +747,225 @@ if __name__ == '__main__':
 
         # After merging data_df with unit_table and before plotting atlas
         data_df, _ = keep_shared_areas(data_df, nomenclature='area_acronym_custom', n_min_units=15, n_min_mice=2)
-        #for per_mouse in [False, True]:
-            #plot_significant_fraction_heatmap(data_df, per_mouse, FIGURE_PATH)
+        sig_frac_path = os.path.join(FIGURE_PATH, 'significant_fraction_heatmaps', git_version)
+        if not os.path.exists(sig_frac_path):
+            os.makedirs(sig_frac_path)
+            
+        plot_fractions = False
+        if plot_fractions:
 
+            for per_mouse in [False, True]:
+                frac_per_mouse, frac_sig = plot_significant_fraction_heatmap(data_df, per_mouse, sig_frac_path)
+
+                # Save if not None
+                if frac_per_mouse is not None:
+                    frac_per_mouse.to_csv(os.path.join(sig_frac_path, 'glm_significant_fraction_per_mouse.csv'), index=False)
+                if frac_sig is not None:
+                    frac_sig.to_csv(os.path.join(sig_frac_path, 'glm_significant_fraction_global.csv'), index=False)
 
         # ----------------------------
-        # PLOT DISITRUBUTION OF ALL UNITS TEST SCORE ON TOP OF DISTRIBUTION OF SIGNIFICANT UNITS FOR WHISKER ENCODING
-        #----------------------------
+        # FOCALITY INDICES
+        # ----------------------------
+
+        from focality_analysis_simple import analyze_focality, analyze_focality_with_bca, analyze_focality_neurons
+        focality_path = os.path.join(FIGURE_PATH, 'focality_analysis', git_version)
+        if not os.path.exists(focality_path):
+            os.makedirs(focality_path)
+
+        run_focality=False
+        plot_focality=True
+        if run_focality:
+            #results_df = analyze_focality(data_df=data_df, saving_path=focality_path)
+            results_df = analyze_focality_neurons(data_df=data_df, saving_path=focality_path) # function saves results
+            #foc_results_df = analyze_focality_with_bca(data_df=data_df, saving_path=focality_path)
+        if plot_focality:
+
+            # Load focality results
+            results_df = pd.read_csv(os.path.join(focality_path, 'focality_results_neurons.csv'))
+            exclude_model = ['time_since_whisker_reward']
+
+            n_unique_areas = data_df['area_acronym_custom'].nunique()
+            print('Number of unique areas:', n_unique_areas)
+            uniform_level = 1 / n_unique_areas
+
+            # if time_since_whisker_reward in git version, exclude it, decide to plot with and without
+            if 'time_since_whisker_reward' in results_df['model_name'].values:
+                # Then iterate and do one version with, one without
+                for exclude_whisker_reward in [True, False]:
+                    # FIX: Define results_sub_df for both cases
+                    if exclude_whisker_reward:
+                        results_sub_df = results_df[~results_df['model_name'].isin(exclude_model)].copy()
+                    else:
+                        results_sub_df = results_df.copy()
+
+                    fig, ax = plt.subplots(figsize=(6, 4), dpi=400)
+                    plotting_utils.remove_top_right_frame(ax)
+                    model_name_dict = {
+                        'auditory_encoding': 'Auditory stimulus',
+                        'whisker_encoding': 'Whisker stimulus',
+                        'jaw_onset_encoding': 'Lick initiation',
+                        'reward_encoding': 'Reward time',
+                        'motor_encoding': 'Orofacial motion',
+                        'pupil_area': 'Pupil area',
+                        'time_since_whisker_reward': 'Whisker reward recency',
+                        'block_perf_type': 'High/low performance',
+                        'session_progress_encoding': 'Trial index',
+                    }
+                    order = list(model_name_dict.keys())
+                    if exclude_whisker_reward:
+                        order.remove('time_since_whisker_reward')
+
+                    # Reorder dataframe based on order
+                    results_sub_df['model_name'] = pd.Categorical(results_sub_df['model_name'], categories=order,
+                                                                  ordered=True)
+                    results_sub_df = results_sub_df.sort_values('model_name')
+                    results_sub_df = results_sub_df.set_index('model_name').loc[order].reset_index()
+
+                    # Update column name: focality_mean -> bootstrap_mean
+                    sns.pointplot(data=results_sub_df,
+                                  x='model_name',
+                                  order=order,
+                                  y='bootstrap_mean',
+                                  hue='reward_group',
+                                  hue_order=['R+', 'R-'],
+                                  dodge=0.3,
+                                  join=False,
+                                  capsize=0.1,
+                                  errwidth=1.5,
+                                  palette=['forestgreen', 'crimson'],
+                                  legend=False,
+                                  ax=ax)
+
+                    # Add errorbars using ci_lower and ci_upper
+                    for model in order:
+                        print(model)
+                        # FIX: Handle both reward groups
+                        for reward_group in ['R+', 'R-']:
+                            row = results_sub_df[(results_sub_df['model_name'] == model) &
+                                                 (results_sub_df['reward_group'] == reward_group)]
+                            if len(row) == 0:
+                                continue
+                            row = row.iloc[0]
+
+                            x = order.index(model)
+                            if row['reward_group'] == 'R+':
+                                x -= 0.15
+                            else:
+                                x += 0.15
+
+                            # Calculate error bar lengths
+                            lower_err = row['bootstrap_mean'] - row['ci_lower']
+                            upper_err = row['ci_upper'] - row['bootstrap_mean']
+
+                            yerr = [[lower_err], [upper_err]]
+                            color = 'forestgreen' if row['reward_group'] == 'R+' else 'crimson'
+                            ax.errorbar(x, row['bootstrap_mean'],
+                                        yerr=yerr,
+                                        fmt='none', c=color, capsize=5, elinewidth=1.5, zorder=-1)
+
+                    ax.axhline(uniform_level, color='k', linestyle='--', label='Uniform distribution')
+                    ax.set_ylabel('Focality index')
+                    ax.set_xlabel('Encoding variable')
+
+                    # Rename x labels
+                    git_version = data_df['git_version'].iloc[0]
+                    if git_version == 'f849441':
+                        model_name_dict = {
+                            'auditory_encoding': 'Auditory stimulus',
+                            'whisker_encoding': 'Whisker stimulus',
+                            'jaw_onset_encoding': 'Lick initiation',
+                            'motor_encoding': 'Orofacial motion',
+                            'last_whisker_reward': 'Prev. whisker trial rewarded',
+                            'prev_success': 'Previous trial success',
+                            'block_perf_type': 'High/low performance',
+                            'sum_rewards': 'Cumulative rewards',
+                            'whisker_reward_rate_5': 'Perf. last 5 whisker trials',
+                        }
+                    elif git_version == '1b14083':
+                        if exclude_whisker_reward:
+                            model_name_dict = {
+                                'auditory_encoding': 'Auditory stimulus',
+                                'whisker_encoding': 'Whisker stimulus',
+                                'jaw_onset_encoding': 'Lick initiation',
+                                'motor_encoding': 'Orofacial motion',
+                                'pupil_area': 'Pupil area',
+                                'reward_encoding': 'Reward time',
+                                'block_perf_type': 'High/low performance',
+                                'session_progress_encoding': 'Trial index',
+                            }
+                        else:
+                            model_name_dict = {
+                                'auditory_encoding': 'Auditory stimulus',
+                                'whisker_encoding': 'Whisker stimulus',
+                                'jaw_onset_encoding': 'Lick initiation',
+                                'reward_encoding': 'Reward time',
+                                'motor_encoding': 'Orofacial motion',
+                                'pupil_area': 'Pupil area',
+                                'time_since_whisker_reward': 'Whisker reward recency',
+                                'block_perf_type': 'High/low performance',
+                                'session_progress_encoding': 'Trial index',
+                            }
+
+                    order_labels = [model_name_dict.get(model, model) for model in order]
+                    ax.set_xticklabels(order_labels, rotation=30, ha='right')
+                    plt.tight_layout()
+
+                    # Save
+                    if exclude_whisker_reward:
+                        figname = 'glm_focality_index_pointplot_exclude_whisker_reward'
+                    else:
+                        figname = 'glm_focality_index_pointplot'
+                    fig_path = os.path.join(focality_path, figname)
+                    plotting_utils.save_figure_with_options(fig,
+                                                            ['png', 'pdf', 'svg'],
+                                                            figname,
+                                                            focality_path,
+                                                            dark_background=False)
+            else:
+                pass
+
+        # --------------------------------------
+        # CHECK WHICH REGION TRULY ENCODE VARIABLE #TODO: improve this, not great
+        # ---------------------------------------
+        region_encoding_path = os.path.join(FIGURE_PATH, 'region_encoding_analysis')
+        if not os.path.exists(region_encoding_path):
+            os.makedirs(region_encoding_path)
+        from regional_encoding_analysis import (
+            analyze_regional_encoding_complete,
+            save_regional_encoding_results
+        )
+
+        run_region_stat = False
+        if run_region_stat:
+            # Run complete analysis
+            results = analyze_regional_encoding_complete(
+                data_df,
+                area_column='area_acronym_custom',
+                baseline=0.05,
+                n_bootstrap=100,
+                n_permutations=100,
+                min_mice_per_region=2,
+                progress_bar=True
+            )
+
+            # Save all results
+            save_regional_encoding_results(results, saving_path=region_encoding_path)
+
+            # Access specific results
+            whisker_r_plus = results[
+                (results['model_name'] == 'whisker_encoding') &
+                (results['reward_group'] == 'R+') &
+                (results['encodes'] == True)
+                ]
+
+            print(whisker_r_plus[['region', 'observed_proportion', 'p_fdr', 'z_score']])
+
+
+
+        # -------------------------------------------------
+        # PLOT DISTRIBUTION OF ALL UNITS TEST SCORE ON TOP OF DISTRIBUTION OF SIGNIFICANT UNITS FOR WHISKER ENCODING
+        #--------------------------------------------------
+
         plot_dist=True
         if plot_dist:
             fig, ax = plt.subplots(figsize=(4,4), dpi=400)
@@ -747,10 +978,13 @@ if __name__ == '__main__':
             ax.set_ylabel('Neurons')
             # Save
             figname = 'glm_whisker_encoding_test_corr_distribution_with_significant'
+            test_dist_path = os.path.join(FIGURE_PATH, 'test_corr_dist', git_version)
+            if not os.path.exists(test_dist_path):
+                os.makedirs(test_dist_path)
             plotting_utils.save_figure_with_options(fig,
                                                     ['png','pdf','svg'],
                                                     figname,
-                                                    FIGURE_PATH,
+                                                    test_dist_path,
                                                     dark_background=False
                                                     )
 
@@ -771,15 +1005,14 @@ if __name__ == '__main__':
             data_df.loc[data_df['model_name'] == 'full', 'delta_test_corr'] = data_df.loc[
                 data_df['model_name'] == 'full', 'test_corr']
             analyses_to_plot = data_df['model_name'].unique()
-            analyses_to_plot = ['auditory_encoding', 'whisker_encoding', 'motor_encoding',
-                                'jaw_onset_encoding', 'last_whisker_reward',
-                                'prev_success', 'block_perf_type',
-                                'sum_rewards', 'whisker_reward_rate_5'
-                                ]                                                   # subselect some
 
-            test=False
+            #analyses_to_plot = ['last_whisker_reward',
+            #                    'prev_success', 'block_perf_type', 'whisker_reward_rate_5'
+            #                    ]
+
+            plot_dist=True
             # For testing, show distributions of test_corr and delta_test_corr
-            if test:
+            if plot_dist:
                 fig, ax = plt.subplots(figsize=(6,4), dpi=200)
                 sns.histplot(data=data_df, x='test_corr', ax=ax, bins=30, kde=True)
                 ax.set_title('GLM test_corr distribution')
@@ -788,7 +1021,7 @@ if __name__ == '__main__':
                 plotting_utils.save_figure_with_options(fig,
                                                         ['png'],
                                                         figname,
-                                                        FIGURE_PATH,
+                                                        test_dist_path,
                                                         dark_background=False)
 
 
@@ -802,7 +1035,7 @@ if __name__ == '__main__':
                 plotting_utils.save_figure_with_options(fig,
                                                         ['png'],
                                                         figname,
-                                                        FIGURE_PATH,
+                                                        test_dist_path,
                                                         dark_background=False)
 
 
@@ -838,8 +1071,9 @@ if __name__ == '__main__':
         params = {}
 
         for cam_key, camera in cameras.items():
-            for reward_group in ['R+','R-']:
-                saving_path = os.path.join(FIGURE_PATH, f'reward_group_{reward_group}', cam_key)
+            #for reward_group in ['R+','R-']:
+            for reward_group in ['R-']:
+                saving_path = os.path.join(FIGURE_PATH, git_version, f'reward_group_{reward_group}', cam_key)
                 if not os.path.exists(saving_path):
                     os.makedirs(saving_path)
 
@@ -851,6 +1085,7 @@ if __name__ == '__main__':
                                      & (data_df['reward_group']==reward_group)
                     #& (data_df['area_acronym_custom'].str.contains('MO-'))
                     ]
+                    print('Unique areas', data_subset['area_acronym_custom'].unique())
                     data_subset.reset_index(drop=True, inplace=True)
 
 
@@ -864,7 +1099,7 @@ if __name__ == '__main__':
                                       'cam_key': cam_key,
                                    'camera': camera
                                       })
-                    plot_single_neuron_atlas_fast(data=data_subset, params=params, saving_path=saving_path)
+                    plot_single_neuron_atlas(data=data_subset, params=params, saving_path=saving_path)
 
 
         print('Done.')

@@ -367,7 +367,7 @@ def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list,
 
 
 
-            # Run statistical test for each area
+            # Run statistical debug for each area
             results = []
             for area in area_order:
                 sub_df = df[df['area_acronym_custom'] == area]
@@ -520,7 +520,7 @@ def plot_pop_selectivity_before_vs_after_across_areas(data_df, per_subject, area
             g.tight_layout()
             g.set_xticklabels(rotation=90)
 
-            # Run statistical test for each area
+            # Run statistical debug for each area
             results = []
             for area in area_order:
                 sub_df = df[df['area_acronym_custom'] == area]
@@ -1147,7 +1147,7 @@ def main():
 
 
 def run_permutation_test_increase_reward_group(roc_df):
-    print('Running permutation test for reward group comparison...')
+    print('Running permutation debug for reward group comparison...')
 
     # Column names for SI pre/post (change here to match your dataframe)
     col_pre = 'whisker_passive_pre'
@@ -1192,7 +1192,7 @@ def run_permutation_test_increase_reward_group(roc_df):
     valid_areas = area_counts[area_counts >= min_mice_per_area].index
     mouse_area = mouse_area[mouse_area[area_col].isin(valid_areas)].copy()
 
-    # --- 3. Omnibus test (all areas together, two-sided) ---
+    # --- 3. Omnibus debug (all areas together, two-sided) ---
     mouse_to_rows = {m: sub.copy() for m, sub in mouse_area.groupby(mouse_col)}
     unique_mice = list(mouse_to_rows.keys())
     orig_labels = mouse_area.groupby(mouse_col)[group_col].first().to_dict()
@@ -1336,7 +1336,7 @@ def run_permutation_test_change_reward_group(roc_df):
     valid_areas = area_counts[area_counts >= min_mice_per_area].index
     mouse_area = mouse_area[mouse_area[area_col].isin(valid_areas)].copy()
 
-    # --- 3. Omnibus test (all areas together) ---
+    # --- 3. Omnibus debug (all areas together) ---
     mouse_to_rows = {m: sub.copy() for m, sub in mouse_area.groupby(mouse_col)}
     unique_mice = list(mouse_to_rows.keys())
     orig_labels = mouse_area.groupby(mouse_col)[group_col].first().to_dict()
@@ -1419,7 +1419,7 @@ def run_permutation_test_change_reward_group(roc_df):
     }
 
     pp = pprint.PrettyPrinter(indent=4)
-    print('Omnibus test results:')
+    print('Omnibus debug results:')
     pp.pprint(results)
 
     return results
@@ -1599,7 +1599,7 @@ def run_reward_group_hypotheses(roc_df,
         # Store omnibus results
         results[cond_name] = {'omnibus': {'stat_obs': stat_obs, 'pval': pval, 'perm_stats': perm_stats}}
 
-        # Post-hoc area-level test
+        # Post-hoc area-level debug
         area_results = []
         for area, sub in agg.groupby(area_col):
             mice_here = list(sub[mouse_col].unique())
