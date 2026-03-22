@@ -550,7 +550,7 @@ def test_ccg():
     """
     Test the CCG implementation with simple data
     """
-    # Generate test data
+    # Generate debug data
     np.random.seed(42)
     
     # Two units with different firing patterns
