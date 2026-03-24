@@ -9,7 +9,12 @@
 
 # Imports
 import os
+import socket
+import pathlib
 import pandas as pd
+
+from analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
+from inflection.load_hmm_results import ROOT_PATH_AXEL
 #import NWB_reader_functions as nwb_reader
 #import allen_utils as allen_utils
 
@@ -24,13 +29,6 @@ from unit_desc_utils import *
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
 
-
-ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
-ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWBFull')
-
-
-
 if __name__ == '__main__':
 
     single_mouse = True
@@ -39,9 +37,24 @@ if __name__ == '__main__':
     expert_day = False
 
     # Set paths
-    experimenter = 'Myriam_Hamon'
+    experimenter = 'Axel_Bisi'
 
-    proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
+    hostname = socket.gethostname()
+    if 'haas' in hostname:
+        ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
+        ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWBFull')
+        INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')  # temp before mounted
+        OUTPUT_PATH = pathlib.Path(f'/mnt/lsens-analysis/{experimenter}/combined_results')
+    else:
+        ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWB_combined')
+        ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
+                                        'NWBFull')
+        INFO_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
+                                 'dataset_info')
+        OUTPUT_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
+                                   'combined_results')
+
+    #proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     if experimenter == 'Axel_Bisi':
         all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     elif experimenter == 'Myriam_Hamon':
@@ -49,24 +62,21 @@ if __name__ == '__main__':
     all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
     if joint_analysis:
-        info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
-                                 'dataset_info')
-        output_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
-                                   'combined_results')
+
         # if experimenter == 'Axel_Bisi':
         #     nwb_names_bis = os.listdir(ROOT_PATH_MYRIAM)
         # elif experimenter == 'Myriam_Hamon':
         #     nwb_names_bis = os.listdir(ROOT_PATH_AXEL)
         # all_nwb_names.extend(nwb_names_bis)
         #all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
-        mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
+        mouse_info_path = os.path.join(INFO_PATH, 'joint_mouse_reference_weight.xlsx')
 
     else:
-        info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
-        output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
-        mouse_info_path = os.path.join(info_path, 'mouse_reference_weight.xlsx')
+        INFO_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'mice_info')
+        OUTPUT_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
+        mouse_info_path = os.path.join(INFO_PATH, 'mouse_reference_weight.xlsx')
 
-
+    print(mouse_info_path)
     mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
     # Filter for usable mice
@@ -87,12 +97,11 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    # excluded_mice = ['MH006', 'MH038'] #invalid NWB file 006, 038 ephys_exclude
-    # subject_ids = [s for s in subject_ids if s not in excluded_mice]
+    excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB095'] #invalid NWB file 006, 038 ephys_exclude
+    subject_ids = [s for s in subject_ids if s not in excluded_mice]
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    # subject_ids = ['AB162', 'AB163', 'AB164']
-    subject_ids = ['AB131']
+    #subject_ids = ['AB131', 'AB133', 'AB082']
 
     print(f"Subject IDs to do: {subject_ids}")
 
@@ -112,8 +121,11 @@ if __name__ == '__main__':
     # Multi-mouse analyses
     analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
-    analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe']
+    analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe'] #fix area pairs describe
     analyses_to_do_multi = ['striatal_type']
+
+    # Analyses to do
+    analyses_to_do_single = ['roc_analysis']
 
 
     # --------------
@@ -133,7 +145,7 @@ if __name__ == '__main__':
         for subject_id in subject_ids:
             print(f"Subject ID : {subject_id}")
             # Create results  folders for the subject
-            mouse_results_path = os.path.join(output_path, subject_id)
+            mouse_results_path = os.path.join(OUTPUT_PATH, subject_id)
             os.makedirs(mouse_results_path, exist_ok=True)
 
             nwb_files = [nwb for nwb in nwb_neural_files if subject_id in nwb]
@@ -174,14 +186,14 @@ if __name__ == '__main__':
         print('Multi-mouse analyses')
 
         if 'unit_labels_processing' in analyses_to_do_multi:
-            unit_label_describe(unit_table, output_path)
+            unit_label_describe(unit_table, OUTPUT_PATH)
 
         if 'unit_anat_processing' in analyses_to_do_multi:
-            unit_anat_describe(unit_table, output_path)
+            unit_anat_describe(unit_table, OUTPUT_PATH)
 
         if 'area_pairs_describe' in analyses_to_do_multi:
-            plot_number_area_pairs_heatmap(trial_table, unit_table, output_path)
+            plot_number_area_pairs_heatmap(trial_table, unit_table, OUTPUT_PATH)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            assign_rsu_vs_fsu(unit_table, output_path)
+            assign_rsu_vs_fsu(unit_table, OUTPUT_PATH)
 
