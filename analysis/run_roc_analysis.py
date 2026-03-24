@@ -24,10 +24,13 @@ import allen_utils
 
 
 import allen_utils as allen
+import neural_utils
 import plotting_utils as putils
 from roc_analysis_utils import *
 
+
 DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis')
+NWB_PATH  = r'M:\analysis\Axel_Bisi\NWB_combined'
 FIGURE_PATH = r'M:\analysis\Axel_Bisi\combined_results\roc_analysis'
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
@@ -810,7 +813,7 @@ def main():
 
     # Get data information
 
-    info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', f'Axel_Bisi_Share',
+    info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
                              'dataset_info')
     mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
     mouse_info_df = pd.read_excel(mouse_info_path)
@@ -819,17 +822,32 @@ def main():
     # Filter for usable mice
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
         ]
+    valid_mice = mouse_info_df['mouse_id'].unique()
 
     # ---------
     # LOAD DATA
     # ---------
-    print('Loading data...')
-    # --- Load data ---
+    n_workers = 30
+    nwb_list = [os.path.join(NWB_PATH, f) for f in os.listdir(NWB_PATH) if any(m in f for m in valid_mice)]
+    nwb_list = nwb_list[:50]
+    _, unit_table, _ = neural_utils.combine_ephys_nwb(nwb_list, max_workers=n_workers)
+
+    print('Loading ROC data...')
     data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
-    roc_df = load_roc_results(data_path_axel)
+    roc_df = load_roc_results(data_path_axel, max_workers=n_workers)
+
+    print(roc_df.columns)
+
+    # Merge unit_table and roc_df for missing columns required by allen_utils
+    keep_merge_cols = ['mouse_id','session_id','neuron_id','target_region',
+    'ccf_atlas_acronym', 'ccf_atlas_parent_acronym', 'ccf_ap', 'ccf_ml', 'ccf_dv']
+    # Add information of keep_merge_cols onto roc_df
+    roc_df = roc_df.merge(unit_table[keep_merge_cols], on=['mouse_id','session_id','neuron_id'], how='left')
+
 
     # --- Load Myriam data ---
     #data_path_myriam = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
@@ -866,9 +884,10 @@ def main():
     N_MICE_PER_AREA_MIN = 3         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
+
     # Remove excluded areas
     roc_df = roc_df[~roc_df['area'].isin(allen.get_excluded_areas())]
-    #roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True) #TODO: fix area acronym custom
+    roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True)
 
     #roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
 

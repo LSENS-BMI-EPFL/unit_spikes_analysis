@@ -9,10 +9,45 @@ import os, glob
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 
 import allen_utils as allen
 
-def load_roc_results(root_path):
+def _read_csv_if_exists(f):
+    if os.path.exists(f):
+        return pd.read_csv(f)
+    return None
+
+
+def load_roc_results(root_path, max_workers=20):
+    mouse_folders = [f for f in os.listdir(root_path) if f.startswith('AB') or f.startswith('MH')]
+    print(f"  Found {len(mouse_folders)} mouse folders in: {root_path}")
+    files = []
+    for folder in mouse_folders:
+        mouse_id = folder[0:5]
+        res_file = os.path.join(root_path, folder, 'whisker_0', 'roc_analysis', f'{mouse_id}_roc_results_new.csv')
+        files.append(res_file)
+    print(f"  Found {len(files)} files in: {root_path}")
+    print(files)
+
+    if not files:
+        print("  No ROC files found. Returning empty DataFrame.")
+        return pd.DataFrame()
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        dfs = list(tqdm(executor.map(_read_csv_if_exists, files),
+                        total=len(files),
+                        desc="  Loading ROC CSV files",
+                        unit="file"))
+
+    dfs = [df for df in dfs if df is not None]
+
+    if not dfs:
+        return pd.DataFrame()
+
+    return pd.concat(dfs, ignore_index=True)
+
+def load_roc_results_serial(root_path):
     files = glob.glob(os.path.join(root_path, '**', '*_roc_results_new.csv'), recursive=True)
     print(f"  Found {len(files)} files in: {root_path}")
     dfs = []
@@ -81,7 +116,7 @@ def filter_process_data(data_df, n_units_min=10, n_mice_per_area_min=3, keep_sha
     data_df['selectivity_abs'] = data_df['selectivity'].abs()
 
     # Step 1: Add custom area column
-    data_df = allen.create_area_custom_column(data_df)
+    d#ata_df = allen.create_area_custom_column(data_df)
 
     # Step 2: Count occurrences and filter by threshold
     area_counts_by_analysis = data_df.groupby(['analysis_type', 'area_acronym_custom']).size()
