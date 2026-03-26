@@ -591,8 +591,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         unit_table = unit_table[unit_table['bc_label']=='good']
         # unit_table = unit_table[unit_table['ccf_parent_acronym'].isin(['SSp-bfd', 'SSs'])]
 
-        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
-        unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+        # unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
+        # unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
         # unit_table = unit_table.sample(n=2, random_state=None)
 
         # Use index as new column named "unit_id", then reset
@@ -712,9 +712,8 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         # Broadcast to bins
         if 'time_since_whisker_reward' in include_predictors:
-            predictors.update(
-                expand_scalar_predictor_to_time_kernel(time_since_whisker_reward_norm, n_bins, 'time_since_whisker_reward')
-            )
+            predictors['time_since_whisker_reward'] = np.tile(block_perf_type[:, None], (1, n_bins))
+
 
         # Running memory for last no stim status
         last_no_stim = 0
@@ -796,9 +795,9 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
         block_perf_type = trials_df['block_perf_type'].to_numpy()  # shape (n_trials,)
 
         if 'block_perf_type' in include_predictors :
-            predictors.update(
-                expand_scalar_predictor_to_time_kernel(block_perf_type, n_bins, 'block_perf_type')
-            )
+            predictors['block_perf_type'] = np.tile(block_perf_type[:, None], (1, n_bins))
+
+
         # Rolling reward proportion
         whisker_reward_rate = np.zeros(n_trials)
         for i in range(n_trials):
