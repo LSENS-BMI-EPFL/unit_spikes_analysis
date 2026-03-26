@@ -712,7 +712,7 @@ def load_nwb_spikes_and_predictors(nwb_path, bin_size=0.1, nb_of_whisker_kernel=
 
         # Broadcast to bins
         if 'time_since_whisker_reward' in include_predictors:
-            predictors['time_since_whisker_reward'] = np.tile(block_perf_type[:, None], (1, n_bins))
+            predictors['time_since_whisker_reward'] = np.tile(time_since_whisker_reward_norm[:, None], (1, n_bins))
 
 
         # Running memory for last no stim status
@@ -1628,7 +1628,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10):
             'reward_encoding': [f for f in feature_namess if 'piezo_reward' in f],
             'jaw_onset_encoding': [f for f in feature_namess if 'jaw_onset' in f],
             'motor_encoding': [f for f in feature_namess if 'dist' in f or 'vel' in f],
-            'pupil_area': [f for f in feature_namess if 'pupil_area'],
+            'pupil_area': [f for f in feature_namess if 'pupil_area' in f],
             'block_perf_type' : ['block_perf_type'],
             'time_since_whisker_reward': ['time_since_whisker_reward'],
             'session_progress_encoding': ['trial_index_scaled'],
