@@ -9,7 +9,9 @@
 
 # Imports
 import os
+import socket
 import argparse
+import pathlib
 import glob
 import numpy as np
 import pandas as pd
@@ -25,13 +27,11 @@ import allen_utils
 
 import allen_utils as allen
 import neural_utils
+import plotting_utils
 import plotting_utils as putils
 from roc_analysis_utils import *
 
 
-DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis')
-NWB_PATH  = r'M:\analysis\Axel_Bisi\NWB_combined'
-FIGURE_PATH = r'M:\analysis\Axel_Bisi\combined_results\roc_analysis'
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
     """
@@ -42,6 +42,7 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
     :param area_color_list: list of colors corresponding to areas
     :param output_path: path to save figures
     """
+
     if 'mouse_id' in data_df.columns:
         errorbar = 'se'
         errwidth = 0.7
@@ -98,7 +99,7 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
                 g.despine(left=False)
                 g.set_axis_labels('', 'Proportion (%)')
                 if dir == 'all':
-                    g.set(ylim=(0, 70))
+                    g.set(ylim=(0, 80))
                 else:
                     g.set(ylim=(-50, 50))
                 g.tight_layout()
@@ -812,10 +813,21 @@ def plot_si_correlation_grid_across_areas(data_df, cond1, cond2, output_path):
 def main():
 
     # Get data information
+    hostname = socket.gethostname()
+    if 'haas' in hostname:
+        DATA_PATH = pathlib.Path('/mnt/lsens-analysis/')
+        NWB_PATH = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
+        FIGURE_PATH =  pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/combined_results/roc_analysis')
+        INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')
 
-    info_path = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
+    else:
+        DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis')
+        NWB_PATH = r'M:\analysis\Axel_Bisi\NWB_combined'
+        FIGURE_PATH = r'M:\analysis\Axel_Bisi\combined_results\roc_analysis'
+        INFO_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
                              'dataset_info')
-    mouse_info_path = os.path.join(info_path, 'joint_mouse_reference_weight.xlsx')
+
+    mouse_info_path = os.path.join(INFO_PATH, 'joint_mouse_reference_weight.xlsx')
     mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
 
@@ -831,22 +843,23 @@ def main():
     # ---------
     # LOAD DATA
     # ---------
-    n_workers = 30
+    n_workers = 100
     nwb_list = [os.path.join(NWB_PATH, f) for f in os.listdir(NWB_PATH) if any(m in f for m in valid_mice)]
-    nwb_list = nwb_list[:50]
+    #nwb_list = nwb_list[:200]
     _, unit_table, _ = neural_utils.combine_ephys_nwb(nwb_list, max_workers=n_workers)
+    unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
 
     print('Loading ROC data...')
     data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
     roc_df = load_roc_results(data_path_axel, max_workers=n_workers)
+    unit_table_mice = unit_table.mouse_id.unique()
+    roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
 
-    print(roc_df.columns)
-
-    # Merge unit_table and roc_df for missing columns required by allen_utils
-    keep_merge_cols = ['mouse_id','session_id','neuron_id','target_region',
-    'ccf_atlas_acronym', 'ccf_atlas_parent_acronym', 'ccf_ap', 'ccf_ml', 'ccf_dv']
-    # Add information of keep_merge_cols onto roc_df
-    roc_df = roc_df.merge(unit_table[keep_merge_cols], on=['mouse_id','session_id','neuron_id'], how='left')
+    # Fix: correct for choice the direction, positive and negative are inverted
+    choice_analyses = [type for type in roc_df.analysis_type if 'choice' in type]
+    choice_mask = roc_df['analysis_type'].isin(choice_analyses)
+    # Invert direction for these rows (positive becomes negative and vice versa)
+    roc_df.loc[choice_mask, 'direction'] = roc_df.loc[choice_mask, 'direction'].replace({'positive': 'negative', 'negative': 'positive'})
 
 
     # --- Load Myriam data ---
@@ -865,8 +878,13 @@ def main():
     #roc_df = pd.concat([roc_df_axel, roc_df_myriam], ignore_index=True)
     roc_df = roc_df.merge(mouse_info_df[['mouse_id', 'reward_group']], on='mouse_id', how='left')
 
+    #roc_df['neuron_id'] = roc_df['neuron_id'].astype(int)
+    #unit_table['neuron_id'] = unit_table['neuron_id'].astype(int)
+    #roc_df = roc_df.merge(unit_table[['mouse_id', 'session_id', 'neuron_id', 'area_acronym_custom']],
+    #                      on=['mouse_id', 'session_id', 'neuron_id'], how='right')
+
     # Create unique unit identifier based on index
-    roc_df['unit_id'] = roc_df.index.astype(int)
+    #roc_df['unit_id'] = roc_df.index.astype(int)
 
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
@@ -880,7 +898,7 @@ def main():
     # PROCESS AND FILTER DATA
     # -----------------------
     print('Processing and filtering data...')
-    N_UNITS_MIN = 10                # minimum units per area (whole-dataset)
+    N_UNITS_MIN = 20                # minimum units per area (whole-dataset)
     N_MICE_PER_AREA_MIN = 3         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
@@ -889,18 +907,18 @@ def main():
     roc_df = roc_df[~roc_df['area'].isin(allen.get_excluded_areas())]
     roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True)
 
-    #roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
+    roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN, keep_shared=KEEP_SHARED_AREAS)
 
     # Create color list based on areas that are present
-    #shared_areas = roc_df['area_acronym_custom'].unique()
-    #area_order = allen.get_custom_area_order()
-    #area_order_shared = [a for a in area_order if a in shared_areas]
+    shared_areas = roc_df['area_acronym_custom'].unique()
+    area_order = allen.get_custom_area_order()
+    area_order_shared = [a for a in area_order if a in shared_areas]
 
     # Make a color dict for the group of areas
     area_groups = allen.get_custom_area_groups()
 
     # Keep areas that present in dataset
-    #area_groups = {k: [i for i in v if i in area_order_shared] for k, v in area_groups.items()}
+    area_groups = {k: [i for i in v if i in area_order_shared] for k, v in area_groups.items()}
 
     # Generate a colormap with as many colors as the number of area groups
     color_palette_dict = allen.get_custom_area_groups_colors()
@@ -919,8 +937,162 @@ def main():
     # -------------------------------------------------
     # COMPUTE PROPORTIONS OF SIGNIFICANT UNITS PER AREA
     # -------------------------------------------------
-    #roc_df_perc = compute_prop_significant(roc_df, per_subject=False)
-    #roc_df_perc_subjects = compute_prop_significant(roc_df, per_subject=True)
+    roc_df_perc = compute_prop_significant(roc_df, area_col='area_acronym_custom', per_subject=False)
+    #roc_df_perc_custom = roc_df_perc[roc_df_perc.area_level=='area_acronym_custom']
+    #roc_df_perc_ccf = roc_df_perc[roc_df_perc.area_level=='ccf_atlas_parent_acronym']
+
+    roc_df_perc_subjects = compute_prop_significant(roc_df, area_col='ccf_acronym_no_layer', per_subject=True)
+    #roc_df_perc_subjects_custom =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='area_acronym_custom']
+    #roc_df_perc_subjects_ccf =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='ccf_atlas_parent_acronym']
+
+    # --------
+    # SUMMARY
+    # --------
+    plot_roc_grid=True
+    if plot_roc_grid:
+        output_path = os.path.join(FIGURE_PATH, 'roc_summary_grid')
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        from selectivity_grid import plot_selectivity
+        area_to_group_dict = allen_utils.get_custom_area_groups_from_name()
+        # use this dict else put in other
+        roc_df['area_group']= None
+        roc_df['area_group'] = roc_df['area_acronym_custom'].apply(lambda x: area_to_group_dict.get(x, 'Other'))
+        roc_df_perc_coarse = compute_prop_significant(roc_df, area_col='area_group', per_subject=True)
+        print('Coarse areas', roc_df_perc_coarse.area_group.unique())
+        area_groups = roc_df_perc_coarse.area_group.unique()
+
+        for reward_group in roc_df_perc_coarse.reward_group.unique():
+            suffix = 'rplus' if reward_group=='R+' else 'rminus'
+
+            ROW_CONFIG = [
+                ('Whisker\nresponsive', 'Positive', 'Negative', 'whisker_active', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Auditory\nresponsive', 'Positive', 'Negative', 'auditory_active', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Modality\nselective', 'Whisker', 'Auditory', 'wh_vs_aud_active', 'whisker', 'auditory', '#ebb134',
+                 '#3127c2'),
+                ('Choice\nselective', 'Positive', 'Negative', 'choice', 'positive', 'negative', '#E74C3C', '#3498DB'),
+                ('Baseline\nchoice selective', 'Positive', 'Negative', 'baseline_choice', 'positive', 'negative', '#E74C3C', '#3498DB'),
+                ('Spontaneous\nlicks', 'Positive', 'Negative', 'spontaneous_licks', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+            ]
+            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_{suffix}.pdf'))  # ring charts
+            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_{suffix}.pdf'))  # grouped vertical bars
+
+            ROW_CONFIG_PASSIVE = [
+                ('Whisker\npre.', 'Positive', 'Negative', 'whisker_passive_pre', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Whisker\npost', 'Positive', 'Negative', 'whisker_passive_post', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Auditory\npre', 'Positive', 'Negative', 'auditory_passive_pre', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Auditory\npost', 'Positive', 'Negative', 'auditory_passive_post', 'positive', 'negative', '#E74C3C', '#3498DB'),
+                ('Whisker\npre-to-post', 'Positive', 'Negative', 'whisker_pre_vs_post_learning', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+                ('Auditory\npre-to-post', 'Positive', 'Negative', 'auditory_pre_vs_post_learning', 'positive', 'negative', '#E74C3C',
+                 '#3498DB'),
+            ]
+            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_passive_{suffix}.pdf'))  # ring charts
+            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_passive_{suffix}.pdf'))  # grouped vertical bars
+
+
+    # --------
+    # HEATMAPS
+    # --------
+    plot_heatmaps = False
+    if plot_heatmaps:
+        output_path = os.path.join(FIGURE_PATH, 'roc_heatmaps')
+        if not os.path.exists(output_path):
+            os.makedirs(output_path)
+
+        # Plot separately for each reward group
+        for reward_group in roc_df_perc_subjects.reward_group.unique():
+            for dir in ['positive','negative']:
+
+                subset = roc_df_perc_subjects[(roc_df_perc_subjects['reward_group'] == reward_group) & (roc_df_perc_subjects['direction']==dir)]
+
+                #dbug
+                fig, ax = plt.subplots()
+                subset_ex = subset[subset.analysis_type=='auditory_active']
+                sns.barplot(data=subset_ex, ax=ax, y='proportion_signed', x='area_acronym_custom')
+                #save
+                plotting_utils.save_figure_with_options(fig, ['png', 'pdf', 'svg'], f'{reward_group}_auditory_active_barplot', output_path)
+
+                # Averaged across mouse_id
+                subset = subset.groupby(['analysis_type', 'area_acronym_custom'], as_index=False)['proportion_signed'].mean()
+
+                dups = subset.duplicated(
+                    subset=['analysis_type', 'area_acronym_custom'],
+                    keep=False
+                )
+                print(subset[dups].sort_values(['analysis_type', 'area_acronym_custom']).head(100))
+
+                # Pivot for heatmap
+                heatmap_data = subset.pivot_table(index='analysis_type', columns='area_acronym_custom', values='proportion_signed',
+                                            aggfunc='mean')
+                heatmap_data = subset.pivot(index='analysis_type', columns='area_acronym_custom', values='proportion_signed').abs()
+
+                print(len(heatmap_data))
+                heatmap_data = heatmap_data.apply(pd.to_numeric, errors='coerce')
+                model_name_dict = {
+                    'whisker_active': 'Whisker resp.',
+                    'auditory_active': 'Auditory resp.',
+                    'spontaneous_licks': 'Lick resp.',
+                    #'whisker_choice': 'Whisker choice',
+                    'choice': 'Choice',
+                    #'baseline_choice': 'Baseline choice',
+                    #'baseline_whisker_choice': 'Baseline choice, whisker',
+                }
+
+                # Rename rows
+                heatmap_data = heatmap_data.rename(index=model_name_dict)
+                # Order like in dict
+                heatmap_data = heatmap_data.reindex(model_name_dict.values())
+
+                # Order areas using allen_utils function
+                area_order = allen_utils.get_custom_area_order()
+                areas_present = [area for area in area_order if area in heatmap_data.columns]
+                heatmap_data = heatmap_data[areas_present]
+
+                # Plot
+                fig, ax = plt.subplots(figsize=(24, 6), dpi=500)
+                sns.heatmap(heatmap_data,
+                            ax=ax,
+                            annot=True,
+                            annot_kws={'fontsize':8},
+                            fmt='.1f',
+                            cmap='YlOrBr',
+                            vmin=5,
+                            vmax=60,
+                            cbar_kws={'label': 'Fraction significant units', 'shrink': 0.5, 'pad': 0.02,
+                                      'aspect': 20 * 0.5},  # default aspect is 20
+                            linewidths=0,
+                            )
+                # Update colorbar
+                cbar = ax.collections[0].colorbar
+                cbar.ax.tick_params(labelsize=12)
+                cbar.set_label('Percentage significant', fontsize=15)
+
+                ax.xaxis.tick_top()
+                ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=12)
+                ax.set_xlabel('')
+                #ax.set_ylabel('Encoding variables', fontsize=15)
+
+                # Format y tick labels by removing underscores
+                ytick_labels = [label.get_text().replace('_', ' ') for label in ax.get_yticklabels()]
+                ax.set_yticklabels(ytick_labels, rotation=0, fontsize=12)
+
+                plt.tight_layout()
+
+                # Save
+                figname = f'roc_significant_fraction_heatmap_{reward_group}_per_mouse_{dir}'
+                putils.save_figure_with_options(fig, ['png', 'pdf', 'eps'],
+                                                        figname,
+                                                        output_path,
+                                                        dark_background=False)
+
 
     # ----------------------------------------
     # PERFORM COMPARISONS ON SIGNIFICANT UNITS
@@ -933,6 +1105,7 @@ def main():
         #'prop_before_vs_after_across_areas',
         #'prop_across_areas_passive_pre_vs_post'
     ]
+
 
     if 'prop_across_areas' in figures_to_do:
         output_path = os.path.join(FIGURE_PATH, 'across_areas')
@@ -1136,6 +1309,188 @@ def main():
     else:
         print('Functions not implemented.')
 
+    # -----------------------------------
+    # CORRELATION WITH HIERARCHY MEASURES
+    # -----------------------------------
+    plot_correlation = False
+
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+    from scipy.stats import pearsonr
+    import numpy as np
+
+    if plot_correlation:
+
+        # Load and merge anatomical metrics
+        # 1. Axonal innervation from whisker SSp from Liu et al.
+
+        liu_areas = allen_utils.load_liu_et_al_avg_ipsi()
+        liu_areas = liu_areas.keys()
+        area_column = 'ccf_acronym_no_layer'
+        roc_df_perc_subjects_for_anat = compute_prop_significant(roc_df, area_col=area_column, per_subject=True)
+
+        data_areas = roc_df_perc_subjects_for_anat['ccf_acronym_no_layer'].unique()
+        print('liu areas', len(liu_areas))
+        print('data areas', len(data_areas))
+        n_intersec = set(liu_areas).intersection(set(data_areas))
+        print('intersection areas', len(n_intersec))
+        roc_df_perc_subjects_for_anat = allen_utils.merge_liu_avg_ipsi_opt(roc_df_perc_subjects_for_anat, cols_priority=area_column)
+        roc_df_perc_subjects_for_anat['avg_ipsi_corr'] = np.log(roc_df_perc_subjects_for_anat['avg_ipsi_corr'] + 1e-5)  # log-transform and avoid log(0)
+
+       # 2. Anatomical CT hierarchy from Harris et al. 2019
+        harris_areas = allen_utils.load_process_hierarchy_from_harris()
+        harris_areas = harris_areas[area_column].unique()
+        roc_df_perc_subjects_for_anat = allen_utils.merge_hierarchy_from_harris(roc_df_perc_subjects_for_anat, merge_on=area_column)
+        print('harris areas', len(harris_areas))
+        print('data areas', len(data_areas))
+        n_intersec = set(harris_areas).intersection(set(data_areas))
+        print('intersection areas', len(n_intersec))
+
+        palette = {'R+': 'forestgreen', 'R-': 'crimson'}
+        print('columns', roc_df_perc_subjects_for_anat.columns)
+        assert 'avg_ipsi_corr' in roc_df_perc_subjects_for_anat.columns, f"Expected 'avg_ipsi_corr' column not found. Available columns: {roc_df_perc_subjects_for_anat.columns}"
+        assert 'cc_tc_ct_iterated' in roc_df_perc_subjects_for_anat.columns, f"Expected 'cc_tc_ct_iterated' column not found. Available columns: {roc_df_perc_subjects_for_anat.columns}"
+        for area_level in [area_column]:
+        #for area_level in [area_column, 'area_custom_acronym', 'ccf_atlas_parent_acronym']:
+
+            output_path = os.path.join(FIGURE_PATH, 'roc_corr_anatomy', area_level)
+            os.makedirs(output_path, exist_ok=True)
+
+            for anat_var in ['avg_ipsi_corr', 'cc_tc_ct_iterated']:
+                # --- Prepare THREE datasets ---
+                dfs = {}
+
+                # 1️⃣ Positive
+                dfs['positive'] = (
+                    roc_df_perc_subjects_for_anat
+                    .query("direction == 'positive'")
+                    .dropna(subset=[anat_var, 'proportion_signed'])
+                    .groupby(['analysis_type', 'reward_group', area_level], as_index=False)
+                    [[anat_var, 'proportion_signed']]
+                    .mean()
+                    .rename(columns={'proportion_signed': 'y'})
+                )
+
+                # 2️⃣ Negative
+                dfs['negative'] = (
+                    roc_df_perc_subjects_for_anat
+                    .query("direction == 'negative'")
+                    .dropna(subset=[anat_var, 'proportion_signed'])
+                    .groupby(['analysis_type', 'reward_group', area_level], as_index=False)
+                    [[anat_var, 'proportion_signed']]
+                    .mean()
+                    .rename(columns={'proportion_signed': 'y'})
+                )
+
+                # 3️⃣ All (⚠️ collapse duplicates!)
+                dfs['all'] = (
+                    roc_df_perc_subjects_for_anat
+                    .dropna(subset=[anat_var, 'proportion_all'])
+                    .groupby(['analysis_type', 'reward_group', area_level], as_index=False)
+                    [[anat_var, 'proportion_all']]
+                    .mean()
+                    .rename(columns={'proportion_all': 'y'})
+                )
+
+                # --- Loop over modes ---
+                for mode, df in dfs.items():
+
+                    analysis_types = df['analysis_type'].unique()
+
+                    n_cols = 4
+                    n_rows = int(np.ceil(len(analysis_types) / n_cols))
+
+                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), squeeze=False)
+
+                    plot_idx = 0
+                    all_areas = set()
+
+                    for analysis_type in analysis_types:
+
+                        ax = axes[plot_idx // n_cols, plot_idx % n_cols]
+                        subset = df[df['analysis_type'] == analysis_type]
+
+                        for group, color in palette.items():
+                            sub = subset[subset['reward_group'] == group]
+
+                            if len(sub) < 2:
+                                continue
+
+                            all_areas.update(sub[area_level])
+
+                            # Scatter
+                            sns.scatterplot(
+                                data=sub,
+                                x=anat_var,
+                                y='y',
+                                ax=ax,
+                                color=color,
+                                label=group,
+                                s=50,
+                                legend=False
+                            )
+
+                            # Regression
+                            sns.regplot(
+                                data=sub,
+                                x=anat_var,
+                                y='y',
+                                ax=ax,
+                                scatter=False,
+                                color=color,
+                                line_kws={'linewidth': 2},
+                            )
+
+                            # Correlation
+                            r, pval = pearsonr(sub[anat_var], sub['y'])
+
+                            ax.text(
+                                0.05, 0.95 - (0.08 if group == 'R-' else 0),
+                                f"{group}: r={r:.2f}, p={pval:.3f}",
+                                transform=ax.transAxes,
+                                color=color,
+                                fontsize=9,
+                                verticalalignment='top'
+                            )
+
+                            # Labels
+                            for _, row in sub.iterrows():
+                                ax.text(
+                                    row[anat_var],
+                                    row['y'],
+                                    row[area_level],
+                                    fontsize=7,
+                                    alpha=0.8
+                                )
+
+                        ax.set_title(f"{analysis_type}")
+                        if anat_var == 'avg_ipsi_corr':
+                            ax.set_xlabel('Connectivity from whisker-SSp')
+                        elif anat_var == 'cc_tc_ct_iterated':
+                            ax.set_xlabel('Hierarchy score')
+
+                        ax.set_ylabel('Fraction significant (%)')
+                        plotting_utils.remove_top_right_frame(ax)
+
+                        plot_idx += 1
+
+                    # Remove empty axes
+                    for j in range(plot_idx, n_rows * n_cols):
+                        fig.delaxes(axes[j // n_cols, j % n_cols])
+
+                    # Legend
+                    handles, labels = ax.get_legend_handles_labels()
+                    fig.legend(handles, labels, loc='upper right')
+
+                    # --- Add number of areas ---
+                    n_areas = len(all_areas)
+                    fig.suptitle(f"{mode} | N areas = {n_areas}", fontsize=14)
+                    plt.tight_layout()
+                    figname = f'roc_{anat_var}_{mode}_correlation'
+                    putils.save_figure_with_options(fig, ['png', 'pdf', 'eps'], figname, output_path)
+
+
+
     # --------------------------------
     # PERFORM NESTED PERMUTATION TESTS
     # --------------------------------
@@ -1146,8 +1501,8 @@ def main():
         #'increased_si_across_reward_group',
         #'change_si_across_reward_group',
         #'crossmodal_change_si_across_reward_group',
-        'run_reward_group_hypotheses'
-                   ]
+        #'run_reward_group_hypotheses'
+        ]
 
     if 'increased_si_across_reward_group' in tests_to_do:
         run_permutation_test_increase_reward_group(roc_df=roc_df)

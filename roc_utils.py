@@ -20,7 +20,7 @@ import NWB_reader_functions as nwb_reader
 import neural_utils
 
 
-N_WORKERS = 80
+N_WORKERS = 100
 
 def process_nwb_tables(nwb_file):
     """

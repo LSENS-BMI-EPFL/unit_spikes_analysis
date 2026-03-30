@@ -18,7 +18,6 @@ import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
 
-
 # Custom imports
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen
@@ -42,6 +41,7 @@ def process_single_nwb(nwb):
             return None
 
         unit_table = nwb_reader.get_unit_table(nwb)
+        unit_table['neuron_id'] = unit_table.index
         if unit_table is None or 'bc_label' not in unit_table.columns:
             return None
 
