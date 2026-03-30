@@ -13,9 +13,13 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-#import plotly.graph_objects as go
+import plotly.io as pio
+pio.orca.config.use_xvfb = False
+pio.orca.config.save()  # optional: save for future sessions
+import plotly.graph_objects as go
 from itertools import combinations, combinations_with_replacement
 
+import neural_utils
 # Import custom modules
 import neural_utils as nutils
 import NWB_reader_functions as nwb_reader
@@ -238,7 +242,9 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
 
     # Load neural data
     #trial_table, unit_table, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
-    unit_table = allen_utils.create_area_custom_column(unit_table)
+    unit_table = neural_utils.convert_electrode_group_object_to_columns(unit_table)
+    unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+    #unit_table = allen_utils.create_area_custom_column(unit_table)
     unit_table = unit_table[~unit_table['area_acronym_custom'].isin(allen_utils.get_excluded_areas())]
 
     # Add reward group info from trial table onto mouse_id
@@ -246,8 +252,7 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
     unit_table = unit_table.merge(mouse_reward_group, on='mouse_id', how='left')
 
 
-    MIN_NEURONS = 30
-
+    MIN_NEURONS = 10 #per mouse
 
     # Count neurons per area per mouse
     counts = unit_table.groupby(['mouse_id', 'reward_group','area_acronym_custom']).size().reset_index(name='n_neurons')
@@ -327,7 +332,8 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
     plotting_utils.save_figure_with_options(
                     figure=fig,
                     file_formats=['png', 'pdf', 'eps'],
-                    filename=figname, output_dir=save_path,
+                    filename=figname,
+        output_dir=save_path,
                     dark_background=False
     )
 

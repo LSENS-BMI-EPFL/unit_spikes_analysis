@@ -31,8 +31,8 @@ from noise_correl_utils import noise_correlation_analysis
 
 if __name__ == '__main__':
 
-    single_mouse = True
-    multiple_mice = False
+    single_mouse = False
+    multiple_mice = True
     joint_analysis = True
     expert_day = False
 
@@ -76,12 +76,12 @@ if __name__ == '__main__':
         OUTPUT_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'results')
         mouse_info_path = os.path.join(INFO_PATH, 'mouse_reference_weight.xlsx')
 
-    print(mouse_info_path)
     mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
     # Filter for usable mice
     mouse_info_df = mouse_info_df[
         (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) &
         (mouse_info_df['recording'] == 1)
         ]
@@ -97,8 +97,10 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB095'] #invalid NWB file 006, 038 ephys_exclude
+    excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095'] #invalid NWB file 006, 038 ephys_exclude
+    excluded_mice = []
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
+    #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
     #subject_ids = ['AB131', 'AB133', 'AB082']
@@ -126,6 +128,7 @@ if __name__ == '__main__':
 
     # Analyses to do
     analyses_to_do_single = ['roc_analysis']
+    analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing', 'area_pairs_describe']
 
 
     # --------------
@@ -135,6 +138,7 @@ if __name__ == '__main__':
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
+    print(nwb_list)
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=24)
 
     # ----------------------------------------
