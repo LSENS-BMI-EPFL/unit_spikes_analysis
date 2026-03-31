@@ -176,18 +176,30 @@ def _process_unit_extract(unit_row):
     spike_times = np.asarray(unit_row['spike_times'])
     rows = []
 
-    for event_type, context, event_times_arr, pre_start, pre_end, post_start, post_end in _worker_combo_data:
+    for (event_type, context, event_times_arr,
+         pre_start, pre_end, post_start, post_end,
+         bl_pre_start, bl_pre_end) in _worker_combo_data:
+
         # Vectorised: one searchsorted call per window edge → no Python loop over events
         pre_counts  = (np.searchsorted(spike_times, event_times_arr + pre_end,  side='right') -
                        np.searchsorted(spike_times, event_times_arr + pre_start, side='left')).tolist()
         post_counts = (np.searchsorted(spike_times, event_times_arr + post_end,  side='right') -
                        np.searchsorted(spike_times, event_times_arr + post_start, side='left')).tolist()
 
+        # Extended baseline window (None for events not used in baseline analyses)
+        if bl_pre_start is not None:
+            bl_pre_counts = (np.searchsorted(spike_times, event_times_arr + bl_pre_end, side='right') -
+                             np.searchsorted(spike_times, event_times_arr + bl_pre_start, side='left')).tolist()
+        else:
+            bl_pre_counts = None
+
         row = unit_row.to_dict()
         row['event']      = event_type
         row['context']    = context
         row['pre_spikes'] = pre_counts
         row['post_spikes'] = post_counts
+        row['baseline_pre_spikes'] = bl_pre_counts
+
         rows.append(row)
 
     return rows
@@ -212,11 +224,15 @@ def extract_spike_data(nwb_file):
 
     event_types = ['whisker', 'auditory', 'spontaneous_licks',
                    'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss']
+    baseline_events = {'whisker', 'auditory', 'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss', 'whisker', 'auditory'}
+
     time_windows = {
         'pre':               (-0.05,  -0.005),
         'post':              ( 0.005,  0.05),
         'spontaneous_licks': (-0.4,   -0.2,  0.0,  0.2),
+        'baseline_pre':      (-1.0, -0.005)
     }
+
 
     # ------------------------------------------------------------------
     # Build combo list serially — extract_event_times touches the NWB
@@ -242,8 +258,14 @@ def extract_spike_data(nwb_file):
                 pre_start, pre_end  = time_windows['pre']
                 post_start, post_end = time_windows['post']
 
+            if event_type in baseline_events:
+                bl_pre_start, bl_pre_end = time_windows['baseline_pre']
+            else:
+                bl_pre_start, bl_pre_end = None, None
+
             combo_data.append((event_type, context, event_times_arr,
-                                pre_start, pre_end, post_start, post_end))
+                               pre_start, pre_end, post_start, post_end,
+                               bl_pre_start, bl_pre_end))
 
     # ------------------------------------------------------------------
     # Parallelise over units; combo_data is loaded once per worker
@@ -413,11 +435,25 @@ def  select_spike_counts(unit_data, analysis_type):
         spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['post_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['post_spikes']
     elif analysis_type == 'baseline_choice':
-        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
-        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
     elif analysis_type == 'baseline_whisker_choice':
-        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['pre_spikes']
-        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+    elif analysis_type == 'baseline_pre_vs_post_learning':
+        spikes_1 = pd.concat([
+            unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_pre')][
+                'baseline_pre_spikes'],
+            unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_pre')][
+                'baseline_pre_spikes'],
+        ])
+        spikes_2 = pd.concat([
+            unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_post')][
+                'baseline_pre_spikes'],
+            unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_post')][
+                'baseline_pre_spikes'],
+        ])
+
     else: #TODO: hit. vs false alarm (per modality?) but aligned at jaw onset
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
@@ -463,7 +499,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     res_dict.update({'thresholds': thresholds})
 
     # Perform class-label permutations to obtain a null distribution for significance
-    n_permutations = 100
+    n_permutations = 1000
     permuted_aucs = []
     for _ in range(n_permutations):
         _, _, _, roc_auc_permut = calculate_roc(spikes_1, spikes_2, shuffle=True)
@@ -493,7 +529,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     debug = False
     if debug and is_significant:
 
-        # Subplots: 1. ROC curve 2. Histogram of permutted AUCs
+        # Subplots: 1. ROC curve 2. Histogram of permuted AUCs
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         for ax in axs:
             ax.spines['top'].set_visible(False)
@@ -575,6 +611,7 @@ def roc_analysis(nwb_file, results_path):
             'wh_vs_aud_active', 'wh_vs_aud_pre_vs_post_learning',
             'spontaneous_licks', 'choice', 'whisker_choice',
             'baseline_choice', 'baseline_whisker_choice',
+            'baseline_pre_vs_post_learning'
         ]
 
     neuron_ids = proc_unit_table['neuron_id'].unique()

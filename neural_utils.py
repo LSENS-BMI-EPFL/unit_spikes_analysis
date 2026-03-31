@@ -37,8 +37,8 @@ TRIAL_MAP = {
 def process_single_nwb(nwb):
     try:
         beh_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb)
-        if day != 0:
-            return None
+        #if day != 0:
+        #    return None
 
         unit_table = nwb_reader.get_unit_table(nwb)
         unit_table['neuron_id'] = unit_table.index

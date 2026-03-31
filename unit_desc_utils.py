@@ -13,10 +13,10 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import plotly.io as pio
-pio.orca.config.use_xvfb = False
-pio.orca.config.save()  # optional: save for future sessions
-import plotly.graph_objects as go
+#import plotly.io as pio
+#pio.orca.config.use_xvfb = True
+#pio.orca.config.save()  # optional: save for future sessions
+#import plotly.graph_objects as go
 from itertools import combinations, combinations_with_replacement
 
 import neural_utils
@@ -242,9 +242,7 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
 
     # Load neural data
     #trial_table, unit_table, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
-    unit_table = neural_utils.convert_electrode_group_object_to_columns(unit_table)
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
-    #unit_table = allen_utils.create_area_custom_column(unit_table)
     unit_table = unit_table[~unit_table['area_acronym_custom'].isin(allen_utils.get_excluded_areas())]
 
     # Add reward group info from trial table onto mouse_id
@@ -252,11 +250,12 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
     unit_table = unit_table.merge(mouse_reward_group, on='mouse_id', how='left')
 
 
-    MIN_NEURONS = 10 #per mouse
+    MIN_NEURONS = 5 #per mouse
 
     # Count neurons per area per mouse
     counts = unit_table.groupby(['mouse_id', 'reward_group','area_acronym_custom']).size().reset_index(name='n_neurons')
     area_order_count = counts.groupby('area_acronym_custom')['n_neurons'].sum().sort_values(ascending=True).index
+
     # Keep only areas with at least min_neurons for each mouse
     counts = counts[counts['n_neurons'] >= MIN_NEURONS]
     all_areas_valid = counts['area_acronym_custom'].unique()
@@ -276,12 +275,16 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
 
 
     # Sort areas by total number of mice with at least min_neurons
-    order_rplus = combined_matrix.iloc[0].sort_values(ascending=False).index
+    #order_rplus = combined_matrix.iloc[0].sort_values(ascending=False).index
+    rplus_counts = combined_matrix.where(
+        np.triu(np.ones(combined_matrix.shape, dtype=bool), k=0)
+    ).sum(axis=1).sort_values(ascending=False)
+    order_rplus = rplus_counts.index
     combined_matrix = combined_matrix.loc[order_rplus, order_rplus]
 
     # Mask creation for colors
-    mask_upper = np.tril(np.ones_like(combined_matrix, dtype=bool), k=-1)  # hide lower triangle
-    mask_lower = np.triu(np.ones_like(combined_matrix, dtype=bool), k=1)  # hide upper triangle
+    mask_upper = np.tril(np.ones_like(combined_matrix, dtype=bool), k=-1)  # hide upper triangle
+    mask_lower = np.triu(np.ones_like(combined_matrix, dtype=bool), k=1)  # hide lower triangle
 
     # Diagonal: number of mice with at least min_neurons for this area
     for area in all_areas_valid:
@@ -320,9 +323,10 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
     ax.tick_params(top=True, bottom=True, right=True, labeltop=True, labelbottom=True, labelright=True, labelleft=True, rotation=0)
     ax.set_xticks(np.arange(len(all_areas_valid)) + 0.5)
     ax.set_yticks(np.arange(len(all_areas_valid)) + 0.5)
-    ax.set_xticklabels(all_areas_valid, rotation=45, fontsize=5)
-    ax.set_yticklabels(all_areas_valid, rotation=0, fontsize=5)
-
+    #ax.set_xticklabels(all_areas_valid, rotation=45, fontsize=5)
+    #ax.set_yticklabels(all_areas_valid, rotation=0, fontsize=5)
+    ax.set_xticklabels(combined_matrix.columns, rotation=45, fontsize=5)
+    ax.set_yticklabels(combined_matrix.index, rotation=0, fontsize=5)
     # Save and show
     figname = 'unit_area_pairs_count_heatmap'
     save_path = os.path.join(output_path, figname)
@@ -372,11 +376,13 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
         cbar_kws={'label': 'R- mice', 'orientation': 'horizontal', 'pad': 0.02, 'shrink': 0.5}
     )
     plt.title(f'Number of area pairs (neurons ≥ {MIN_NEURONS}, mice ≥ 3)')
-    ax.tick_params(top=True, bottom=True, right=True, labeltop=True, labelbottom=True, labelright=True, rotation=0)
+    ax.tick_params(top=True, bottom=True, right=True, labeltop=True, labelbottom=True, labelright=True, labelleft=True, rotation=0)
     ax.set_xticks(np.arange(len(all_areas_valid)) + 0.5)
     ax.set_yticks(np.arange(len(all_areas_valid)) + 0.5)
-    ax.set_xticklabels(all_areas_valid, rotation=45, fontsize=5)
-    ax.set_yticklabels(all_areas_valid, rotation=0, fontsize=5)
+    ax.set_xticklabels(combined_matrix.columns, rotation=45, fontsize=5)
+    ax.set_yticklabels(combined_matrix.index, rotation=0, fontsize=5)
+    #ax.set_xticklabels(all_areas_valid, rotation=45, fontsize=5)
+    #ax.set_yticklabels(all_areas_valid, rotation=0, fontsize=5)
     plotting_utils.save_figure_with_options(
                     figure=fig,
                     file_formats=['png', 'pdf', 'eps'],
