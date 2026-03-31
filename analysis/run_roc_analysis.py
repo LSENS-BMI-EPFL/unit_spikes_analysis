@@ -30,7 +30,7 @@ import neural_utils
 import plotting_utils
 import plotting_utils as putils
 from roc_analysis_utils import *
-
+from selectivity_grid import plot_selectivity
 
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
@@ -898,7 +898,7 @@ def main():
     # PROCESS AND FILTER DATA
     # -----------------------
     print('Processing and filtering data...')
-    N_UNITS_MIN = 20                # minimum units per area (whole-dataset)
+    N_UNITS_MIN = 30                # minimum units per area (whole-dataset)
     N_MICE_PER_AREA_MIN = 3         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
@@ -937,24 +937,23 @@ def main():
     # -------------------------------------------------
     # COMPUTE PROPORTIONS OF SIGNIFICANT UNITS PER AREA
     # -------------------------------------------------
-    roc_df_perc = compute_prop_significant(roc_df, area_col='area_acronym_custom', per_subject=False)
+    #roc_df_perc = compute_prop_significant(roc_df, area_col='area_acronym_custom', per_subject=False)
     #roc_df_perc_custom = roc_df_perc[roc_df_perc.area_level=='area_acronym_custom']
     #roc_df_perc_ccf = roc_df_perc[roc_df_perc.area_level=='ccf_atlas_parent_acronym']
 
-    roc_df_perc_subjects = compute_prop_significant(roc_df, area_col='ccf_acronym_no_layer', per_subject=True)
+    #roc_df_perc_subjects = compute_prop_significant(roc_df, area_col='ccf_acronym_no_layer', per_subject=True)
     #roc_df_perc_subjects_custom =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='area_acronym_custom']
     #roc_df_perc_subjects_ccf =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='ccf_atlas_parent_acronym']
 
     # --------
     # SUMMARY
     # --------
-    plot_roc_grid=True
+    plot_roc_grid=False
     if plot_roc_grid:
         output_path = os.path.join(FIGURE_PATH, 'roc_summary_grid')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
-        from selectivity_grid import plot_selectivity
         area_to_group_dict = allen_utils.get_custom_area_groups_from_name()
         # use this dict else put in other
         roc_df['area_group']= None
@@ -965,6 +964,7 @@ def main():
 
         for reward_group in roc_df_perc_coarse.reward_group.unique():
             suffix = 'rplus' if reward_group=='R+' else 'rminus'
+            roc_df_sub = roc_df_perc_coarse[roc_df_perc_coarse.reward_group==reward_group]
 
             ROW_CONFIG = [
                 ('Whisker\nresponsive', 'Positive', 'Negative', 'whisker_active', 'positive', 'negative', '#E74C3C',
@@ -978,8 +978,8 @@ def main():
                 ('Spontaneous\nlicks', 'Positive', 'Negative', 'spontaneous_licks', 'positive', 'negative', '#E74C3C',
                  '#3498DB'),
             ]
-            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_{suffix}.pdf'))  # ring charts
-            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_{suffix}.pdf'))  # grouped vertical bars
+            plot_selectivity(roc_df_sub, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_{suffix}.pdf'))  # ring charts
+            plot_selectivity(roc_df_sub, row_config=ROW_CONFIG, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_{suffix}.pdf'))  # grouped vertical bars
 
             ROW_CONFIG_PASSIVE = [
                 ('Whisker\npre.', 'Positive', 'Negative', 'whisker_passive_pre', 'positive', 'negative', '#E74C3C',
@@ -993,105 +993,128 @@ def main():
                  '#3498DB'),
                 ('Auditory\npre-to-post', 'Positive', 'Negative', 'auditory_pre_vs_post_learning', 'positive', 'negative', '#E74C3C',
                  '#3498DB'),
+                ('Baseline\npre-to-post', 'Positive', 'Negative', 'baseline_pre_vs_post_learning', 'positive',
+                 'negative', '#E74C3C',
+                 '#3498DB'),
             ]
-            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_passive_{suffix}.pdf'))  # ring charts
-            plot_selectivity(roc_df_perc_coarse, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_passive_{suffix}.pdf'))  # grouped vertical bars
+            plot_selectivity(roc_df_sub, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='donut', savepath=os.path.join(output_path, f'roc_grid_donuts_passive_{suffix}.pdf'))  # ring charts
+            plot_selectivity(roc_df_sub, row_config=ROW_CONFIG_PASSIVE, brain_areas=area_groups, area_col='area_group', style='bar', savepath=os.path.join(output_path, f'roc_grid_bars_passive_{suffix}.pdf'))  # grouped vertical bars
 
 
     # --------
     # HEATMAPS
     # --------
-    plot_heatmaps = False
+    plot_heatmaps = True #TODO: could do a double heatmap for positive and negative directions (on same celle)
     if plot_heatmaps:
         output_path = os.path.join(FIGURE_PATH, 'roc_heatmaps')
         if not os.path.exists(output_path):
             os.makedirs(output_path)
 
+        print(len(roc_df))
+        roc_df_perc_subjects = compute_prop_significant(roc_df, area_col='area_acronym_custom', per_subject=True)
+        print(len(roc_df_perc_subjects))
+        print(roc_df_perc_subjects.columns)
+
         # Plot separately for each reward group
         for reward_group in roc_df_perc_subjects.reward_group.unique():
             for dir in ['positive','negative']:
 
-                subset = roc_df_perc_subjects[(roc_df_perc_subjects['reward_group'] == reward_group) & (roc_df_perc_subjects['direction']==dir)]
-
-                #dbug
-                fig, ax = plt.subplots()
-                subset_ex = subset[subset.analysis_type=='auditory_active']
-                sns.barplot(data=subset_ex, ax=ax, y='proportion_signed', x='area_acronym_custom')
-                #save
-                plotting_utils.save_figure_with_options(fig, ['png', 'pdf', 'svg'], f'{reward_group}_auditory_active_barplot', output_path)
-
-                # Averaged across mouse_id
-                subset = subset.groupby(['analysis_type', 'area_acronym_custom'], as_index=False)['proportion_signed'].mean()
-
-                dups = subset.duplicated(
-                    subset=['analysis_type', 'area_acronym_custom'],
-                    keep=False
-                )
-                print(subset[dups].sort_values(['analysis_type', 'area_acronym_custom']).head(100))
-
-                # Pivot for heatmap
-                heatmap_data = subset.pivot_table(index='analysis_type', columns='area_acronym_custom', values='proportion_signed',
-                                            aggfunc='mean')
-                heatmap_data = subset.pivot(index='analysis_type', columns='area_acronym_custom', values='proportion_signed').abs()
-
-                print(len(heatmap_data))
-                heatmap_data = heatmap_data.apply(pd.to_numeric, errors='coerce')
-                model_name_dict = {
+                active_analyses = {
                     'whisker_active': 'Whisker resp.',
                     'auditory_active': 'Auditory resp.',
                     'spontaneous_licks': 'Lick resp.',
-                    #'whisker_choice': 'Whisker choice',
                     'choice': 'Choice',
-                    #'baseline_choice': 'Baseline choice',
-                    #'baseline_whisker_choice': 'Baseline choice, whisker',
+                    'whisker_choice': 'Whisker choice',
+                    'baseline_choice': 'Baseline choice',
+                    'baseline_whisker_choice': 'Baseline choice, whisker',
                 }
+                passive_analyses = {
+                    'whisker_passive_pre': 'Whisker resp. pre-learning',
+                    'whisker_passive_post': 'Whisker resp. post-learning',
+                    'whisker_pre_vs_post_learning': 'Whisker modulated pre- vs. post-learning',
+                    'auditory_passive_pre': 'Auditory resp. pre-learning',
+                    'auditory_passive_post': 'Auditory resp. post-learning',
+                    'auditory_pre_vs_post_learning': 'Auditory modulated pre- vs. post-learning',
+                    'baseline_pre_vs_post_learning': 'Baseline modulated pre- vs. post-learning',
+                }
+                anal_collect = [active_analyses, passive_analyses]
+                for model_name_dict, period in zip(anal_collect, ['active', 'passive']):
+                    subset = roc_df_perc_subjects[(roc_df_perc_subjects['reward_group'] == reward_group)
+                                                  & (roc_df_perc_subjects['direction']==dir)
+                                & (roc_df_perc_subjects['analysis_type'].isin(model_name_dict.keys()))]
+                    print(len(subset))
 
-                # Rename rows
-                heatmap_data = heatmap_data.rename(index=model_name_dict)
-                # Order like in dict
-                heatmap_data = heatmap_data.reindex(model_name_dict.values())
+                    # Averaged across mouse_id
+                    subset = subset.groupby(['analysis_type', 'area_acronym_custom'], as_index=False)['proportion_signed'].mean()
 
-                # Order areas using allen_utils function
-                area_order = allen_utils.get_custom_area_order()
-                areas_present = [area for area in area_order if area in heatmap_data.columns]
-                heatmap_data = heatmap_data[areas_present]
+                    dups = subset.duplicated(
+                        subset=['analysis_type', 'area_acronym_custom'],
+                        keep=False
+                    )
+                    print(subset[dups].sort_values(['analysis_type', 'area_acronym_custom']).head(100))
 
-                # Plot
-                fig, ax = plt.subplots(figsize=(24, 6), dpi=500)
-                sns.heatmap(heatmap_data,
-                            ax=ax,
-                            annot=True,
-                            annot_kws={'fontsize':8},
-                            fmt='.1f',
-                            cmap='YlOrBr',
-                            vmin=5,
-                            vmax=60,
-                            cbar_kws={'label': 'Fraction significant units', 'shrink': 0.5, 'pad': 0.02,
-                                      'aspect': 20 * 0.5},  # default aspect is 20
-                            linewidths=0,
-                            )
-                # Update colorbar
-                cbar = ax.collections[0].colorbar
-                cbar.ax.tick_params(labelsize=12)
-                cbar.set_label('Percentage significant', fontsize=15)
+                    # Pivot for heatmap
+                    #heatmap_data = subset.pivot_table(index='analysis_type', columns='area_acronym_custom', values='proportion_signed',
+                    #                            aggfunc='mean')
+                    heatmap_data = subset.pivot(index='analysis_type', columns='area_acronym_custom', values='proportion_signed').abs()
 
-                ax.xaxis.tick_top()
-                ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=12)
-                ax.set_xlabel('')
-                #ax.set_ylabel('Encoding variables', fontsize=15)
+                    heatmap_data = heatmap_data.apply(pd.to_numeric, errors='coerce')
 
-                # Format y tick labels by removing underscores
-                ytick_labels = [label.get_text().replace('_', ' ') for label in ax.get_yticklabels()]
-                ax.set_yticklabels(ytick_labels, rotation=0, fontsize=12)
+                    # Rename rows
+                    heatmap_data = heatmap_data.rename(index=model_name_dict)
+                    heatmap_data = heatmap_data.reindex(model_name_dict.values())
 
-                plt.tight_layout()
+                    # Order areas using allen_utils function
+                    area_order = allen_utils.get_custom_area_order()
+                    areas_present = [area for area in area_order if area in heatmap_data.columns]
+                    heatmap_data = heatmap_data[areas_present]
 
-                # Save
-                figname = f'roc_significant_fraction_heatmap_{reward_group}_per_mouse_{dir}'
-                putils.save_figure_with_options(fig, ['png', 'pdf', 'eps'],
-                                                        figname,
-                                                        output_path,
-                                                        dark_background=False)
+                    # Plot
+                    import matplotlib.pyplot as plt
+                    import seaborn as sns
+                    fig, ax = plt.subplots(figsize=(24, 6), dpi=500)
+                    if dir == 'positive':
+                        cmap = sns.light_palette('#E74C3C', as_cmap=True)
+                    elif dir == 'negative':
+                        cmap = sns.light_palette('#3498DB', as_cmap=True)
+
+                    sns.heatmap(heatmap_data,
+                                ax=ax,
+                                annot=True,
+                                annot_kws={'fontsize':8},
+                                fmt='.1f',
+                                cmap=cmap,
+                                vmin=5,
+                                vmax=60,
+                                cbar_kws={'label': 'Fraction significant units', 'shrink': 0.5, 'pad': 0.02,
+                                          'aspect': 20 * 0.5},  # default aspect is 20
+                                linewidths=0,
+                                )
+                    # Update colorbar
+                    cbar = ax.collections[0].colorbar
+                    cbar.ax.tick_params(labelsize=12)
+                    cbar.set_label('Percentage significant', fontsize=15)
+
+                    ax.xaxis.tick_top()
+                    ax.set_xticklabels(ax.get_xticklabels(), rotation=60, fontsize=12)
+                    ax.set_xlabel('')
+                    ax.set_ylabel('')
+
+                    # Format y tick labels by removing underscores
+                    ytick_labels = [label.get_text().replace('_', ' ') for label in ax.get_yticklabels()]
+                    ax.set_yticklabels(ytick_labels, rotation=0, fontsize=12)
+
+                    plt.tight_layout()
+
+                    # Save
+                    figname = f'roc_significant_fraction_heatmap_{reward_group}_per_mouse_{dir}'
+                    output_path_dir = os.path.join(output_path, period)
+                    if not os.path.exists(output_path_dir):
+                        os.makedirs(output_path_dir)
+                    putils.save_figure_with_options(fig, ['png', 'pdf', 'eps'],
+                                                            figname,
+                                                            output_path_dir,
+                                                            dark_background=False)
 
 
     # ----------------------------------------
