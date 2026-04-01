@@ -14,9 +14,10 @@ import pathlib
 import pandas as pd
 
 from analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
+from analysis.roc_analysis_utils import load_roc_results
 from inflection.load_hmm_results import ROOT_PATH_AXEL
 #import NWB_reader_functions as nwb_reader
-#import allen_utils as allen_utils
+import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from unit_spike_report import generate_unit_spike_report
@@ -28,6 +29,8 @@ from unit_desc_utils import *
 
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
+
+from passive_psth_utils import run_passive_psths
 
 if __name__ == '__main__':
 
@@ -41,11 +44,13 @@ if __name__ == '__main__':
 
     hostname = socket.gethostname()
     if 'haas' in hostname:
+        N_WORKERS = 100
         ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
         ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWBFull')
         INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')  # temp before mounted
         OUTPUT_PATH = pathlib.Path(f'/mnt/lsens-analysis/{experimenter}/combined_results')
     else:
+        N_WORKERS=30
         ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWB_combined')
         ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
                                         'NWBFull')
@@ -102,8 +107,8 @@ if __name__ == '__main__':
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
-    #subject_ids = [f'AB{str(i).zfill(3)}' for i in range(116,158)] # ephys-aligned
-    #subject_ids = ['AB131', 'AB133', 'AB082']
+    #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
+    #subject_ids = ['AB162', 'AB164']
 
     print(f"Subject IDs to do: {subject_ids}")
 
@@ -125,10 +130,11 @@ if __name__ == '__main__':
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
     analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe'] #fix area pairs describe
     analyses_to_do_multi = ['striatal_type']
+    analyses_to_do_multi = ['passive_psths_prepost']
 
     # Analyses to do
     analyses_to_do_single = ['roc_analysis']
-    analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing', 'area_pairs_describe']
+    analyses_to_do_multi = ['passive_psths_prepost']
 
 
     # --------------
@@ -138,9 +144,8 @@ if __name__ == '__main__':
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
-    print(nwb_list)
-    trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=24)
-
+    trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
+    unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
     # ----------------------------------------
     # Perform analyses for each mouse NWB file
     # ----------------------------------------
@@ -200,4 +205,24 @@ if __name__ == '__main__':
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
             assign_rsu_vs_fsu(unit_table, OUTPUT_PATH)
+
+        if 'passive_psths_prepost' in analyses_to_do_multi:
+            print('Loading ROC data...')
+            roc_df = load_roc_results(OUTPUT_PATH, max_workers=N_WORKERS)
+            unit_table_mice = unit_table.mouse_id.unique()
+            roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
+
+            # Fix: correct for choice the direction, positive and negative are inverted
+            choice_analyses = [type for type in roc_df.analysis_type if 'choice' in type]
+            choice_mask = roc_df['analysis_type'].isin(choice_analyses)
+            # Invert direction for these rows (positive becomes negative and vice versa)
+            roc_df.loc[choice_mask, 'direction'] = roc_df.loc[choice_mask, 'direction'].replace(
+                {'positive': 'negative', 'negative': 'positive'})
+
+            # Merge on mouse_id,session_id,,neuron_id
+            roc_cols_to_keep = ['mouse_id', 'session_id', 'neuron_id', 'analysis_type', 'selectivity', 'direction', 'p_value_to_show', 'significant']
+            unit_table = unit_table.merge(roc_df[roc_cols_to_keep], on=['mouse_id','session_id','neuron_id'], how='left')
+
+            # Run
+            run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 

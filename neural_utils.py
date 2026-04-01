@@ -37,8 +37,14 @@ TRIAL_MAP = {
 def process_single_nwb(nwb):
     try:
         beh_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb)
-        #if day != 0:
-        #    return None
+        sess_meta = nwb_reader.get_session_metadata(nwb)
+        session_type = sess_meta.get('session_type')
+
+        if day != 0:
+            return None
+        if 'ephys' not in session_type:
+            print('Skipping non-ephys session')
+            return None
 
         unit_table = nwb_reader.get_unit_table(nwb)
         unit_table['neuron_id'] = unit_table.index
@@ -50,7 +56,6 @@ def process_single_nwb(nwb):
 
         mouse_id = nwb_reader.get_mouse_id(nwb)
         session_id = nwb_reader.get_session_id(nwb)
-        sess_meta = nwb_reader.get_session_metadata(nwb)
         reward_group = sess_meta.get('wh_reward')
 
         trial_table['mouse_id'] = mouse_id
@@ -66,7 +71,8 @@ def process_single_nwb(nwb):
 
 
         unit_table['mouse_id'] = mouse_id
-        unit_table['session_id'] = mouse_id
+        unit_table['session_id'] = session_id
+        unit_table['reward_group'] = reward_group
         unit_table['day'] = day
         unit_table['behaviour'] = beh_type
 
