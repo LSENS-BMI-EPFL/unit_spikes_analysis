@@ -36,6 +36,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import matplotlib
+
+from notebooks.roc_analysis_new import values_minus
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
@@ -55,9 +58,9 @@ DEFAULT_CFG: dict[str, Any] = dict(
     artifact_win_s      = (-0.005, 0.005),   # [-5 ms, +3 ms]
     whisker_trial_label = "whisker_trial",
     fr_threshold_hz  = 1,
-    max_neurons  = 2000, # max neurons matrix
+    max_neurons  = 4000, # max neurons matrix
     # ROC filter
-    roc_analysis_type = ["whisker_passive_pre","whisker_passive_post","whisker_active"],
+    roc_analysis_type = None,
     roc_sig_col       = "p-val",
     roc_sig_thr       = 0.05,
     roc_order_col     = "selectivity",
@@ -317,8 +320,8 @@ def _plot_neuron(uid: Any, unit_row: pd.Series, trials_mouse: pd.DataFrame,
             # PSTH
             ax_p.plot(psth, mean, color=color, lw=1.5)
             #ax_p.fill_between(psth, mean - sem, mean + sem, color=color, alpha=0.25)
-            ax_p.axvline(0, color="k", lw=0.8, ls="--")
-            ax_p.axhline(0, color="k", lw=0.5, ls=":", alpha=0.5)
+            ax_p.axvline(0, color="k", lw=0.5, ls="--", alpha=0.5)
+            ax_p.axhline(0, color="k", lw=0.5, ls="--", alpha=0.5)
             ax_p.set_xlabel("Time (s)", fontsize=12)
             if col == 0:
                 ax_p.set_ylabel("FR (spks/sec)", fontsize=12)
@@ -479,7 +482,8 @@ def _plot_group_matrix(z_pre: np.ndarray, z_post: np.ndarray,
         ax.axvline(0, color="k", lw=0.8, ls="--")
         ax.set_xlabel("Time (s)")
         ax.set_title(CONTEXT_LABELS.get(ctx, ctx))
-        plt.colorbar(im, ax=ax, label="z-score", shrink=0.2, pad=0.04, aspect=20)
+        vmax = 0.5
+        plt.colorbar(im, ax=ax, label="z-score", shrink=0.2, pad=0.04, aspect=20, vmin=-vmax, vmax=vmax)
 
         # Make all fonts
         ax.tick_params(labelsize=10)
@@ -508,6 +512,8 @@ def build_and_plot_group_matrices(reward_group: int,
     passive_pre | passive_post side by side, each z-scored independently.
     Row order: descending passive_pre selectivity, applied to passive_post.
     """
+    assert units_rg.index.is_unique, "units_rg index has duplicates — reset_index() before calling"
+
     out_dir.mkdir(parents=True, exist_ok=True)
     rng      = np.random.default_rng(42)
     unit_ids = units_rg.index.tolist()
@@ -598,8 +604,12 @@ def run_passive_psths(units: pd.DataFrame,
     units['firing_rate'] = units['firing_rate'].astype(float)
     #units = units[(units.bc_label=='good') & (units.firing_rate > 2)]
 
-    # roc_analysis_type may be a single str or a list
-    analysis_types = cfg["roc_analysis_type"]
+    # roc_analysis_type may be a single str or a list or None
+    if cfg["roc_analysis_type"] == None:
+        analysis_types = units['analysis_type'].unique()
+    else:
+        analysis_types = cfg["roc_analysis_type"]
+
     if isinstance(analysis_types, str):
         analysis_types = [analysis_types]
 
