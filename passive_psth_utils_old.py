@@ -54,7 +54,7 @@ DEFAULT_CFG: dict[str, Any] = dict(
     # whisker artefact replacement window (seconds, relative to start_time)
     artifact_win_s      = (-0.005, 0.005),   # [-5 ms, +3 ms]
     whisker_trial_label = "whisker_trial",
-    fr_threshold_hz  = 1,
+    fr_threshold_hz  = 2,
     max_neurons  = 2000, # max neurons matrix
     # ROC filter
     roc_analysis_type = ["whisker_passive_pre","whisker_passive_post","whisker_active"],
@@ -180,7 +180,7 @@ def _replace_artifact(spikes_rel: np.ndarray,
     return np.sort(outside)
 
 
-def spikes_around_events_old(spike_times: np.ndarray,
+def spikes_around_events(spike_times: np.ndarray,
                          event_times: np.ndarray,
                          t_pre: float, t_post: float,
                          is_whisker: bool = False,
@@ -196,20 +196,6 @@ def spikes_around_events_old(spike_times: np.ndarray,
         if is_whisker:
             rel = _replace_artifact(rel, t_pre, t_post, art_lo, art_hi, rng)
         raster.append(rel)
-    return raster
-
-def spikes_around_events(spike_times, event_times, t_pre, t_post,
-                               is_whisker=False, artifact_win_s=(-0.005,0.003), rng=None):
-    if rng is None:
-        rng = np.random.default_rng()
-    lo = event_times - t_pre
-    hi = event_times + t_post
-    i_lo = np.searchsorted(spike_times, lo)
-    i_hi = np.searchsorted(spike_times, hi, side='right')
-    raster = [spike_times[i_lo[i]:i_hi[i]] - event_times[i] for i in range(len(event_times))]
-    if is_whisker:
-        art_lo, art_hi = artifact_win_s
-        raster = [_replace_artifact(r, t_pre, t_post, art_lo, art_hi, rng) for r in raster]
     return raster
 
 
@@ -396,26 +382,6 @@ def _process_mouse(mouse_id: str,
 
 # ── group population matrix ───────────────────────────────────────────────────
 
-def _zscore_one_neuron(uid: Any, units: pd.DataFrame,
-                       event_times: np.ndarray,
-                       t_pre: float, t_post: float,
-                       bin_ms: float, sigma_ms: float,
-                       n_bins: int,
-                       is_whisker: bool,
-                       artifact_win_s: tuple,
-                       ) -> np.ndarray:
-    """Compute z-scored PSTH trace for one neuron. Called in parallel."""
-    if len(event_times) == 0:
-        return np.zeros(n_bins)
-    st     = get_spike_times(units.loc[uid])
-    rng    = np.random.default_rng()          # independent RNG per thread
-    raster = spikes_around_events(
-        st, event_times, t_pre, t_post,
-        is_whisker=is_whisker, artifact_win_s=artifact_win_s, rng=rng,
-    )
-    return zscore_for_matrix(raster, t_pre, t_post, bin_ms, sigma_ms)
-
-
 def _build_context_matrix(unit_ids: list, units: pd.DataFrame,
                           trials: pd.DataFrame, context: str, trial_type: str,
                           cfg: dict, rng: np.random.Generator,
@@ -423,10 +389,6 @@ def _build_context_matrix(unit_ids: list, units: pd.DataFrame,
     """
     Z-score matrix for one (context, trial_type) across all mice in the group.
     Each neuron is z-scored independently using its own baseline trials.
-
-    Speedups vs naive loop:
-    - trial mask computed once outside the neuron loop
-    - neurons processed in parallel with joblib threads
 
     Returns
     -------
@@ -436,24 +398,26 @@ def _build_context_matrix(unit_ids: list, units: pd.DataFrame,
     dt    = cfg["bin_ms"] / 1000
     bins  = np.arange(-cfg["t_pre"], cfg["t_post"] + dt, dt)
     t_ctr = bins[:-1] + dt / 2
-    n_bins     = len(t_ctr)
     is_whisker = (trial_type == cfg["whisker_trial_label"])
 
-    # pre-filter trials once — same set for every neuron
-    mask        = (
-        (trials[cfg["context_col"]]    == context) &
-        (trials[cfg["trial_type_col"]] == trial_type)
-    )
-    event_times = trials.loc[mask, cfg["align_col"]].to_numpy()
-
-    rows = Parallel(n_jobs=cfg["n_jobs"], prefer="threads")(
-        delayed(_zscore_one_neuron)(
-            uid, units, event_times,
-            cfg["t_pre"], cfg["t_post"], cfg["bin_ms"], cfg["sigma_ms"],
-            n_bins, is_whisker, cfg["artifact_win_s"],
+    rows = []
+    for uid in unit_ids:
+        st   = get_spike_times(units.loc[uid])
+        mask = (
+            (trials[cfg["context_col"]]    == context) &
+            (trials[cfg["trial_type_col"]] == trial_type)
         )
-        for uid in unit_ids
-    )
+        tidx = trials.index[mask]
+        if len(tidx) == 0:
+            rows.append(np.zeros(len(t_ctr))); continue
+
+        event_times = trials.loc[tidx, cfg["align_col"]].to_numpy()
+        raster = spikes_around_events(
+            st, event_times, cfg["t_pre"], cfg["t_post"],
+            is_whisker=is_whisker, artifact_win_s=cfg["artifact_win_s"], rng=rng,
+        )
+        rows.append(zscore_for_matrix(raster, cfg["t_pre"], cfg["t_post"],
+                                      cfg["bin_ms"], cfg["sigma_ms"]))
     return np.vstack(rows), t_ctr
 
 def _plot_group_matrix(z_pre: np.ndarray, z_post: np.ndarray,
@@ -532,40 +496,20 @@ def build_and_plot_group_matrices(reward_group: int,
             float(units_rg.loc[uid, ocol]) if ocol in units_rg.columns else 0.0
             for uid in unit_ids
         ])
-        #sorted_idx = np.argsort(np.abs(sel_vals))
-        #bins = np.array_split(sorted_idx, max_n)
-        #rng_sel = np.random.default_rng(0)
-        #unit_ids = [unit_ids[rng_sel.choice(b)] for b in bins if len(b) > 0]
-        top_idx = np.argsort(np.abs(sel_vals))[::-1][:max_n]
-        unit_ids = [unit_ids[i] for i in top_idx]
-        print(f"  selectivity filter: kept top {len(unit_ids)} by |{ocol}|")
-
-    #order_vals = [float(units_rg.loc[uid, ocol]) if ocol in units_rg.columns else 0.0
-    #              for uid in unit_ids]
-    #sort_idx = np.argsort(order_vals)[::-1]
+        sorted_idx = np.argsort(sel_vals)
+        bins = np.array_split(sorted_idx, max_n)
+        rng_sel = np.random.default_rng(0)
+        unit_ids = [unit_ids[rng_sel.choice(b)] for b in bins if len(b) > 0]
 
     order_vals = [float(units_rg.loc[uid, ocol]) if ocol in units_rg.columns else 0.0
                   for uid in unit_ids]
     sort_idx = np.argsort(order_vals)[::-1]
 
-    # build all (trial_type × context) matrices in parallel, then plot
-    combos = [(tt, ctx)
-              for tt  in cfg["trial_types"]
-              for ctx in ("passive_pre", "passive_post")]
-
-    matrices = Parallel(n_jobs=20, prefer="processes")(
-        delayed(_build_context_matrix)(
-            unit_ids, units_rg, trials_rg, ctx, tt, cfg, np.random.default_rng(42))
-        for tt, ctx in combos
-    )
-    # reorganise results: {trial_type: {context: (z, t_ctr)}}
-    results = {}
-    for (tt, ctx), (z, t_ctr) in zip(combos, matrices):
-        results.setdefault(tt, {})[ctx] = (z, t_ctr)
-
     for trial_type in cfg["trial_types"]:
-        z_pre,  t_ctr = results[trial_type]["passive_pre"]
-        z_post, _     = results[trial_type]["passive_post"]
+        z_pre,  t_ctr = _build_context_matrix(
+            unit_ids, units_rg, trials_rg, "passive_pre",  trial_type, cfg, rng)
+        z_post, _     = _build_context_matrix(
+            unit_ids, units_rg, trials_rg, "passive_post", trial_type, cfg, rng)
         _plot_group_matrix(z_pre, z_post, t_ctr, sort_idx,
                            trial_type, reward_group, cfg, out_dir)
 
