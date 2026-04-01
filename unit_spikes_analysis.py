@@ -108,7 +108,8 @@ if __name__ == '__main__':
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
-    #subject_ids = ['AB162', 'AB164']
+    #subject_ids = ['AB162', 'AB131', 'AB164']
+    #subject_ids = subject_ids[::3]
 
     print(f"Subject IDs to do: {subject_ids}")
 
@@ -209,6 +210,7 @@ if __name__ == '__main__':
         if 'passive_psths_prepost' in analyses_to_do_multi:
             print('Loading ROC data...')
             roc_df = load_roc_results(OUTPUT_PATH, max_workers=N_WORKERS)
+            print('ROC types', roc_df.analysis_type.unique())
             unit_table_mice = unit_table.mouse_id.unique()
             roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
 
