@@ -103,6 +103,44 @@ def fdr_bh(pvals, fdr=0.05):
 
 
 def filter_process_data(data_df, n_units_min=20, n_mice_per_area_min=3, keep_shared=True):
+    data_df = data_df.copy()
+
+    group_cols = ['analysis_type', 'area_acronym_custom']
+
+    # Step 1: filter by total unit count per (analysis_type, area)
+    area_counts = data_df.groupby(group_cols).size().rename('n_units')
+    valid = area_counts[area_counts >= n_units_min].reset_index()[group_cols]
+    data_df = data_df.merge(valid, on=group_cols)
+    print(f"After unit count filter: {len(data_df)} rows")
+
+    # Step 2: filter by number of mice per (analysis_type, area)
+    mouse_counts = data_df.groupby(group_cols)['mouse_id'].nunique().rename('n_mice')
+    valid = mouse_counts[mouse_counts >= n_mice_per_area_min].reset_index()[group_cols]
+    data_df = data_df.merge(valid, on=group_cols)
+    print(f"After mice-per-area filter: {len(data_df)} rows")
+
+    # Step 3: optionally restrict to areas shared across reward groups,
+    #         evaluated per analysis_type
+    if keep_shared:
+        shared = (
+            data_df.groupby(group_cols)['reward_group']
+            .nunique()
+            .rename('n_groups')
+            .reset_index()
+        )
+        n_groups = data_df['reward_group'].nunique()
+        valid = shared[shared['n_groups'] == n_groups][group_cols]
+        data_df = data_df.merge(valid, on=group_cols)
+        print(f"After shared-areas filter: {len(data_df)} rows")
+
+    # Summary
+    for at, grp in data_df.groupby('analysis_type'):
+        areas = grp['area_acronym_custom'].unique()
+        print(f"  {at}: {len(areas)} areas")
+
+    return data_df
+
+def filter_process_data_old(data_df, n_units_min=20, n_mice_per_area_min=3, keep_shared=True):
     """
     Filter input dataframe of results based on criteria.
     :param data_df: input dataframe with ROC results

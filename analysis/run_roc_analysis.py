@@ -852,6 +852,7 @@ def main():
     print('Loading ROC data...')
     data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
     roc_df = load_roc_results(data_path_axel, max_workers=n_workers)
+    roc_df = roc_df[roc_df.selectivity<0]
     unit_table_mice = unit_table.mouse_id.unique()
     roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
 
@@ -892,14 +893,13 @@ def main():
 
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
-    print(roc_df.columns)
 
     # -----------------------
     # PROCESS AND FILTER DATA
     # -----------------------
     print('Processing and filtering data...')
-    N_UNITS_MIN = 30                # minimum units per area (whole-dataset)
-    N_MICE_PER_AREA_MIN = 3         # minimum mice per area
+    N_UNITS_MIN = 50                # minimum units per area (whole-dataset)
+    N_MICE_PER_AREA_MIN = 5         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
 
@@ -944,6 +944,20 @@ def main():
     #roc_df_perc_subjects = compute_prop_significant(roc_df, area_col='ccf_acronym_no_layer', per_subject=True)
     #roc_df_perc_subjects_custom =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='area_acronym_custom']
     #roc_df_perc_subjects_ccf =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='ccf_atlas_parent_acronym']
+
+    # --------
+    # PERMANOVA
+    # --------
+    from stat_utils import run_proportion_permanova
+    per_cond, interaction = run_proportion_permanova(
+        roc_df,
+        area_col="area_acronym_custom",
+        value_col="proportion_all",
+        n_permutations=1000,
+    )
+    print(per_cond)
+    print(interaction)
+
 
     # --------
     # SUMMARY
@@ -1042,7 +1056,6 @@ def main():
                     subset = roc_df_perc_subjects[(roc_df_perc_subjects['reward_group'] == reward_group)
                                                   & (roc_df_perc_subjects['direction']==dir)
                                 & (roc_df_perc_subjects['analysis_type'].isin(model_name_dict.keys()))]
-                    print(len(subset))
 
                     # Averaged across mouse_id
                     subset = subset.groupby(['analysis_type', 'area_acronym_custom'], as_index=False)['proportion_signed'].mean()

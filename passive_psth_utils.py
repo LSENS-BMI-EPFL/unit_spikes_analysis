@@ -37,7 +37,7 @@ import numpy as np
 import pandas as pd
 import matplotlib
 
-from notebooks.roc_analysis_new import values_minus
+#from notebooks.roc_analysis_new import values_minus
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -472,6 +472,7 @@ def _plot_group_matrix(z_pre: np.ndarray, z_post: np.ndarray,
     fig, (ax_pre, ax_post) = plt.subplots(1, 2, figsize=(6, 10), dpi=400, sharey=True)
 
     vmax   = np.nanpercentile(np.abs(np.concatenate([z_pre, z_post])), 98)
+    vmax = 0.5
     extent = [t_ctr[0], t_ctr[-1], n_units, 0]
 
     for ax, z, ctx in ((ax_pre, z_pre, "passive_pre"), (ax_post, z_post, "passive_post")):
@@ -482,8 +483,7 @@ def _plot_group_matrix(z_pre: np.ndarray, z_post: np.ndarray,
         ax.axvline(0, color="k", lw=0.8, ls="--")
         ax.set_xlabel("Time (s)")
         ax.set_title(CONTEXT_LABELS.get(ctx, ctx))
-        vmax = 0.5
-        plt.colorbar(im, ax=ax, label="z-score", shrink=0.2, pad=0.04, aspect=20, vmin=-vmax, vmax=vmax)
+        plt.colorbar(im, ax=ax, label="z-score", shrink=0.2, pad=0.04, aspect=20)
 
         # Make all fonts
         ax.tick_params(labelsize=10)
@@ -623,6 +623,7 @@ def run_passive_psths(units: pd.DataFrame,
     units_sig   = filter_roc(units, cfg_neurons)
     if units_sig.empty:
         print("[abort] no significant units for neuron figures"); return
+
     plot_single_neurons=False
     if plot_single_neurons:
 
@@ -648,6 +649,16 @@ def run_passive_psths(units: pd.DataFrame,
         )
 
     # ── population matrices — once per analysis_type ──────────────────────────
+    analysis_types = ['whisker_pre_vs_post_learning',
+           'auditory_passive_pre',          'auditory_passive_post',
+                'auditory_active',  'auditory_pre_vs_post_learning',
+          'wh_vs_aud_passive_pre',         'wh_vs_aud_passive_post',
+               'wh_vs_aud_active', 'wh_vs_aud_pre_vs_post_learning',
+              'spontaneous_licks',                         'choice',
+                 'whisker_choice',                'baseline_choice',
+        'baseline_whisker_choice',  'baseline_pre_vs_post_learning']
+    print('todo:', analysis_types)
+
     for analysis_type in analysis_types:
         print(f"\nBuilding matrices: {analysis_type}")
         cfg_mat   = {**cfg, "roc_analysis_type": analysis_type}
