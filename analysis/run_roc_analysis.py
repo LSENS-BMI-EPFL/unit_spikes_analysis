@@ -852,7 +852,7 @@ def main():
     print('Loading ROC data...')
     data_path_axel = os.path.join(DATA_PATH, 'Axel_Bisi', 'combined_results')
     roc_df = load_roc_results(data_path_axel, max_workers=n_workers)
-    roc_df = roc_df[roc_df.selectivity<0]
+    #roc_df = roc_df[roc_df.selectivity>0]
     unit_table_mice = unit_table.mouse_id.unique()
     roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
 
@@ -898,8 +898,8 @@ def main():
     # PROCESS AND FILTER DATA
     # -----------------------
     print('Processing and filtering data...')
-    N_UNITS_MIN = 50                # minimum units per area (whole-dataset)
-    N_MICE_PER_AREA_MIN = 5         # minimum mice per area
+    N_UNITS_MIN = 20                # minimum units per area (whole-dataset)
+    N_MICE_PER_AREA_MIN = 10         # minimum mice per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
 
 
@@ -948,15 +948,28 @@ def main():
     # --------
     # PERMANOVA
     # --------
-    from stat_utils import run_proportion_permanova
-    per_cond, interaction = run_proportion_permanova(
-        roc_df,
-        area_col="area_acronym_custom",
-        value_col="proportion_all",
-        n_permutations=1000,
-    )
-    print(per_cond)
-    print(interaction)
+    #from stat_utils import run_proportion_permanova, plot_permanova_results
+    #per_cond, interaction = run_proportion_permanova(roc_df,area_col="area_acronym_custom",value_col="proportion_all",n_permutations=1000,)
+    #print(per_cond)
+    #print(interaction)
+    #fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, interaction)
+    #fig.savefig("permanova_results.pdf", bbox_inches="tight")
+
+    from stat_utils_new import run_proportion_permanova, plot_permanova_results
+    # unweighted (default, identical to before)
+    per_cond, inter = run_proportion_permanova(roc_df, area_col="area_acronym_custom")
+    fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=False)
+    permanova_path = os.path.join(FIGURE_PATH, 'permanova')
+    os.makedirs(permanova_path, exist_ok=True)
+    permanova_fig_path = os.path.join(FIGURE_PATH, 'permanova', 'permanova_results.pdf')
+    fig.savefig(permanova_fig_path, bbox_inches="tight")
+    # weighted by neuron count per mouse per area
+    per_cond, inter = run_proportion_permanova(roc_df, area_col="area_acronym_custom", weighted=True)
+    fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=True)
+    permanova_fig_path = os.path.join(FIGURE_PATH, 'permanova', 'permanova_results_weighted.pdf')
+    fig.savefig(permanova_fig_path, bbox_inches="tight")
+    print('plotted')
+
 
 
     # --------

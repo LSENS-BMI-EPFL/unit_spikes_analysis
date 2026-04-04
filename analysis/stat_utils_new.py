@@ -1,7 +1,12 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
+from scipy import stats
 from roc_analysis_utils import compute_prop_significant
 
+
+# ── metric computation ────────────────────────────────────────────────────────
 
 def compute_mean_selectivity(
     roc_df: pd.DataFrame,
@@ -35,151 +40,22 @@ def compute_delta_proportion_sel(
     area_col: str,
     pre_label: str,
     post_label: str,
-    value_col: str = "mean_abs_selectivity",   # updated default
 ) -> pd.DataFrame:
     """
     Compute post - pre delta in mean absolute selectivity per mouse × area.
+
+    Returns
+    -------
+    DataFrame: mouse_id, reward_group, <area_col>, delta
     """
     metric_df = compute_mean_selectivity(roc_df, area_col)
+    value_col = "mean_abs_selectivity"
 
     idx = ["mouse_id", "reward_group", area_col]
 
     pre  = (metric_df[metric_df["analysis_type"] == pre_label]
             .set_index(idx)[value_col].rename("pre"))
     post = (metric_df[metric_df["analysis_type"] == post_label]
-            .set_index(idx)[value_col].rename("post"))
-
-    delta = (
-        pd.concat([pre, post], axis=1)
-        .dropna(subset=["pre", "post"])
-        .assign(delta=lambda x: x["post"] - x["pre"])
-        .drop(columns=["pre", "post"])
-        .reset_index()
-    )
-
-    return delta
-# ── test statistic ────────────────────────────────────────────────────────────
-
-def _group_diff_statistic(
-    delta_df: pd.DataFrame,
-    area_col: str,
-    group_col: str = "reward_group",
-) -> float:
-    """
-    For each area, compute the difference in mean Δ between groups
-    using only mice recorded in that area. Average the absolute
-    differences across areas.
-
-    This naturally handles missing areas: each area contributes its
-    own group contrast from whichever mice have it.
-    """
-    diffs = []
-    for area, grp in delta_df.groupby(area_col):
-        group_means = grp.groupby(group_col)["delta"].mean()
-        if len(group_means) < 2:
-            continue  # area only present in one group — skip
-        diffs.append(group_means.iloc[0] - group_means.iloc[1])
-
-    if len(diffs) == 0:
-        return np.nan
-
-    # mean squared difference across areas (sign-insensitive, more powerful)
-    return np.mean(np.array(diffs) ** 2)
-
-
-# ── permutation test ──────────────────────────────────────────────────────────
-
-def _hierarchical_permutation_test(
-    delta_df: pd.DataFrame,
-    area_col: str,
-    group_col: str = "reward_group",
-    n_perm: int    = 9999,
-    seed: int      = 42,
-) -> dict:
-    """
-    Permutation test on the per-area group difference statistic.
-
-    Permutation is at the mouse level: reward_group labels are shuffled
-    across mice, preserving each mouse's full area vector. This respects
-    the hierarchical structure (areas nested within mice) and naturally
-    handles each mouse having a unique set of recorded areas.
-
-    Parameters
-    ----------
-    delta_df : long-format DataFrame with columns
-               mouse_id, reward_group, <area_col>, delta
-    n_perm   : number of permutations
-
-    Returns
-    -------
-    dict with observed statistic, p-value, and null distribution
-    """
-    rng = np.random.default_rng(seed)
-
-    # mouse-level group label lookup (one row per mouse)
-    mouse_groups = (
-        delta_df[["mouse_id", group_col]]
-        .drop_duplicates()
-        .set_index("mouse_id")[group_col]
-    )
-    mouse_ids = mouse_groups.index.to_numpy()
-    labels    = mouse_groups.to_numpy()
-
-    n_mice  = len(mouse_ids)
-    groups  = np.unique(labels)
-    n_per_group = {g: (labels == g).sum() for g in groups}
-
-    print(f"  mice: {n_mice}  |  "
-          + "  ".join(f"{g}: n={n}" for g, n in n_per_group.items()))
-    print(f"  areas: {delta_df[area_col].nunique()}")
-
-    # observed statistic
-    stat_obs = _group_diff_statistic(delta_df, area_col, group_col)
-
-    # permutation null: shuffle group labels across mice
-    stat_null = np.empty(n_perm)
-    for i in range(n_perm):
-        perm_labels = rng.permutation(labels)
-        perm_map    = dict(zip(mouse_ids, perm_labels))
-
-        delta_perm = delta_df.copy()
-        delta_perm[group_col] = delta_perm["mouse_id"].map(perm_map)
-
-        stat_null[i] = _group_diff_statistic(delta_perm, area_col, group_col)
-
-    p_value = (np.sum(stat_null >= stat_obs) + 1) / (n_perm + 1)
-
-    return {
-        "statistic": stat_obs,
-        "p_value":   p_value,
-        "n_mice":    n_mice,
-        "n_perm":    n_perm,
-        "null_dist": stat_null,   # keep for plotting
-    }
-
-
-# ── delta computation (unchanged) ─────────────────────────────────────────────
-
-def compute_delta_proportion(
-    roc_df: pd.DataFrame,
-    area_col: str,
-    pre_label: str,
-    post_label: str,
-    value_col: str = "proportion_all",
-) -> pd.DataFrame:
-    prop_df = compute_prop_significant(roc_df, area_col, per_subject=True)
-
-    prop_df = (
-        prop_df
-        .drop_duplicates(subset=["mouse_id", "reward_group", "analysis_type", area_col])
-        [["mouse_id", "reward_group", "analysis_type", area_col, value_col]]
-    )
-
-    idx = ["mouse_id", "reward_group", area_col]
-
-    pre  = (prop_df[prop_df["analysis_type"] == pre_label]
-            .set_index(idx)[value_col].rename("pre"))
-    post = (prop_df[prop_df["analysis_type"] == post_label]
             .set_index(idx)[value_col].rename("post"))
 
     return (
@@ -191,13 +67,193 @@ def compute_delta_proportion(
     )
 
 
+# ── weights ───────────────────────────────────────────────────────────────────
+
+def _compute_area_weights(
+    roc_df: pd.DataFrame,
+    area_col: str,
+    pre_label: str,
+    post_label: str,
+    group_col: str = "reward_group",
+) -> pd.Series:
+    """
+    Compute per-area weights as the harmonic mean of per-group mean neuron
+    counts per mouse, averaged over pre and post analysis_types.
+
+    Weight reflects how reliably the per-mouse mean selectivity is estimated
+    in each area: areas with many neurons per mouse in both groups get high
+    weight; areas where one group has very few neurons per mouse get low weight
+    (harmonic mean is sensitive to imbalance).
+
+    Returns
+    -------
+    pd.Series indexed by area, normalised so weights sum to 1.
+    """
+    subset = roc_df[roc_df["analysis_type"].isin([pre_label, post_label])]
+
+    # neuron count per mouse × area × analysis_type
+    counts = (
+        subset
+        .groupby(["mouse_id", group_col, area_col, "analysis_type"])
+        .size()
+        .reset_index(name="n_neurons")
+    )
+
+    # average neuron count per mouse over pre and post, then average over mice
+    # within each group × area to get mean neurons per mouse per group per area
+    mean_per_mouse = (
+        counts
+        .groupby(["mouse_id", group_col, area_col])["n_neurons"]
+        .mean()                              # average over pre/post per mouse
+        .reset_index()
+        .groupby([group_col, area_col])["n_neurons"]
+        .mean()                              # average over mice per group
+        .reset_index()
+    )
+
+    def harmonic_mean(x):
+        if (x == 0).any() or len(x) < 2:
+            return 0.0
+        return len(x) / np.sum(1.0 / x)
+
+    weights = (
+        mean_per_mouse
+        .groupby(area_col)["n_neurons"]
+        .apply(harmonic_mean)
+        .rename("weight")
+    )
+
+    total = weights.sum()
+    if total > 0:
+        weights = weights / total
+
+    return weights
+
+
+# ── test statistic ────────────────────────────────────────────────────────────
+
+def _group_diff_statistic(
+    delta_df: pd.DataFrame,
+    area_col: str,
+    group_col: str = "reward_group",
+    weights: pd.Series = None,
+) -> float:
+    """
+    Mean (weighted) squared group difference in Δ across areas.
+
+    For each area, compute (mean_delta_R+ - mean_delta_R-)^2 using only
+    mice recorded in that area. Average across areas, optionally weighted
+    by per-area neuron count reliability.
+
+    Parameters
+    ----------
+    weights : pd.Series indexed by area (from _compute_area_weights).
+              If None, all areas are weighted equally (unweighted test).
+    """
+    diffs  = []
+    w_used = []
+
+    for area, grp in delta_df.groupby(area_col):
+        group_means = grp.groupby(group_col)["delta"].mean()
+        if len(group_means) < 2:
+            continue   # area present in only one group — skip
+
+        if weights is not None:
+            if area not in weights.index or weights[area] == 0:
+                continue
+            w_used.append(weights[area])
+
+        diffs.append(group_means.iloc[0] - group_means.iloc[1])
+
+    if len(diffs) == 0:
+        return np.nan
+
+    diffs = np.array(diffs)
+
+    if weights is not None:
+        w = np.array(w_used)
+        w = w / w.sum()          # re-normalise over contributing areas
+        return np.sum(w * diffs ** 2)
+    else:
+        return np.mean(diffs ** 2)
+
+
+# ── permutation test ──────────────────────────────────────────────────────────
+
+def _hierarchical_permutation_test(
+    delta_df: pd.DataFrame,
+    area_col: str,
+    group_col: str = "reward_group",
+    n_perm: int    = 9999,
+    seed: int      = 42,
+    weights: pd.Series = None,
+) -> dict:
+    """
+    Hierarchical permutation test on the per-area group difference statistic.
+
+    Group labels (reward_group) are permuted at the mouse level, preserving
+    each mouse's full area vector. This respects the nested structure and
+    handles mice with unique sets of recorded areas.
+
+    Parameters
+    ----------
+    delta_df : long-format DataFrame: mouse_id, reward_group, <area_col>, delta
+    weights  : optional per-area weights from _compute_area_weights.
+               If None, all areas contribute equally (unweighted).
+
+    Returns
+    -------
+    dict: statistic, p_value, n_mice, n_perm, null_dist, weighted
+    """
+    rng = np.random.default_rng(seed)
+
+    mouse_groups = (
+        delta_df[["mouse_id", group_col]]
+        .drop_duplicates()
+        .set_index("mouse_id")[group_col]
+    )
+    mouse_ids = mouse_groups.index.to_numpy()
+    labels    = mouse_groups.to_numpy()
+    n_mice    = len(mouse_ids)
+    groups    = np.unique(labels)
+    n_per_group = {g: (labels == g).sum() for g in groups}
+
+    weighted_str = "weighted" if weights is not None else "unweighted"
+    print(f"  [{weighted_str}] mice: {n_mice}  |  "
+          + "  ".join(f"{g}: n={n}" for g, n in n_per_group.items()))
+    print(f"  areas: {delta_df[area_col].nunique()}")
+
+    stat_obs = _group_diff_statistic(delta_df, area_col, group_col, weights)
+
+    stat_null = np.empty(n_perm)
+    for i in range(n_perm):
+        perm_labels           = rng.permutation(labels)
+        perm_map              = dict(zip(mouse_ids, perm_labels))
+        delta_perm            = delta_df.copy()
+        delta_perm[group_col] = delta_perm["mouse_id"].map(perm_map)
+        stat_null[i]          = _group_diff_statistic(
+            delta_perm, area_col, group_col, weights
+        )
+
+    p_value = (np.sum(stat_null >= stat_obs) + 1) / (n_perm + 1)
+
+    return {
+        "statistic": stat_obs,
+        "p_value":   p_value,
+        "n_mice":    n_mice,
+        "n_perm":    n_perm,
+        "null_dist": stat_null,
+        "weighted":  weights is not None,
+    }
+
+
 # ── full pipeline ─────────────────────────────────────────────────────────────
 
 def run_proportion_permanova(
     roc_df: pd.DataFrame,
     area_col: str,
-    value_col: str  = "proportion_all",
-    n_permutations: int = 9999,
+    n_permutations: int = 1000,
+    weighted: bool      = False,
 ) -> tuple[pd.DataFrame, dict]:
     """
     Hierarchical permutation test on learning-induced selectivity change.
@@ -209,43 +265,54 @@ def run_proportion_permanova(
     -----
     1. Permutation test on whisker Δ   — expect group effect
     2. Permutation test on auditory Δ  — expect null
-    3. Permutation test on whisker Δ − auditory Δ per mouse  — interaction
+    3. Permutation test on whisker Δ − auditory Δ  — interaction
+
+    Parameters
+    ----------
+    weighted : if True, weight each area by the harmonic mean of per-group
+               mean neuron counts per mouse. Areas with more reliable
+               selectivity estimates (more neurons) contribute more to the
+               test statistic.
     """
     conditions = {
         "whisker":  ("whisker_passive_pre",  "whisker_passive_post"),
         "auditory": ("auditory_passive_pre", "auditory_passive_post"),
     }
 
-    deltas = {}
+    # ── deltas and (optionally) weights ──────────────────────────────────
+    deltas  = {}
+    weights = {}
     for name, (pre, post) in conditions.items():
         print(f"\nComputing Δ for '{name}'  ({pre} → {post})")
-        value_col = 'mean_abs_selectivity'
-        deltas[name] = compute_delta_proportion_sel(
-            roc_df, area_col, pre, post, value_col
-        )
+        deltas[name] = compute_delta_proportion_sel(roc_df, area_col, pre, post)
+        if weighted:
+            weights[name] = _compute_area_weights(roc_df, area_col, pre, post)
+            print(f"  weights computed for {len(weights[name])} areas")
+        else:
+            weights[name] = None
 
     # ── per-condition ─────────────────────────────────────────────────────
+    weighted_str = "weighted " if weighted else ""
     print("\n" + "=" * 65)
-    print("Hierarchical permutation test per condition  (factor = reward_group)")
-    print(f"  metric : {value_col}")
+    print(f"Hierarchical {weighted_str}permutation test  (factor = reward_group)")
     print("=" * 65)
 
     rows = []
     for name, delta_df in deltas.items():
         print(f"\n  condition = {name}")
         res = _hierarchical_permutation_test(
-            delta_df, area_col, n_perm=n_permutations
+            delta_df, area_col,
+            n_perm  = n_permutations,
+            weights = weights[name],
         )
-        rows.append({"condition": name, **{k: v for k, v in res.items()
-                                           if k != "null_dist"}})
+        rows.append({"condition": name,
+                     **{k: v for k, v in res.items() if k != "null_dist"}})
         print(f"    statistic : {res['statistic']:.4f}")
         print(f"    p-value   : {res['p_value']:.4f}")
 
     per_cond = pd.DataFrame(rows).set_index("condition")
 
     # ── interaction ───────────────────────────────────────────────────────
-    # Build contrast per mouse × area: whisker Δ − auditory Δ
-    # Only mice and areas present in both conditions contribute
     print("\n" + "=" * 65)
     print("Interaction test  (reward_group × condition)")
     print("  contrast : whisker Δ − auditory Δ  per mouse × area")
@@ -259,9 +326,23 @@ def run_proportion_permanova(
     merged["delta"] = merged["delta_w"] - merged["delta_a"]
     contrast_df = merged[["mouse_id", "reward_group", area_col, "delta"]]
 
+    # interaction weights: harmonic mean of per-condition weights per area
+    if weighted:
+        w_w = weights["whisker"]
+        w_a = weights["auditory"]
+        common = w_w.index.intersection(w_a.index)
+        w_interaction = (
+            2 * w_w[common] * w_a[common] / (w_w[common] + w_a[common])
+        )
+        w_interaction = w_interaction / w_interaction.sum()
+    else:
+        w_interaction = None
+
     print(f"\n  condition = whisker − auditory")
     inter_res = _hierarchical_permutation_test(
-        contrast_df, area_col, n_perm=n_permutations
+        contrast_df, area_col,
+        n_perm  = n_permutations,
+        weights = w_interaction,
     )
     inter = {
         "contrast": "whisker − auditory",
@@ -274,25 +355,21 @@ def run_proportion_permanova(
 
     return per_cond, inter
 
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-import matplotlib.gridspec as gridspec
-from scipy import stats
 
+# ── plotting ──────────────────────────────────────────────────────────────────
 
 def plot_permanova_results(
     roc_df: pd.DataFrame,
     area_col: str,
     per_cond: pd.DataFrame,
     interaction: dict,
-    value_col: str = "mean_abs_selectivity",
     figsize: tuple = (14, 10),
+    weighted: bool = False,
 ) -> plt.Figure:
     """
     Four-panel summary figure for the hierarchical permutation results.
 
-    Panel A : per-area Δ per group, whisker condition (strip + mean ± SEM)
+    Panel A : per-area Δ per group, whisker condition (mean ± SEM)
     Panel B : per-area Δ per group, auditory condition
     Panel C : per-area contrast (whisker Δ − auditory Δ) per group
     Panel D : null distributions with observed statistic for all three tests
@@ -302,13 +379,14 @@ def plot_permanova_results(
         "auditory": ("auditory_passive_pre", "auditory_passive_post"),
     }
 
-    # ── compute deltas ────────────────────────────────────────────────────
-    deltas = {}
+    # ── compute deltas and weights ────────────────────────────────────────
+    deltas  = {}
+    weights = {}
     for name, (pre, post) in conditions.items():
-        value_col='mean_abs_selectivity'
-        deltas[name] = compute_delta_proportion_sel(roc_df, area_col, pre, post, value_col)
+        deltas[name]  = compute_delta_proportion_sel(roc_df, area_col, pre, post)
+        weights[name] = (_compute_area_weights(roc_df, area_col, pre, post)
+                         if weighted else None)
 
-    # per-area group means for A and B
     def area_group_means(delta_df):
         return (
             delta_df.groupby([area_col, "reward_group"])["delta"]
@@ -318,49 +396,56 @@ def plot_permanova_results(
 
     means = {name: area_group_means(d) for name, d in deltas.items()}
 
-    # contrast per mouse × area
     merged = deltas["whisker"].merge(
         deltas["auditory"],
         on=["mouse_id", "reward_group", area_col],
         suffixes=("_w", "_a"),
     )
     merged["delta"] = merged["delta_w"] - merged["delta_a"]
-    contrast_means  = area_group_means(merged.rename(columns={"delta": "delta"}))
+    contrast_df     = merged[["mouse_id", "reward_group", area_col, "delta"]]
+    contrast_means  = area_group_means(contrast_df)
+
+    if weighted:
+        w_w = weights["whisker"]
+        w_a = weights["auditory"]
+        common = w_w.index.intersection(w_a.index)
+        w_interaction = (
+            2 * w_w[common] * w_a[common] / (w_w[common] + w_a[common])
+        )
+        w_interaction = w_interaction / w_interaction.sum()
+    else:
+        w_interaction = None
 
     # ── layout ────────────────────────────────────────────────────────────
     fig = plt.figure(figsize=figsize)
     gs  = gridspec.GridSpec(2, 3, figure=fig, hspace=0.45, wspace=0.35)
 
-    ax_w    = fig.add_subplot(gs[0, 0])   # whisker per-area
-    ax_a    = fig.add_subplot(gs[0, 1])   # auditory per-area
-    ax_int  = fig.add_subplot(gs[0, 2])   # contrast per-area
-    ax_null = fig.add_subplot(gs[1, :])   # null distributions
+    ax_w    = fig.add_subplot(gs[0, 0])
+    ax_a    = fig.add_subplot(gs[0, 1])
+    ax_int  = fig.add_subplot(gs[0, 2])
+    ax_null = fig.add_subplot(gs[1, :])
 
-    colors  = {"R+": "forestgreen", "R-": "crimson"}
-    jitter  = {"R+": -0.15, "R+": 0.15}
-    x_pos   = {"R+": 0, "R-": 1}
+    colors = {"R+": "#E8593C", "R-": "#3B8BD4"}
 
     # ── helper: per-area strip plot ───────────────────────────────────────
     def plot_per_area(ax, means_df, title, ylabel, p_value):
-        areas = sorted(means_df[area_col].unique())
-        n_areas = len(areas)
+        areas    = sorted(means_df[area_col].unique())
         area_idx = {a: i for i, a in enumerate(areas)}
 
         for _, row in means_df.iterrows():
-            xi = area_idx[row[area_col]]
-            g  = row["reward_group"]
+            xi  = area_idx[row[area_col]]
+            g   = row["reward_group"]
             jit = -0.15 if g == "R+" else 0.15
             ax.errorbar(
                 xi + jit, row["mean"], yerr=row["sem"],
-                fmt="o", color=colors[g], markersize=4,
+                fmt="o", color=colors[g], markersize=5,
                 capsize=2, linewidth=1, elinewidth=0.8,
                 label=g if xi == 0 else "_nolegend_",
             )
 
-        # connect group means per area with a thin line
         for area in areas:
-            xi   = area_idx[area]
-            sub  = means_df[means_df[area_col] == area].set_index("reward_group")
+            xi  = area_idx[area]
+            sub = means_df[means_df[area_col] == area].set_index("reward_group")
             if "R+" in sub.index and "R-" in sub.index:
                 ax.plot(
                     [xi - 0.15, xi + 0.15],
@@ -369,49 +454,36 @@ def plot_permanova_results(
                 )
 
         ax.axhline(0, color="black", linewidth=0.6, linestyle="--", alpha=0.4)
-        ax.set_xticks(range(n_areas))
+        ax.set_xticks(range(len(areas)))
         ax.set_xticklabels(areas, rotation=45, ha="right", fontsize=7)
         ax.set_ylabel(ylabel, fontsize=9)
-        ax.set_title(
-            f"{title}\np = {p_value:.3f}",
-            fontsize=9,
-        )
+        ax.set_title(f"{title}\np = {p_value:.3f}", fontsize=9, fontweight="bold")
         ax.legend(fontsize=7, frameon=False)
         ax.spines[["top", "right"]].set_visible(False)
 
-    # ── panels A, B, C ───────────────────────────────────────────────────
-    plot_per_area(
-        ax_w, means["whisker"],
-        title  = "Whisker condition",
-        ylabel = "Δ mean |selectivity|\n(post − pre)",
-        p_value= per_cond.loc["whisker", "p_value"],
-    )
-    plot_per_area(
-        ax_a, means["auditory"],
-        title  = "Auditory condition",
-        ylabel = "Δ mean |selectivity|\n(post − pre)",
-        p_value= per_cond.loc["auditory", "p_value"],
-    )
-    plot_per_area(
-        ax_int, contrast_means,
-        title  = "Interaction\n(whisker − auditory)",
-        ylabel = "Δ whisker − Δ auditory",
-        p_value= interaction["p_value"],
-    )
+    plot_per_area(ax_w,   means["whisker"],  "Whisker condition",
+                  "Δ mean |selectivity|\n(post − pre)",
+                  per_cond.loc["whisker",  "p_value"])
+    plot_per_area(ax_a,   means["auditory"], "Auditory condition",
+                  "Δ mean |selectivity|\n(post − pre)",
+                  per_cond.loc["auditory", "p_value"])
+    plot_per_area(ax_int, contrast_means,    "Interaction\n(whisker − auditory)",
+                  "Δ whisker − Δ auditory",
+                  interaction["p_value"])
 
     # ── panel D: null distributions ───────────────────────────────────────
-    # re-run tests to get null distributions (or pass them in if cached)
     null_colors = {
-        "whisker":   "#E8593C",
-        "auditory":  "#3B8BD4",
+        "whisker":     "#E8593C",
+        "auditory":    "#3B8BD4",
         "interaction": "#888780",
     }
     test_results = {
-        "whisker":    _hierarchical_permutation_test(deltas["whisker"],  area_col),
-        "auditory":   _hierarchical_permutation_test(deltas["auditory"], area_col),
+        "whisker":  _hierarchical_permutation_test(
+            deltas["whisker"],  area_col, weights=weights["whisker"]),
+        "auditory": _hierarchical_permutation_test(
+            deltas["auditory"], area_col, weights=weights["auditory"]),
         "interaction": _hierarchical_permutation_test(
-            merged[[area_col, "mouse_id", "reward_group", "delta"]], area_col
-        ),
+            contrast_df, area_col, weights=w_interaction),
     }
     p_vals = {
         "whisker":     per_cond.loc["whisker",  "p_value"],
@@ -419,7 +491,6 @@ def plot_permanova_results(
         "interaction": interaction["p_value"],
     }
 
-    offset = {"whisker": -0.25, "auditory": 0, "interaction": 0.25}
     for name, res in test_results.items():
         null  = res["null_dist"]
         obs   = res["statistic"]
@@ -428,21 +499,23 @@ def plot_permanova_results(
         kde   = stats.gaussian_kde(null)
         ax_null.plot(kde_x, kde(kde_x), color=color, linewidth=1.5,
                      label=f"{name}  (p={p_vals[name]:.3f})")
-        ax_null.axvline(obs, color=color, linewidth=1.5,
-                        linestyle="--", alpha=0.9)
-        ax_null.fill_between(
-            kde_x, kde(kde_x),
-            where=kde_x >= obs,
-            color=color, alpha=0.15,
-        )
+        ax_null.axvline(obs, color=color, linewidth=1.5, linestyle="--", alpha=0.9)
+        ax_null.fill_between(kde_x, kde(kde_x),
+                             where=kde_x >= obs, color=color, alpha=0.15)
 
+    weighted_str = " (weighted)" if weighted else ""
     ax_null.set_xlabel("Test statistic  (mean squared group difference)", fontsize=9)
     ax_null.set_ylabel("Density", fontsize=9)
-    ax_null.set_title("Permutation null distributions\n(dashed = observed statistic)", fontsize=9)
+    ax_null.set_title(
+        f"Permutation null distributions{weighted_str}\n(dashed = observed statistic)",
+        fontsize=9, fontweight="bold"
+    )
     ax_null.legend(fontsize=8, frameon=False)
     ax_null.spines[["top", "right"]].set_visible(False)
 
-    fig.suptitle("Learning-induced selectivity change by reward group",
-                 fontsize=11, y=1.01)
+    fig.suptitle(
+        f"Learning-induced selectivity change by reward group{weighted_str}",
+        fontsize=11, fontweight="bold", y=1.01
+    )
 
     return fig
