@@ -249,7 +249,7 @@ def _hierarchical_permutation_test(
 
 # ── full pipeline ─────────────────────────────────────────────────────────────
 
-def run_proportion_permanova(
+def run_proportion_hierarchical_test(
     roc_df: pd.DataFrame,
     area_col: str,
     n_permutations: int = 1000,
@@ -358,7 +358,7 @@ def run_proportion_permanova(
 
 # ── plotting ──────────────────────────────────────────────────────────────────
 
-def plot_permanova_results(
+def plot_hierarchical_test_results(
     roc_df: pd.DataFrame,
     area_col: str,
     per_cond: pd.DataFrame,

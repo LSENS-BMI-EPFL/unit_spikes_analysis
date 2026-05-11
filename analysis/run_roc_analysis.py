@@ -945,9 +945,9 @@ def main():
     #roc_df_perc_subjects_custom =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='area_acronym_custom']
     #roc_df_perc_subjects_ccf =  roc_df_perc_subjects[roc_df_perc_subjects.area_level=='ccf_atlas_parent_acronym']
 
-    # --------
-    # PERMANOVA
-    # --------
+    # ----------------------------
+    # HIERARCHICAL PERMUTATION TEST
+    # -----------------------------
     #from stat_utils import run_proportion_permanova, plot_permanova_results
     #per_cond, interaction = run_proportion_permanova(roc_df,area_col="area_acronym_custom",value_col="proportion_all",n_permutations=1000,)
     #print(per_cond)
@@ -955,20 +955,19 @@ def main():
     #fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, interaction)
     #fig.savefig("permanova_results.pdf", bbox_inches="tight")
 
-    from stat_utils_new import run_proportion_permanova, plot_permanova_results
+    from stat_utils_new import run_proportion_hierarchical_test, plot_hierarchical_test_results
     # unweighted (default, identical to before)
-    per_cond, inter = run_proportion_permanova(roc_df, area_col="area_acronym_custom")
-    fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=False)
-    permanova_path = os.path.join(FIGURE_PATH, 'permanova')
-    os.makedirs(permanova_path, exist_ok=True)
-    permanova_fig_path = os.path.join(FIGURE_PATH, 'permanova', 'permanova_results.pdf')
-    fig.savefig(permanova_fig_path, bbox_inches="tight")
+    per_cond, inter = run_proportion_hierarchical_test(roc_df, area_col="area_acronym_custom")
+    fig = plot_hierarchical_test_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=False)
+    hierarchical_test_path = os.path.join(FIGURE_PATH, 'hierarchical_test')
+    os.makedirs(hierarchical_test_path, exist_ok=True)
+    hierarchical_test_fig_path = os.path.join(FIGURE_PATH, 'hierarchical_test', 'hierarchical_test_results.pdf')
+    fig.savefig(hierarchical_test_fig_path, bbox_inches="tight")
     # weighted by neuron count per mouse per area
-    per_cond, inter = run_proportion_permanova(roc_df, area_col="area_acronym_custom", weighted=True)
-    fig = plot_permanova_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=True)
-    permanova_fig_path = os.path.join(FIGURE_PATH, 'permanova', 'permanova_results_weighted.pdf')
-    fig.savefig(permanova_fig_path, bbox_inches="tight")
-    print('plotted')
+    per_cond, inter = run_proportion_hierarchical_test(roc_df, area_col="area_acronym_custom", weighted=True)
+    fig = plot_hierarchical_test_results(roc_df, "area_acronym_custom", per_cond, inter, weighted=True)
+    hierarchical_test_fig_path = os.path.join(FIGURE_PATH, 'hierarchical_test', 'hierarchical_test_results_weighted.pdf')
+    fig.savefig(hierarchical_test_fig_path, bbox_inches="tight")
 
 
 

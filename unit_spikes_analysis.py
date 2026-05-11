@@ -20,6 +20,9 @@ from inflection.load_hmm_results import ROOT_PATH_AXEL
 import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
+
+from noise_unit_detection import identify_noise_units
+
 from unit_spike_report import generate_unit_spike_report
 # from raster_utils import plot_rasters
 from roc_utils import roc_analysis
@@ -31,6 +34,7 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
+from rastermap_passive_psth import run_rastermap_psth
 
 if __name__ == '__main__':
 
@@ -127,7 +131,7 @@ if __name__ == '__main__':
     analyses_to_do_single = ['task_modulation']
 
     # Multi-mouse analyses
-    analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type']
+    analyses_to_do_multi = ['rsu_vs_fsu', 'striatal_type', 'noise_unit_detection']
     analyses_to_do_multi = ['unit_labels_processing', 'unit_anat_processing']
     analyses_to_do_multi = ['unit_anat_processing', 'area_pairs_describe'] #fix area pairs describe
     analyses_to_do_multi = ['striatal_type']
@@ -135,7 +139,8 @@ if __name__ == '__main__':
 
     # Analyses to do
     analyses_to_do_single = ['roc_analysis']
-    analyses_to_do_multi = ['passive_psths_prepost']
+    analyses_to_do_multi = ['noise_unit_detection']
+    analyses_to_do_multi = ['passive_rastermap_psth']
 
 
     # --------------
@@ -145,8 +150,10 @@ if __name__ == '__main__':
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
+    #nwb_list = nwb_list[::20]
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+
     # ----------------------------------------
     # Perform analyses for each mouse NWB file
     # ----------------------------------------
@@ -201,16 +208,17 @@ if __name__ == '__main__':
         if 'unit_anat_processing' in analyses_to_do_multi:
             unit_anat_describe(unit_table, OUTPUT_PATH)
 
+        if 'noise_unit_detection' in analyses_to_do_multi:
+            identify_noise_units(unit_table, trial_table, output_path=OUTPUT_PATH)
+
         if 'area_pairs_describe' in analyses_to_do_multi:
             plot_number_area_pairs_heatmap(trial_table, unit_table, OUTPUT_PATH)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            assign_rsu_vs_fsu(unit_table, OUTPUT_PATH)
+            classify_rsu_vs_fsu(unit_table, OUTPUT_PATH)
 
         if 'passive_psths_prepost' in analyses_to_do_multi:
-            print('Loading ROC data...')
             roc_df = load_roc_results(OUTPUT_PATH, max_workers=N_WORKERS)
-            print('ROC types', roc_df.analysis_type.unique())
             unit_table_mice = unit_table.mouse_id.unique()
             roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
 
@@ -228,3 +236,6 @@ if __name__ == '__main__':
             # Run
             run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 
+
+        if 'passive_rastermap_psth' in analyses_to_do_multi:
+            run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)

@@ -12,6 +12,7 @@ import math
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from sklearn.mixture import GaussianMixture
 from scipy import signal, optimize, stats
 
@@ -19,6 +20,8 @@ from scipy import signal, optimize, stats
 import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 import plotting_utils as plutils
+
+import diptest   # pip install diptest
 
 
 def process_area_acronyms(unit_table):
@@ -65,7 +68,7 @@ def process_area_acronyms(unit_table):
 
 
 
-def classify_rsu_vs_fsu(unit_data, output_path):
+def classify_rsu_vs_fsu_original(unit_data, output_path):
     """
     This function assigns the unit type (FSU or RSU) to each unit using area-specific
     distributions obtained from a list of NWB files.
@@ -100,7 +103,7 @@ def classify_rsu_vs_fsu(unit_data, output_path):
         ap_durations = np.array(area_data['duration'].values)
 
         # Fit Gaussian Mixture Model
-        means_init_array = np.array([0.2, 0.6]).reshape(-1,1)
+        means_init_array = np.array([0.25, 0.65]).reshape(-1,1)
         gmm = GaussianMixture(n_components=2,
                               covariance_type='diag',
                               tol=1e-4,
@@ -146,8 +149,8 @@ def classify_rsu_vs_fsu(unit_data, output_path):
             print(f'Could not find root/AP duration threshold in range {lower_lim}-{upper_lim} ms. Skipping...')
 
         # Plot results
-        debug = True
-        if debug:
+        plot_distributions = True
+        if plot_distributions:
             color_dict = {'rsu':'#ff8783', 'fsu':'#83b1ff'}
             fig,ax=plt.subplots(1,1,figsize=(5,5),dpi=300)
             ax.spines['top'].set_visible(False)
@@ -183,7 +186,7 @@ def classify_rsu_vs_fsu(unit_data, output_path):
             ax.axvline(x=threshold, color='k', linestyle='--', label=r'threshold$={:.2f}$'.format(threshold))
             ax.set_title(f'{area} AP durations', fontsize=15)
             ax.set_xlabel('AP peak-to-trough duration (ms)', fontsize=15)
-            ax.set_xlim(0,1.3)
+            #ax.set_xlim(0,1.3)
             ax.set_ylabel('Count', fontsize=15)
             ax.legend(frameon=False, fontsize=8, loc='upper right')
             plt.show()
@@ -224,6 +227,771 @@ def classify_rsu_vs_fsu(unit_data, output_path):
         mouse_results.to_csv(os.path.join(mouse_output_path, file_name))
 
     print('RSU vs FSU assignment done and saved for each mouse.')
+    return
+
+
+def _fit_gmm_robust(
+    ap_durations: np.ndarray,
+    data_min: float,
+    data_max: float,
+    n_restarts: int = 20,
+    min_weight: float = 0.05,
+    random_seed: int = 0,
+) -> tuple[GaussianMixture, bool]:
+    """
+    Fit a 2-component GMM, rejecting degenerate solutions where either:
+      - a component mean falls outside [data_min, data_max], or
+      - a component weight < min_weight (ghost component).
+
+    Randomises the initialisation percentiles each attempt to escape
+    bad local optima. Falls back to the best-likelihood valid fit found,
+    or the last fit if none were valid.
+
+    Returns
+    -------
+    gmm : best valid GaussianMixture found (or last attempt)
+    fit_valid : bool — True if a valid solution was found
+    """
+    rng = np.random.RandomState(random_seed)
+    best_gmm = None
+    best_score = -np.inf
+
+    for attempt in range(n_restarts):
+        # Randomise FSU anchor in the lower quartile,
+        # RSU anchor in the upper half — always data-driven
+        p_fsu = float(np.percentile(ap_durations, rng.uniform(10, 35)))
+        p_rsu = float(np.percentile(ap_durations, rng.uniform(55, 85)))
+        means_init = np.array([[p_fsu], [p_rsu]])
+
+        gmm = GaussianMixture(
+            n_components=2,
+            covariance_type='full',
+            tol=1e-5,
+            reg_covar=1e-3,
+            max_iter=500,
+            init_params='kmeans',
+            n_init=3,
+            means_init=means_init,
+            weights_init=[0.2, 0.8],
+            random_state=int(rng.randint(0, 10000)),
+        )
+        gmm.fit(ap_durations.reshape(-1, 1))
+
+        if not gmm.converged_:
+            continue
+
+        mu = gmm.means_.ravel()
+        w  = gmm.weights_
+
+        means_in_range = bool(np.all((mu >= data_min) & (mu <= data_max)))
+        weights_ok     = bool(np.all(w >= min_weight))
+
+        if means_in_range and weights_ok:
+            score = gmm.score(ap_durations.reshape(-1, 1))
+            if score > best_score:
+                best_score = score
+                best_gmm   = gmm
+
+    if best_gmm is not None:
+        return best_gmm, True
+
+    # No valid fit found — return last attempt and flag it
+    print(
+        f'    WARNING: No valid GMM fit found after {n_restarts} restarts. '
+        f'Returning last attempt — thresholds unreliable.'
+    )
+    return gmm, False
+
+
+def classify_rsu_vs_fsu(
+    unit_data,
+    output_path,
+    threshold_mode: str = 'single',
+    uncertainty_percentile: float = 80.0,
+):
+    """
+    Classify cortical units as FSU / RSU (and optionally 'unassigned') using
+    area-specific Gaussian Mixture Model fits on AP peak-to-trough duration.
+
+    Parameters
+    ----------
+    unit_data : pd.DataFrame
+        Unit table across all mice.  Must contain at minimum:
+        'duration', 'bc_label', 'ccf_acronym', 'area_acronym_custom',
+        'mouse_id', 'session_id', 'behaviour', 'day',
+        'electrode_group', 'cluster_id'.
+    output_path : str
+        Root path for saving figures and per-mouse CSV files.
+    threshold_mode : {'single', 'double'}
+        'single' — one threshold at the intersection of the two GMM densities.
+        'double' — two thresholds bounding an uncertainty zone; units inside
+                   the zone are labelled 'unassigned'.
+    uncertainty_percentile : float
+        Only used when threshold_mode='double'.
+        Lower threshold = <uncertainty_percentile>-th percentile of the FSU
+        component (default: 80th → top 20 % of FSU distribution).
+        Upper threshold = (100 - uncertainty_percentile)-th percentile of the
+        RSU component (default: 20th → bottom 20 % of RSU distribution).
+
+    Returns
+    -------
+    results : pd.DataFrame
+        Unit-level table with 'waveform_type' column added.
+    single_threshold_table : pd.DataFrame
+        Columns: ['area', 'threshold', 'bimodal']
+    double_threshold_table : pd.DataFrame
+        Columns: ['area', 'lower_threshold', 'upper_threshold', 'bimodal']
+    """
+
+    # Inspect waveform duration
+    unit_data['duration'] = unit_data['duration'].astype(float)
+    print(unit_data.duration.describe())
+    print(unit_data.duration.max(), unit_data.duration.min())
+
+    if threshold_mode not in ('single', 'double'):
+        raise ValueError(
+            f"threshold_mode must be 'single' or 'double', got '{threshold_mode}'."
+        )
+
+    print('Classification of cortical cells: RSU vs FSU ...')
+    print(
+        'Total "good" neurons:',
+        len(unit_data[unit_data['bc_label'] == 'good']),
+    )
+
+    # ── Preprocessing ─────────────────────────────────────────────────────
+    #unit_data = unit_data[
+    #    ~unit_data['ccf_acronym'].isin(allen_utils.get_excluded_areas())
+    #].copy()
+    #unit_data = allen_utils.create_area_custom_column(unit_data)
+    area_list = unit_data['area_acronym_custom'].unique()
+    print('Areas', area_list)
+
+    results_list = []
+    single_threshold_records = []
+    double_threshold_records = []
+
+    # For the cross-area overlay figures: list of duration arrays per area
+    # (in the same order as single_threshold_records)
+    overlay_fsu: list[np.ndarray] = []
+    overlay_rsu: list[np.ndarray] = []
+    overlay_areas: list[str] = []
+
+    color_dict = {'rsu': '#ff8783', 'fsu': '#83b1ff', 'unassigned': '#c0c0c0'}
+
+    # ── Per-area loop ──────────────────────────────────────────────────────
+    for area in area_list:
+        print(f'  Processing area: {area}')
+        area_data = unit_data[
+            (unit_data['area_acronym_custom'] == area)
+            & (unit_data['bc_label'] == 'good')
+        ].copy()  # .copy() prevents SettingWithCopyWarning
+
+        if len(area_data) < 5:
+            print(f'    Not enough good units in {area}. Skipping.')
+            continue
+
+        area_data['duration'] = area_data['duration'].astype(float)
+        ap_durations = area_data['duration'].values  # 1-D float array
+
+        # Bimodality test - computed on raw data
+        dip_stat, p_value = diptest.diptest(ap_durations)
+        is_bimodal = bool(p_value < 0.05)
+
+        # Clip to physio range
+        DURATION_MIN = 0.1
+        DURATION_MAX = 1.0
+        ap_durations_clipped = ap_durations[(ap_durations >= DURATION_MIN) & (ap_durations <= DURATION_MAX)] # in ms
+
+
+        ## ── GMM fit ───────────────────────────────────────────────────────
+        #gmm = GaussianMixture(
+        #    n_components=2,
+        #    covariance_type='full',
+        #    tol=1e-5,
+        #    reg_covar=1e-3,
+        #    max_iter=300,
+        #    init_params='kmeans',
+        #    n_init=10,
+        #    means_init=means_init_array,
+        #    weights_init=[0.15, 0.85],  # physiological prior: ~20% FSU in cortex
+        #    random_state=0,
+        #    warm_start=False,
+        #    verbose=False,
+        #)
+        #gmm.fit(ap_durations.reshape(-1, 1))
+        # ── GMM robust fit - discards solutions out of observed AP duration range ───────────────────────────────────────────────────────
+
+        gmm, fit_valid = _fit_gmm_robust(
+            ap_durations=ap_durations_clipped,
+            data_min=0.1,
+            data_max=1.0,
+            n_restarts=20,
+            min_weight=0.05,
+            random_seed=0,
+        )
+
+        if not fit_valid:
+            print(f'    [{area}] Skipping threshold computation — degenerate fit.')
+            single_threshold = np.nan
+            lower_threshold = np.nan
+            upper_threshold = np.nan
+
+        if not gmm.converged_:
+            print(f'    Warning: GMM did not converge for {area}.')
+
+        # Sort so that component 0 = FSU (lower mean), 1 = RSU (higher mean)
+        order = np.argsort(gmm.means_.ravel())
+        mu = gmm.means_.ravel()[order]           # shape (2,)
+        var = gmm.covariances_.ravel()[order]    # shape (2,)  — 'diag' + 1-D data
+        std = np.sqrt(var)
+        w = gmm.weights_[order]
+
+        # ── Bimodality: Ashman's D ≥ 2 ───────────────────────────────────
+        # D = sqrt(2) * |mu_1 - mu_0| / sqrt(std_0² + std_1²)
+        # Values ≥ 2 indicate well-separated, bimodal distributions.
+        ashman_D = np.sqrt(2) * abs(mu[1] - mu[0]) / np.sqrt(std[0]**2 + std[1]**2)
+        #is_bimodal: bool = bool(ashman_D >= 2.0)
+
+        # ── Single threshold: intersection of the two weighted Gaussians ─
+        def _gaussian_intersection_roots(
+            m1: float, m2: float,
+            s1: float, s2: float,
+            w1: float, w2: float,
+        ) -> np.ndarray:
+            """
+            Analytic real roots of  w1·N(x|m1,s1) = w2·N(x|m2,s2).
+            Returns only the real-valued roots.
+            """
+            a = 1 / (2 * s1**2) - 1 / (2 * s2**2)
+            b = m2 / (s2**2) - m1 / (s1**2)
+            c = (m1**2 / (2 * s1**2)
+                 - m2**2 / (2 * s2**2)
+                 - np.log(s2 / s1)
+                 - np.log(w1 / w2))
+            # np.roots handles the degenerate a=0 case (linear equation)
+            roots = np.roots([float(a), float(b), float(c)])
+            return roots[np.isreal(roots)].real   # drop complex roots
+
+        LOWER_LIM, UPPER_LIM = 0.1, 0.9  # biologically plausible range (ms)
+        raw_roots = _gaussian_intersection_roots(
+            mu[0], mu[1], std[0], std[1], w[0], w[1]
+        )
+        valid_roots = raw_roots[(raw_roots >= LOWER_LIM) & (raw_roots <= UPPER_LIM)]
+
+        if valid_roots.size > 1:
+            single_threshold = float(np.min(valid_roots))
+        elif valid_roots.size == 1:
+            single_threshold = float(valid_roots[0])
+        else:
+            single_threshold = np.nan
+            print(
+                f'    No valid intersection found for {area} '
+                f'in [{LOWER_LIM}, {UPPER_LIM}] ms.'
+            )
+
+        # ── Double threshold: percentile-based uncertainty band ───────────
+        # Lower edge: upper tail of FSU — everything below is confidently FSU
+        # Upper edge: lower tail of RSU — everything above is confidently RSU
+        lower_threshold = float(stats.norm.ppf(uncertainty_percentile / 100.0, mu[0], std[0]))
+        upper_threshold = float(stats.norm.ppf(1.0 - uncertainty_percentile / 100.0, mu[1], std[1]))
+
+        if lower_threshold >= upper_threshold:
+            print(
+                f'    Double thresholds inverted for {area} '
+                f'({lower_threshold:.3f} ≥ {upper_threshold:.3f}); '
+                'distributions overlap heavily. Collapsing to single threshold.'
+            )
+            lower_threshold = upper_threshold = single_threshold
+
+        # ── Record threshold tables ───────────────────────────────────────
+        single_threshold_records.append({
+            'area': area,
+            'threshold': single_threshold,
+            'bimodal_ashman': bool(ashman_D >= 2.0),  # GMM-based
+            'ashman_D': round(ashman_D, 3),
+            'bimodal_dip': is_bimodal,  # data-based
+            'dip_pvalue': round(p_value, 4),
+        })
+
+        double_threshold_records.append({
+            'area': area,
+            'lower_threshold': lower_threshold,
+            'upper_threshold': upper_threshold,
+            'bimodal': is_bimodal,
+            'ashman_D': round(ashman_D, 3),
+            'bimodal_dip': is_bimodal,  # data-based
+            'dip_pvalue': round(p_value, 4),
+        })
+
+        # ── Assign waveform type ──────────────────────────────────────────
+        # Assignment uses the full array, defaulting out-of-range to 'rsu'
+        dur = area_data['duration']
+        if threshold_mode == 'single':
+            if np.isnan(single_threshold):
+                area_data['waveform_type'] = 'unassigned'
+            else:
+                area_data['waveform_type'] = np.where(
+                    (dur >= DURATION_MIN) & (dur <= DURATION_MAX) & (dur <= single_threshold),
+                    'fsu', 'rsu'  # out-of-range falls to the else → 'rsu'
+                )
+        else:  # 'double'
+            area_data['waveform_type'] = np.select(
+                [
+                    (dur >= DURATION_MIN) & (dur <= DURATION_MAX) & (dur <= lower_threshold),
+                    (dur >= DURATION_MIN) & (dur <= DURATION_MAX) & (dur >= upper_threshold),
+                ],
+                ['fsu', 'rsu'],
+                default='rsu',  # out-of-range and unassigned zone both → 'rsu'
+            )
+        # Collect duration arrays for the global overlay figure
+        overlay_fsu.append(area_data.loc[area_data['waveform_type'] == 'fsu', 'duration'].values)
+        overlay_rsu.append(area_data.loc[area_data['waveform_type'] == 'rsu', 'duration'].values)
+        overlay_areas.append(area)
+
+        # ── Per-area figure ───────────────────────────────────────────────
+        fig, ax = plt.subplots(1, 1, figsize=(5, 5), dpi=150)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        _, bins, _ = ax.hist(
+            ap_durations,
+            bins=int(np.sqrt(len(ap_durations))),
+            color='dimgrey', histtype='step',
+            density=False, lw=1.5, label='All units',
+        )
+        bin_width = float(np.diff(bins)[0])
+
+        x = np.linspace(0, 1.3, 1000)
+
+        def _gauss(x, mu_, sig_):
+            return np.exp(-0.5 * ((x - mu_) / sig_) ** 2) / (sig_ * np.sqrt(2 * np.pi))
+
+        scale = bin_width * len(ap_durations)
+        y_fs = w[0] * _gauss(x, mu[0], std[0]) * scale
+        y_rs = w[1] * _gauss(x, mu[1], std[1]) * scale
+
+        ax.plot(x, y_fs, color=color_dict['fsu'], lw=3,
+                label=rf'Fast-spiking' '\n'
+                      rf'$\mathcal{{N}}_F$({mu[0]:.2f}, {std[0]:.2f})')
+        ax.plot(x, y_rs, color=color_dict['rsu'], lw=3,
+                label=rf'Regular-spiking' '\n'
+                      rf'$\mathcal{{N}}_R$({mu[1]:.2f}, {std[1]:.2f})')
+
+        # Threshold line(s)
+        if threshold_mode == 'single' and not np.isnan(single_threshold):
+            ax.axvline(single_threshold, color='k', ls='--',
+                       label=rf'$\tau={single_threshold:.2f}$ ms')
+        elif threshold_mode == 'double' and not np.isnan(lower_threshold):
+            ax.axvline(lower_threshold, color='k', ls='--',
+                       label=rf'$\tau_{{low}}={lower_threshold:.2f}$ ms')
+            ax.axvline(upper_threshold, color='k', ls=':',
+                       label=rf'$\tau_{{high}}={upper_threshold:.2f}$ ms')
+            ax.axvspan(lower_threshold, upper_threshold,
+                       alpha=0.07, color='grey', label='Unassigned zone')
+
+        bimodal_str = f'bimodal' if is_bimodal else 'unimodal'
+        ax.set_title(
+            f'{area} AP durations\n[{bimodal_str}, Ashman D={ashman_D:.2f}]',
+            fontsize=11,
+        )
+        ax.set_xlabel('AP peak-to-trough duration (ms)', fontsize=13)
+        ax.set_ylabel('Count', fontsize=13)
+        #ax.set_xlim(0, 1.3)
+        ax.legend(frameon=False, fontsize=8, loc='upper right')
+        plt.tight_layout()
+
+        area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
+        os.makedirs(area_out, exist_ok=True)
+        plutils.save_figure_with_options(
+            figure=fig,
+            file_formats=['png', 'svg', 'pdf'],
+            filename=f'all_mice_{area}_ap_durations_{threshold_mode}',
+            output_dir=area_out,
+            dark_background=False,
+        )
+        plt.close(fig)
+
+        results_list.append(area_data)
+
+        # ── Per-area waveform overlay ─────────────────────────────────────
+        _save_waveform_overlay_per_area(
+            area_data=area_data,
+            area=area,
+            output_path=output_path,
+            threshold_mode=threshold_mode,
+            color_dict=color_dict,
+            sampling_rate_khz=30.0,
+        )
+
+        _save_waveform_overlay_by_duration_percentile(
+            area_data=area_data,
+            area=area,
+            output_path=output_path,
+            threshold_mode=threshold_mode,
+            waveform_col='waveform_mean',
+            duration_col='duration',
+            n_percentile_bins=10,  # deciles — change to 5 for quintiles
+            sampling_rate_khz=30.0,
+            duration_min=0.1,
+            duration_max=area_data.duration.max(),
+        )
+
+    # ── Compile output tables ──────────────────────────────────────────────
+    if threshold_mode == 'single':
+        single_threshold_table = pd.DataFrame(single_threshold_records)
+    elif threshold_mode == 'double':
+        double_threshold_table = pd.DataFrame(double_threshold_records)
+
+    # ── Per-mouse CSV export ───────────────────────────────────────────────
+    results = pd.concat(results_list, ignore_index=True)
+    cols_to_keep = [
+        'mouse_id', 'session_id', 'behaviour', 'day',
+        'electrode_group', 'cluster_id', 'waveform_type',
+    ]
+    for mouse_id in results['mouse_id'].unique():
+        mouse_results = results.loc[results['mouse_id'] == mouse_id, cols_to_keep].copy()
+        # Use iloc[0] to safely get a single representative value
+        behaviour = mouse_results['behaviour'].iloc[0]
+        day = mouse_results['day'].iloc[0]
+        mouse_out = os.path.join(
+            output_path, mouse_id, f'{behaviour}_{day}', 'waveform_analysis'
+        )
+        os.makedirs(mouse_out, exist_ok=True)
+        mouse_results.to_csv(
+            os.path.join(mouse_out, f'{mouse_id}_cortical_wf_type.csv'),
+            index=False,
+        )
+
+        # ── Save threshold tables to CSV ──────────────────────────────────────
+        threshold_out = os.path.join(output_path, 'waveform_analysis', 'cortex')
+        os.makedirs(threshold_out, exist_ok=True)
+
+        # Reorder
+        area_order = allen_utils.get_custom_area_order()
+
+        if threshold_mode == 'single':
+            # Reorder table for areas according to area_order
+            single_threshold_table["area"] = pd.Categorical(single_threshold_table["area"],
+                                                            categories=area_order,
+                                                            ordered=True)
+            single_threshold_table = single_threshold_table.sort_values(by="area")
+            single_threshold_table.to_csv(
+                os.path.join(threshold_out, 'single_threshold_per_area.csv'),
+                index=False,
+                float_format='%.4f',
+            )
+        elif threshold_mode == 'double':
+
+            double_threshold_table["area"] = pd.Categorical(double_threshold_table["area"],
+                                                            categories=area_order,
+                                                            ordered=True)
+            double_threshold_table = double_threshold_table.sort_values(by="area")
+            double_threshold_table.to_csv(
+                os.path.join(threshold_out, 'double_threshold_per_area.csv'),
+                index=False,
+                float_format='%.4f',
+            )
+
+        print(f'Threshold tables saved to {threshold_out}')
+
+    print('RSU vs FSU assignment complete.')
+    return results
+
+
+# ── Helper: cross-area overlay figure ─────────────────────────────────────────
+def _save_waveform_overlay_per_area(
+    area_data: pd.DataFrame,
+    area: str,
+    output_path: str,
+    threshold_mode: str,
+    color_dict: dict | None = None,
+    sampling_rate_khz: float = 30.0,   # Neuropixels default: 30 kHz
+):
+    """
+    For a single area, plot two side-by-side panels showing the mean waveform
+    of every classified unit (FSU left, RSU right).  Each individual waveform
+    is drawn as a faint trace; the population mean ± 1 SD is overlaid bold.
+
+    Parameters
+    ----------
+    area_data : pd.DataFrame
+        Classified unit table for this area.
+    area : str
+        Area name used in the figure title and filename.
+    output_path : str
+        Root output directory.
+    threshold_mode : str
+        'single' or 'double' — appended to the filename only.
+    color_dict : dict, optional
+        Colour map with at least keys 'fsu' and 'rsu'.
+    sampling_rate_khz : float
+        Sampling rate in kHz, used to build the time axis in ms.
+    """
+    if color_dict is None:
+        color_dict = {'rsu': '#ff8783', 'fsu': '#83b1ff'}
+
+    cell_types = ['fsu', 'rsu']
+    titles     = ['Fast-spiking (FSU)', 'Regular-spiking (RSU)']
+
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4), dpi=150)
+    fig.suptitle(f'{area} — mean waveforms per type', fontsize=13)
+
+    for ax, cell_type, title in zip(axes, cell_types, titles):
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.set_title(title, fontsize=11, color=color_dict[cell_type])
+        ax.set_xlabel('Time (ms)', fontsize=10)
+        ax.set_ylabel('Amplitude (a.u.)', fontsize=10)
+
+        subset = area_data[area_data['waveform_type'] == cell_type]
+
+        if subset.empty:
+            ax.text(0.5, 0.5, 'No units', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=10, color='grey')
+            continue
+
+        # Stack waveforms into a 2-D matrix (n_units × n_samples)
+        try:
+            waveform_matrix = np.vstack(subset['waveform_mean'].values).astype(float)
+        except ValueError:
+            print(
+                f'    [{area}] Waveforms have inconsistent lengths '
+                f'for {cell_type.upper()}. Skipping this panel.'
+            )
+            ax.text(0.5, 0.5, 'Inconsistent lengths', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=9, color='grey')
+            continue
+
+        n_units, n_samples = waveform_matrix.shape
+
+        # Zero-mean each waveform individually (removes DC offset artifacts)
+        waveform_matrix -= waveform_matrix.mean(axis=1, keepdims=True)
+
+        ## Normalise each waveform to its peak absolute amplitude so that
+        ## thin/noisy units don't dominate the visual scale
+        peak_amp = np.abs(waveform_matrix).max(axis=1, keepdims=True)
+        peak_amp[peak_amp == 0] = 1.0          # avoid divide-by-zero
+        waveform_matrix /= peak_amp
+
+        # Build time axis centred on the trough (index of global minimum of mean)
+        mean_waveform = waveform_matrix.mean(axis=0)
+        trough_idx    = int(np.argmin(mean_waveform))
+        t = (np.arange(n_samples) - trough_idx) / sampling_rate_khz  # ms
+
+        base_color = color_dict[cell_type]
+
+        # Individual waveforms — faint traces
+        alpha_single = max(0.02, min(0.3, 10.0 / n_units))   # scale opacity with density
+        for wf in waveform_matrix:
+            ax.plot(t, wf, color=base_color, alpha=alpha_single, lw=0.6)
+
+        # Population mean ± 1 SD
+        std_waveform = waveform_matrix.std(axis=0)
+        ax.fill_between(
+            t,
+            mean_waveform - std_waveform,
+            mean_waveform + std_waveform,
+            color=base_color, alpha=0.25, lw=0,
+        )
+        ax.plot(t, mean_waveform, color=base_color, lw=2.5,
+                label=f'Mean ± 1 SD  (n={n_units})')
+
+        ax.axvline(0, color='k', lw=0.8, ls=':', alpha=0.5)   # trough marker
+        ax.legend(frameon=False, fontsize=8, loc='upper right')
+
+    plt.tight_layout()
+
+    area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
+    os.makedirs(area_out, exist_ok=True)
+    plutils.save_figure_with_options(
+        figure=fig,
+        file_formats=['png', 'svg', 'pdf'],
+        filename=f'all_mice_{area}_waveform_overlay_{threshold_mode}',
+        output_dir=area_out,
+        dark_background=False,
+    )
+    plt.close(fig)
+    return
+
+def _save_waveform_overlay_by_duration_percentile(
+    area_data: pd.DataFrame,
+    area: str,
+    output_path: str,
+    threshold_mode: str,
+    waveform_col: str = 'waveform_mean',
+    duration_col: str = 'duration',
+    n_percentile_bins: int = 10,
+    sampling_rate_khz: float = 30.0,
+    duration_min: float = 0.1,
+    duration_max: float = 0.9,
+):
+    """
+    Plot waveform overlays binned by percentile of AP duration.
+    Each subplot corresponds to one percentile bin of the duration
+    distribution; individual waveforms are shown as faint traces and
+    the bin mean is overlaid bold.
+
+    Parameters
+    ----------
+    area_data : pd.DataFrame
+        Classified unit table for this area. Must contain `waveform_col`,
+        `duration_col`, and 'waveform_type'.
+    area : str
+        Area name, used in title and filename.
+    output_path : str
+        Root output directory.
+    threshold_mode : str
+        'single' or 'double' — appended to the filename only.
+    waveform_col : str
+        Column containing per-unit 1-D waveform arrays.
+    duration_col : str
+        Column containing trough-to-peak duration in ms.
+    n_percentile_bins : int
+        Number of equal-width percentile bins (default 10 = deciles).
+    sampling_rate_khz : float
+        Neuropixels sampling rate in kHz for building the time axis.
+    duration_min, duration_max : float
+        Physiological clipping range in ms — same values used at fit time.
+    """
+
+    if waveform_col not in area_data.columns:
+        print(f'    [{area}] Column "{waveform_col}" not found. Skipping percentile waveform plot.')
+        return
+    if duration_col not in area_data.columns:
+        print(f'    [{area}] Column "{duration_col}" not found. Skipping percentile waveform plot.')
+        return
+
+    # ── Restrict to physiological range and drop units with missing data ──
+    plot_data = area_data[
+        area_data[duration_col].between(duration_min, duration_max)
+        & area_data[waveform_col].notna()
+    ].copy()
+
+    if len(plot_data) < n_percentile_bins:
+        print(f'    [{area}] Too few units ({len(plot_data)}) for {n_percentile_bins} percentile bins. Skipping.')
+        return
+
+    # ── Build percentile bin edges and labels ─────────────────────────────
+    percentile_edges = np.linspace(0, 100, n_percentile_bins + 1)   # e.g. 0,10,20,...,100
+    bin_edges_ms = np.percentile(plot_data[duration_col].values, percentile_edges)
+
+    # Assign each unit to a bin (use pd.cut on the actual duration values)
+    plot_data['pct_bin'] = pd.cut(
+        plot_data[duration_col],
+        bins=bin_edges_ms,
+        labels=False,               # integer bin index 0 … n_percentile_bins-1
+        include_lowest=True,
+    )
+
+    # ── Stack all waveforms once to get a global trough index ─────────────
+    try:
+        all_waveforms = np.vstack(plot_data[waveform_col].values).astype(float)
+    except ValueError:
+        print(f'    [{area}] Waveforms have inconsistent lengths. Skipping percentile plot.')
+        return
+
+    n_samples    = all_waveforms.shape[1]
+    global_trough_idx = int(np.argmin(all_waveforms.mean(axis=0)))
+    t = (np.arange(n_samples) - global_trough_idx) / sampling_rate_khz   # ms
+
+    # ── Colour map: blue (short/FSU) → red (long/RSU) ────────────────────
+    cmap     = cm.get_cmap('coolwarm', n_percentile_bins)
+    n_cols   = min(n_percentile_bins, 5)
+    n_rows   = math.ceil(n_percentile_bins / n_cols)
+
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(3.5 * n_cols, 3.0 * n_rows),
+        dpi=150,
+        sharey=True, sharex=True,
+    )
+    axes_flat = np.array(axes).ravel()
+
+    fig.suptitle(
+        f'{area} — waveforms by AP duration percentile  [{threshold_mode} threshold]',
+        fontsize=13, y=1.01,
+    )
+
+    for bin_idx in range(n_percentile_bins):
+        ax = axes_flat[bin_idx]
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+        bin_data = plot_data[plot_data['pct_bin'] == bin_idx]
+
+        # Percentile range label for this bin
+        p_lo = percentile_edges[bin_idx]
+        p_hi = percentile_edges[bin_idx + 1]
+        dur_lo = bin_edges_ms[bin_idx]
+        dur_hi = bin_edges_ms[bin_idx + 1]
+        bin_color = cmap(bin_idx)
+
+        if bin_data.empty:
+            ax.text(0.5, 0.5, 'empty', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=8, color='grey')
+            ax.set_title(f'P{p_lo:.0f}–{p_hi:.0f}', fontsize=8)
+            continue
+
+        # Stack and normalise waveforms for this bin
+        try:
+            wf_matrix = np.vstack(bin_data[waveform_col].values).astype(float)
+        except ValueError:
+            ax.text(0.5, 0.5, 'bad waveforms', ha='center', va='center',
+                    transform=ax.transAxes, fontsize=8, color='grey')
+            continue
+
+        n_units = wf_matrix.shape[0]
+
+        # Zero-mean (remove DC) + normalise to peak absolute amplitude
+        wf_matrix -= wf_matrix.mean(axis=1, keepdims=True)
+        peak_amp = np.abs(wf_matrix).max(axis=1, keepdims=True)
+        peak_amp[peak_amp == 0] = 1.0
+        wf_matrix /= peak_amp
+
+        # Individual traces
+        alpha = max(0.03, min(0.35, 8.0 / n_units))
+        for wf in wf_matrix:
+            ax.plot(t, wf, color=bin_color, alpha=alpha, lw=0.5)
+
+        # Mean ± 1 SD
+        mean_wf = wf_matrix.mean(axis=0)
+        std_wf  = wf_matrix.std(axis=0)
+        ax.fill_between(t, mean_wf - std_wf, mean_wf + std_wf,
+                        color=bin_color, alpha=0.2, lw=0)
+        ax.plot(t, mean_wf, color=bin_color, lw=2.2)
+
+        # Trough marker
+        ax.axvline(0, color='k', lw=0.7, ls=':', alpha=0.4)
+
+        ax.set_title(
+            f'P{p_lo:.0f}–{p_hi:.0f}\n'
+            f'{dur_lo:.2f}–{dur_hi:.2f} ms  (n={n_units})',
+            fontsize=7.5,
+            color=bin_color,
+        )
+
+        if bin_idx % n_cols == 0:
+            ax.set_ylabel('Norm. amplitude', fontsize=8)
+        if bin_idx >= (n_rows - 1) * n_cols:
+            ax.set_xlabel('Time (ms)', fontsize=8)
+
+    # Hide any unused subplots (when n_percentile_bins % n_cols != 0)
+    for ax in axes_flat[n_percentile_bins:]:
+        ax.set_visible(False)
+
+    plt.tight_layout()
+
+    area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
+    os.makedirs(area_out, exist_ok=True)
+    plutils.save_figure_with_options(
+        figure=fig,
+        file_formats=['png', 'svg', 'pdf'],
+        filename=f'all_mice_{area}_waveform_by_duration_percentile_{threshold_mode}',
+        output_dir=area_out,
+        dark_background=False,
+    )
+    plt.close(fig)
     return
 
 
