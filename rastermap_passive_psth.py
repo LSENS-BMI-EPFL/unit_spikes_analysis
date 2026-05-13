@@ -53,7 +53,7 @@ import plotting_utils
 # TODO: remove unused PCA?
 
 DEFAULT_CFG: dict[str, Any] = dict(
-    period                = 'passive', #"both", "passive"', "active"
+    period                = 'passive', #"active_passive", "passive"', "active"
     t_pre                = 0.1,
     t_post               = 0.2,
     bin_ms               = 10,
@@ -1150,9 +1150,10 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     # ── output path ────────────────────────────────────────────────────────
     zscore_tag = "zscore_full" if cfg["zscore_full"] else "zscore_bl"
+    period_tag = cfg["period"]  # both|whisker|auditory
     mod_tag = cfg["modality"]  # both|whisker|auditory
     reward_tag = cfg["reward_filter"].replace("+", "plus").replace("-", "minus")
-    out_folder = Path(out_root, "passive_rastermap_psth", zscore_tag, mod_tag, reward_tag)
+    out_folder = Path(out_root, "passive_rastermap_psth", period_tag, zscore_tag, mod_tag, reward_tag)
     out_folder.mkdir(parents=True, exist_ok=True)
 
     #out_root = Path(out_root, "passive_rastermap_psth")
