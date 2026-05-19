@@ -34,7 +34,7 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
-from rastermap_passive_psth import run_rastermap_psth
+from rastermap_psth import run_rastermap_psth
 
 if __name__ == '__main__':
 
@@ -50,7 +50,7 @@ if __name__ == '__main__':
     if 'haas' in hostname:
         N_WORKERS = 100
         ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
-        ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWBFull')
+        ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWB')
         INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')  # temp before mounted
         OUTPUT_PATH = pathlib.Path(f'/mnt/lsens-analysis/{experimenter}/combined_results')
     else:
@@ -140,7 +140,7 @@ if __name__ == '__main__':
     # Analyses to do
     analyses_to_do_single = ['roc_analysis']
     analyses_to_do_multi = ['noise_unit_detection']
-    analyses_to_do_multi = ['passive_rastermap_psth']
+    analyses_to_do_multi = ['rastermap_psth']
 
 
     # --------------
@@ -150,6 +150,7 @@ if __name__ == '__main__':
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
+    print(nwb_list)
     #nwb_list = nwb_list[::20]
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
@@ -236,6 +237,5 @@ if __name__ == '__main__':
             # Run
             run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 
-
-        if 'passive_rastermap_psth' in analyses_to_do_multi:
+        if 'rastermap_psth' in analyses_to_do_multi:
             run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)
