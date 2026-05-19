@@ -64,7 +64,7 @@ DEFAULT_CFG: dict[str, Any] = dict(
     square_fr            = True,
     reward_group_col     = "reward_group",
     area_col             = "area_acronym_custom",
-    zscore_full           = True,
+    zscore_full           = False,
     align_col            = "start_time",
     context_col          = "context",
     trial_type_col       = "trial_type",
@@ -1551,9 +1551,6 @@ def run_rastermap_psth(units: pd.DataFrame,
     fig11_area_per_cluster(unit_ids, cluster_labels, area_arr, n_k, out_folder)
     fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_k, out_folder)
 
-    # Plot example neurons
-    plot_example_neurons_clusters(X, t_ctr, n_bins, cluster_labels, unit_ids,
-                                  units_good, cfg, COND_LABELS, COND_COLORS, out_folder)
 
     # ── cross-validation ───────────────────────────────────────────────────
     if cfg.get("cross_validate", False):
@@ -1594,6 +1591,10 @@ def run_rastermap_psth(units: pd.DataFrame,
             n_bins, t_ctr, COND_LABELS, COND_COLORS, out_folder)
     else:
         cv_metrics = None
+
+    # Plot example neurons
+    plot_example_neurons_clusters(X, t_ctr, n_bins, cluster_labels, unit_ids,
+                                  units_good, cfg, COND_LABELS, COND_COLORS, out_folder)
 
     print(f"\nDone. Outputs → {out_folder}")
     return dict(

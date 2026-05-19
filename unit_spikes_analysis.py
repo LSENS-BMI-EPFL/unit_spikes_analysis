@@ -34,7 +34,7 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
-from rastermap_psth import run_rastermap_psth
+from rastermap_psth_new import run_rastermap_psth
 
 if __name__ == '__main__':
 
@@ -151,9 +151,10 @@ if __name__ == '__main__':
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
     print(nwb_list)
-    #nwb_list = nwb_list[::20]
+    #nwb_list = nwb_list[::5]
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+    print(unit_table.layer_number.unique())
 
     # ----------------------------------------
     # Perform analyses for each mouse NWB file

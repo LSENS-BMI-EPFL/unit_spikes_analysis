@@ -946,7 +946,7 @@ def fig10_kmeans_profiles(X, t_ctrs, n_bins_list, km_labels, k, out_dir):
     fig.tight_layout()
     _save(fig, out_dir / "fig10_kmeans_profiles.png")
 
-def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, title):
+def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, title, exclude=None):
     """Narrow stacked horizontal bar chart: one bar per cluster, showing category proportions."""
     ax.spines["top"].set_visible(False)
     ax.spines["left"].set_visible(False)
@@ -954,16 +954,21 @@ def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, 
     for k in range(len(edges) - 1):
         lo, hi = edges[k], edges[k + 1]
         n_cl = hi - lo
-        if n_cl == 0:
-            continue
+        #if n_cl == 0:
+        #    continue
         chunk = sorted_arr[lo:hi]
-        valid = chunk != "unknown"  # or "nan", "unknown" — whatever missing values look like
-        n_valid = valid.sum()
+        if exclude is not None:
+            chunk = chunk[~np.isin(chunk, exclude)]
+        #valid = chunk != np.nan  # or "nan", "unknown" — whatever missing values look like
+        n_valid = len(chunk)
         if n_valid == 0:
             continue
+        #n_cl = len(chunk)
+        #if n_cl == 0:
+        #    continue
         left = 0.0
         for cat in categories:
-            prop = (chunk[valid] == cat).sum() / n_valid  # ← denominator is n_valid, not n_cl
+            prop = (chunk == cat).sum() / n_valid  # ← denominator is n_valid, not n_cl
             if prop == 0:
                 continue
             ax.barh((lo + hi) / 2, prop, left=left, height=n_cl * 0.92,
@@ -1030,7 +1035,9 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
     for l in extra_layers:
         layer_colors[l] = "#aaaaaa"
     _draw_prop_column(axes[4], layer_s, layer_cats, layer_colors,
-                      edges, n_neurons, "Layer")
+                      edges, n_neurons, "Layer",
+                      exclude=["None", "nan", "unknown"])
+
 
     # ── Brain region (allen_utils groups) ─────────────────────────────────────
     all_groups = sorted(set(agroup_s))
