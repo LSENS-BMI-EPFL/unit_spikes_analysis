@@ -52,12 +52,14 @@ import plotting_utils
 
 # ── config ─────────────────────────────────────────────────────────────────────
 # TODO: remove stride? or keep stride but fix artifact on edges (find again vrsion that did not have them)
+# TODO: add jaw-aligned traces
+# TODO: add waveform mean itself? this would combine both activity profiles and waveform/cell type, mixed message
 # TODO: remove unused PCA?
 
 DEFAULT_CFG: dict[str, Any] = dict(
     period                = 'both', #"active_passive", "passive"', "active"
-    t_pre_passive        = 0.1,    # pre-stimulus window for passive conditions (s)
-    t_post_passive       = 0.2,    # post-stimulus window for passive conditions (s)
+    t_pre_passive        = 0.2,    # pre-stimulus window for passive conditions (s)
+    t_post_passive       = 0.5,    # post-stimulus window for passive conditions (s)
     t_pre_active         = 0.2,    # pre-stimulus window for active conditions (s)
     t_post_active        = 0.5,    # post-stimulus window for active conditions (s)
     bin_ms               = 10,
@@ -75,9 +77,9 @@ DEFAULT_CFG: dict[str, Any] = dict(
     trial_type_col       = "trial_type",
     mouse_id_col         = "mouse_id",
     session_id_col       = "session_id",
-    n_rastermap_clusters = 30,
+    n_rastermap_clusters = 100,
     k_means_k            = 8,
-    k_elbow_range        = range(2, 12),
+    k_elbow_range        = range(2, 20),
     umap_n_neighbors     = 50,
     umap_min_dist        = 0.2,
     vmax_pct             = 80,
@@ -787,6 +789,75 @@ def fig5_population_matrix_old(X, n_bins_list, isort, boundaries, vmax, cfg, out
     _save(fig, out_dir / "fig5_population_matrix.png", dpi=200)
 
 
+def fig5b_kmeans_matrix(X, n_bins_list, km_labels, k, vmax, cfg,
+                        reward_arr, waveform_arr, layer_arr, area_group_arr,
+                        group_colors_map, out_dir):
+    """Population PSTH matrix sorted by k-means cluster, with metadata side panels.
+
+    Same layout as fig5_population_matrix but:
+      - neurons sorted by k-means cluster label
+      - cluster boundaries are hard cuts between consecutive clusters
+      - horizontal annotations (condition separators, onset lines) identical to fig5
+    """
+    # Build isort and boundaries from km_labels
+    isort_km   = np.argsort(km_labels, kind="stable")   # group neurons by cluster
+    boundaries_km = []
+    for ki in range(k - 1):
+        boundaries_km.append(int((km_labels[isort_km] == ki).sum() +
+                                 sum((km_labels[isort_km] == kj).sum() for kj in range(ki))))
+    # simpler: cumulative cluster sizes
+    boundaries_km = np.cumsum([(km_labels == ki).sum() for ki in range(k)])[:-1].tolist()
+
+    n_side = 4
+    fig, axes = plt.subplots(
+        1, 2 + n_side, figsize=(30, 9), dpi=400,
+        gridspec_kw={"width_ratios": [10, 10, 0.5, 0.5, 0.5, 1.0], "wspace": 0.05})
+
+    im1 = _draw_matrix(axes[0], X,            n_bins_list, [],            vmax, cfg,
+                       f"Input order  (n={len(X)})")
+    im2 = _draw_matrix(axes[1], X[isort_km],  n_bins_list, boundaries_km, vmax, cfg,
+                       f"K-means order  (k={k}, n={len(X)})")
+    for ax, im in zip(axes[:2], [im1, im2]):
+        fig.colorbar(im, ax=ax, label="z-score", shrink=0.3, pad=0.01)
+
+    n_neurons = len(isort_km)
+    edges     = [0] + list(boundaries_km) + [n_neurons]
+
+    reward_s   = reward_arr[isort_km]
+    waveform_s = waveform_arr[isort_km]
+    layer_s    = layer_arr[isort_km]
+    agroup_s   = area_group_arr[isort_km]
+
+    _draw_prop_column(axes[2], reward_s,
+                      ["R+", "R-"],
+                      {"R+": "forestgreen", "R-": "crimson"},
+                      edges, n_neurons, "Reward\ngroup")
+
+    _draw_prop_column(axes[3], waveform_s,
+                      ["NW", "WW"],
+                      {"NW": "#E67E22", "WW": "#3498DB"},
+                      edges, n_neurons, "Waveform\nNW / WW")
+
+    layer_base   = ["supragranular", "granular", "infragranular"]
+    layer_colors = {"supragranular": "#9B59B6",
+                    "granular":      "#E74C3C",
+                    "infragranular": "#194882"}
+    extra_layers = [l for l in sorted(set(layer_s)) if l not in layer_base]
+    layer_cats   = layer_base + extra_layers
+    for l in extra_layers:
+        layer_colors[l] = "#aaaaaa"
+    _draw_prop_column(axes[4], layer_s, layer_cats, layer_colors,
+                      edges, n_neurons, "Layer",
+                      exclude=["None", "nan", "unknown"])
+
+    all_groups = order_area_groups(agroup_s)
+    _draw_prop_column(axes[5], agroup_s, all_groups, group_colors_map,
+                      edges, n_neurons, "Brain\nregion")
+
+    fig.tight_layout()
+    _save(fig, out_dir / "fig5b_kmeans_matrix.png", dpi=400)
+
+
 def fig6_cluster_profiles(X, t_ctrs, n_bins_list, isort, boundaries, out_dir):
     n_clusters = len(boundaries) + 1
     edges      = [0] + list(boundaries) + [len(isort)]
@@ -818,7 +889,7 @@ def fig6_cluster_profiles(X, t_ctrs, n_bins_list, isort, boundaries, out_dir):
         ax.set_visible(False)   # BUG FIX: was True
     fig.tight_layout()
     _save(fig, out_dir / "fig6_cluster_profiles.png")
-    return
+
 
 def fig6b_cluster_profiles_reward_groups(X, t_ctrs, n_bins_list, isort, boundaries,
                                    cond_labels, cond_colors, reward_arr, out_dir):
@@ -946,7 +1017,32 @@ def fig10_kmeans_profiles(X, t_ctrs, n_bins_list, km_labels, k, out_dir):
     fig.tight_layout()
     _save(fig, out_dir / "fig10_kmeans_profiles.png")
 
-def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, title, exclude=None):
+def order_area_groups(area_group_arr):
+    """Order brain region groups by the canonical key order of get_custom_area_groups()
+    (primary), then by descending population frequency within any unrecognised groups
+    (secondary).
+    """
+    try:
+        from allen_utils import get_custom_area_groups
+        canonical_order = list(get_custom_area_groups().keys())
+    except Exception:
+        canonical_order = []
+
+    # count population frequency per group
+    groups, counts = np.unique(area_group_arr, return_counts=True)
+    freq = dict(zip(groups, counts))
+
+    def _sort_key(g):
+        try:
+            return (canonical_order.index(g), -freq.get(g, 0))
+        except ValueError:
+            return (len(canonical_order), -freq.get(g, 0))
+
+    return sorted(freq.keys(), key=_sort_key)
+
+
+def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, title,
+                      exclude=None):
     """Narrow stacked horizontal bar chart: one bar per cluster, showing category proportions."""
     ax.spines["top"].set_visible(False)
     ax.spines["left"].set_visible(False)
@@ -997,7 +1093,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
     n_side = 4
     fig, axes = plt.subplots(
         1, 2 + n_side, figsize=(30, 9), dpi=400,
-        gridspec_kw={"width_ratios": [10, 10, 0.7, 0.7, 0.7, 1.4]})
+        gridspec_kw={"width_ratios": [10, 10, 0.5, 0.5, 0.5, 1.0], "wspace": 0.05})
 
     im1 = _draw_matrix(axes[0], X,        n_bins_list, [],         vmax, cfg, f"Input order  (n={len(X)})")
     im2 = _draw_matrix(axes[1], X[isort], n_bins_list, boundaries, vmax, cfg, f"Rastermap order (n={len(X)})")
@@ -1040,7 +1136,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
 
 
     # ── Brain region (allen_utils groups) ─────────────────────────────────────
-    all_groups = sorted(set(agroup_s))
+    all_groups = order_area_groups(agroup_s)   # anatomy-first, then frequency within group
     _draw_prop_column(axes[5], agroup_s, all_groups, group_colors_map,
                       edges, n_neurons, "Brain\nregion")
 
@@ -1618,6 +1714,9 @@ def run_rastermap_psth(units: pd.DataFrame,
     )
     fig9_kmeans(emb, km_labels, k, cfg["k_elbow_range"], inertias, out_folder)
     fig10_kmeans_profiles(X, t_ctrs, n_bins_list, km_labels, k, out_folder)
+    fig5b_kmeans_matrix(X, n_bins_list, km_labels, k, vmax, cfg,
+                        reward_arr, waveform_arr, layer_arr, area_group_arr,
+                        group_colors_map, out_folder)
 
     fig11_area_per_cluster(unit_ids, cluster_labels, area_arr, n_k, out_folder)
     fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_k, out_folder)
