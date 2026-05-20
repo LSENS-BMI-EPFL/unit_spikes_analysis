@@ -34,7 +34,7 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
-from rastermap_psth_new import run_rastermap_psth
+from rastermap_clustering_psth import run_rastermap_psth
 
 if __name__ == '__main__':
 
