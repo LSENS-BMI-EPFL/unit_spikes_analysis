@@ -51,10 +51,14 @@ from matplotlib.colors import ListedColormap
 import plotting_utils
 
 # ── config ─────────────────────────────────────────────────────────────────────
-# TODO: remove stride? or keep stride but fix artifact on edges (find again vrsion that did not have them)
+# TODO: stay in firing rate only? no, we want to compare shapes no raw baseline firing rates which will dominate the sorting
 # TODO: add jaw-aligned traces
-# TODO: add waveform mean itself? this would combine both activity profiles and waveform/cell type, mixed message
 # TODO: remove unused PCA?
+# TODO: remove silent grey neurons wo activity
+# TODO: Implement trad GMM Approach and compaore clustering / have it in different script for all the methods
+# TODO: Test just baseline corrected
+# TODO: order of clustering kmeans/GMMs applied on ordered rastermap cmatrix
+# TODO: use estimated waveform duration category from results
 
 DEFAULT_CFG: dict[str, Any] = dict(
     period                = 'both', #"active_passive", "passive"', "active"
@@ -66,7 +70,7 @@ DEFAULT_CFG: dict[str, Any] = dict(
     sigma_ms             = 2,
     artifact_win_s       = (-0.005, 0.005),
     whisker_trial_label  = "whisker_trial",
-    fr_threshold_hz      = 0.0,
+    fr_threshold_hz      = 1,
     square_fr            = True,
     reward_group_col     = "reward_group",
     area_col             = "area_acronym_custom",
@@ -78,14 +82,15 @@ DEFAULT_CFG: dict[str, Any] = dict(
     mouse_id_col         = "mouse_id",
     session_id_col       = "session_id",
     n_rastermap_clusters = 100,
+    grid_upsample        = 0,
     k_means_k            = 8,
     k_elbow_range        = range(2, 20),
     umap_n_neighbors     = 50,
     umap_min_dist        = 0.2,
-    vmax_pct             = 80,
+    vmax_pct             = 75,
     n_sample_neurons     = 24,
     n_jobs               = 80,
-    stride_ms            = 2,
+    stride_ms            = 5,
     modality             = "whisker_auditory",    # "both" | "whisker" | "auditory"
     reward_filter        = "combined",    # "both" | "R+" | "R-"
     n_example_neurons    = 30,
@@ -436,6 +441,8 @@ def _neuron_vector(st, mouse_id, session_id, event_map, bins, t_ctr, base_mask, 
                                       is_whisker=(trial_type == cfg["whisker_trial_label"]),
                                       artifact_win_s=cfg["artifact_win_s"], rng=rng)
         rates = _bin_rates(raster, bins, dt) #wo stride
+        #st
+
         if cfg.get("square_fr", False):
             rates = rates ** 2
         return rates.mean(axis=0)
@@ -600,7 +607,8 @@ def fit_rastermap(X, n_clusters):
                        n_PCs=n_pcs,
                        locality=0.75,
                        time_lag_window=0,
-                       verbose =True).fit(X)
+                       grid_upsample=0,
+                    verbose =True).fit(X)
     isort  = model.isort
     bounds = np.round(np.linspace(0, len(isort), n_clusters + 1)[1:-1]).astype(int)
     return isort, bounds
@@ -635,8 +643,14 @@ def _draw_matrix(ax, mat, n_bins_list, boundaries, vmax, cfg, title):
     ticks = [(offsets[i] + offsets[i + 1]) / 2 for i in range(len(n_bins_list))]
     ax.set_xticks(ticks)
     ax.set_xticklabels(COND_LABELS_MATRIX, fontsize=8)
-    for b in boundaries:
-        ax.axhline(b, color="k", lw=0.8)
+    #for b in boundaries:
+    #    ax.axhline(b, color="k", lw=0.1)
+
+
+
+
+
+
     ax.set_ylabel("Neuron")
     ax.set_title(title, fontsize=10)
     return im
@@ -1081,7 +1095,7 @@ def _draw_prop_column(ax, sorted_arr, categories, cat_colors, edges, n_neurons, 
 
 def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
                            reward_arr, waveform_arr, layer_arr, area_group_arr,
-                           group_colors_map, out_dir):
+                           group_colors_map, out_dir, prefix=None):
     """Population PSTH matrix with metadata side panels.
 
     Side panels (one per cluster, stacked horizontal bars):
@@ -1098,7 +1112,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
     im1 = _draw_matrix(axes[0], X,        n_bins_list, [],         vmax, cfg, f"Input order  (n={len(X)})")
     im2 = _draw_matrix(axes[1], X[isort], n_bins_list, boundaries, vmax, cfg, f"Rastermap order (n={len(X)})")
     for ax, im in zip(axes[:2], [im1, im2]):
-        fig.colorbar(im, ax=ax, label="z-score", shrink=0.3, pad=0.01)
+        fig.colorbar(im, ax=ax, label="Firing rate (z-score)", shrink=0.3, pad=0.005)
 
     n_neurons = len(isort)
     edges     = [0] + list(boundaries) + [n_neurons]
@@ -1141,7 +1155,12 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
                       edges, n_neurons, "Brain\nregion")
 
     fig.tight_layout()
-    _save(fig, out_dir / "fig5_population_matrix.png", dpi=400)
+    if prefix is not None:
+        fig_name = f"fig5_population_matrix_{prefix}.png"
+    else:
+        fig_name = "fig5_population_matrix.png"
+
+    _save(fig, out_dir / fig_name, dpi=400)
 
 
 def fig11_area_per_cluster(unit_ids, cluster_labels, area_arr, n_clusters, out_dir):
@@ -1556,6 +1575,10 @@ def run_rastermap_psth(units: pd.DataFrame,
     print('Excluding non-learners...')
     mouse_info = pd.read_excel(MOUSE_INFO)
     valid_mice = mouse_info[mouse_info['learning_category'].isin(['good','moderate'])]['mouse_id'].unique()
+
+    #valid_mice = valid_mice[::10]
+
+
     units = units[units.mouse_id.isin(valid_mice)]
     trials = trials[trials.mouse_id.isin(valid_mice)]
 
@@ -1567,7 +1590,7 @@ def run_rastermap_psth(units: pd.DataFrame,
         trials = assign_active_context(trials)
     units_raw  = units.copy()
 
-    print("Unit selection (bc_label == 'good')...")
+    print("Unit selection (bc_label == )...")
     units_good = units[units.bc_label.isin(["good"])]
     all_ids    = units_good.index.tolist()
     print(f"  {len(units_raw)} → {len(units_good)} units")
@@ -1733,7 +1756,7 @@ def run_rastermap_psth(units: pd.DataFrame,
             CONDITIONS, COND_LABELS, COND_COLORS, COND_LABELS_MATRIX,
             return_norms=True)
 
-        print("  Building X_even (apply odd normaliser)...")
+        print("  Building X_even (apply/create normaliser)...")
         X_even, _, _ = build_feature_matrix_strided(
             unit_ids, st_map, mouse_map, session_map, event_map_even, cfg,
             CONDITIONS, COND_LABELS, COND_COLORS, COND_LABELS_MATRIX,
@@ -1755,6 +1778,11 @@ def run_rastermap_psth(units: pd.DataFrame,
         cv_metrics = figCV_similarity_metrics(
             X_odd, X_even, isort_cv, boundaries_cv, cluster_labels_cv,
             n_bins_list, t_ctrs, COND_LABELS, COND_COLORS, out_folder)
+
+        # Plot distributions for cross-validated Xeven
+        fig5_population_matrix(X_even, n_bins_list, isort_cv, boundaries_cv, vmax_cv, cfg,
+                               reward_arr, waveform_arr, layer_arr, area_group_arr,
+                               group_colors_map, out_folder, prefix="cv_even")
 
         # ── save CV results ────────────────────────────────────────────────
         cv_path = out_folder / "cv_results.npz"
