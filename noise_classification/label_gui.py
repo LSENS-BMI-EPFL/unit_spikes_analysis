@@ -1,144 +1,170 @@
 """
-label_gui.py
-------------
-Minimal tkinter GUI to manually label GOOD/MUA neurons as OK or NOISE.
+label_gui.py — label neurons as OK or NOISE.
 
-Usage
------
-    from label_gui import run_labeling_gui
-    run_labeling_gui(unit_table, trial_table, output_csv="labels.csv")
-
-Labels are appended to `output_csv` after every button press so you can
-quit at any time without losing work.  Already-labeled units are skipped
-on the next run.
+Controls: ◀/▶ toggle label · Enter confirm · Backspace go back · Close saves.
+Output  : <output_dir>/labels.csv  (append-only, dedup on LABEL_COLS)
 """
 
-import tkinter as tk
+import atexit, os, tkinter as tk
 from tkinter import ttk
 
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use("TkAgg")
+import matplotlib; matplotlib.use("TkAgg")
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
-from _shared import LABEL_COLS, plot_unit
+from noise_classification.hared import LABEL_COLS, plot_unit
 
+AUTOSAVE_EVERY = 10
+
+
+# ── Unit selection ─────────────────────────────────────────────────────────────
+
+def _oddness(wf) -> float:
+    """Waveform suspiciousness score in [0,1]."""
+    if wf is None: return 0.5
+    wf = np.asarray(wf, float)
+    if len(wf) < 5 or np.all(wf == 0): return 0.5
+    snr     = (wf.max() - wf.min()) / (wf[:max(1,len(wf)//10)].std() + 1e-9)
+    ti      = int(np.argmin(wf)); half = wf[ti] / 2
+    tw      = np.searchsorted(wf[ti:] > half, True) - \
+              (ti - np.searchsorted(wf[:ti][::-1] > half, True))
+    zc      = int(np.sum(np.diff(np.sign(wf)) != 0))
+    return float((np.clip(1 - snr/20, 0, 1)
+                + np.clip(1 - tw/10,  0, 1)
+                + np.clip(zc/10,      0, 1)) / 3)
+
+
+def _rank(df: pd.DataFrame, n: int) -> pd.DataFrame:
+    """Top-n most suspicious good/mua units by n_spikes, waveform, duration."""
+    c = df[df["bc_label"].isin(["good", "mua"])].copy()
+    if c.empty:
+        raise ValueError(f"No good/mua units. bc_label values: {df['bc_label'].unique()}")
+
+    ns  = (c["bc_nSpikes"].fillna(0) if "bc_nSpikes" in c.columns
+           else c["spike_times"].apply(len)).values.astype(float)
+    dur = c["spike_times"].apply(lambda s: s[-1]-s[0] if len(s)>1 else 0.).values.astype(float)
+
+    score = np.zeros(len(c))
+    for v, p in [(ns, 95), (dur, 95)]:
+        p95 = np.percentile(v, p)
+        if p95 > 0: score += np.clip(1 - v/p95, 0, 1)
+    if "waveform_mean" in c.columns:
+        score += c["waveform_mean"].apply(_oddness).values
+
+    c["_s"] = score
+    return c.sort_values("_s", ascending=False).head(n).drop(columns="_s").reset_index(drop=True)
+
+
+# ── GUI ────────────────────────────────────────────────────────────────────────
 
 def run_labeling_gui(
     unit_table: pd.DataFrame,
     trial_table: pd.DataFrame,
-    output_csv: str = "labels.csv",
-    random_seed: int = 0,
+    output_dir: str = "noise_classification/",
+    n_units: int = 500,
+    pre_ranked_candidates: pd.DataFrame | None = None,
 ) -> None:
-    """
-    Iterate over GOOD/MUA units in random order, show raster + waveform,
-    and let the user label each as OK or NOISE.
+    os.makedirs(output_dir, exist_ok=True)
+    out_csv = os.path.join(output_dir, "labels.csv")
 
-    Parameters
-    ----------
-    unit_table  : must have columns in LABEL_COLS, 'spike_times',
-                  'waveform_mean' (optional), 'bc_label'.
-    trial_table : must have column 'start_time'.
-    output_csv  : labels are appended here; existing labels are skipped.
-    """
-    # ── filter to GOOD/MUA; skip already-labeled units ────────────────────────
-    candidates = unit_table[unit_table["bc_label"].isin(["GOOD", "MUA"])].copy()
-    candidates = candidates.sample(frac=1, random_state=random_seed).reset_index(drop=True)
+    cands = pre_ranked_candidates.copy().reset_index(drop=True) \
+            if pre_ranked_candidates is not None else _rank(unit_table, n_units)
 
+    # skip already-labeled
     try:
-        done = pd.read_csv(output_csv)[LABEL_COLS]
-        candidates = candidates.merge(done.assign(_seen=True), on=LABEL_COLS,
-                                      how="left")
-        candidates = candidates[candidates["_seen"].isna()].drop(columns="_seen")
-        candidates = candidates.reset_index(drop=True)
-        print(f"  Skipping {len(done)} already-labeled units.")
+        done = pd.read_csv(out_csv)[LABEL_COLS]
+        for col in LABEL_COLS:
+            if col in cands.columns:
+                done[col] = done[col].astype(cands[col].dtype)
+        cands = cands.merge(done.assign(_seen=True), on=LABEL_COLS, how="left")
+        cands = cands[cands["_seen"].isna()].drop(columns="_seen").reset_index(drop=True)
     except FileNotFoundError:
         pass
 
-    if candidates.empty:
-        print("All units already labeled.")
-        return
+    if cands.empty:
+        print("All units already labeled."); return
 
     trial_starts = np.sort(trial_table["start_time"].values)
+    total        = len(cands)
+    pending: dict[int, str] = {}
+    n_since_save = [0]
 
-    # ── state ─────────────────────────────────────────────────────────────────
-    state = {"idx": 0}
-    total = len(candidates)
+    def _flush():
+        if not pending: return
+        rows = [{**{c: cands.iloc[i][c] for c in LABEL_COLS},
+                 "bc_label": cands.iloc[i]["bc_label"],
+                 "manual_label": lbl}
+                for i, lbl in pending.items()]
+        new = pd.DataFrame(rows)
+        try:
+            new = pd.concat([pd.read_csv(out_csv), new]).drop_duplicates(LABEL_COLS, keep="last")
+        except FileNotFoundError:
+            pass
+        new.to_csv(out_csv, index=False)
+        n_since_save[0] = 0
 
-    # ── GUI setup ─────────────────────────────────────────────────────────────
-    root = tk.Tk()
-    root.title("Noise labeler")
+    atexit.register(_flush)
 
-    fig, (ax_raster, ax_wave) = plt.subplots(
-        1, 2, figsize=(11, 4),
-        gridspec_kw={"width_ratios": [3, 1]},
-    )
+    root = tk.Tk(); root.title("Noise labeler")
+    fig, (ax_r, ax_w) = plt.subplots(1, 2, figsize=(11, 4),
+                                      gridspec_kw={"width_ratios": [3, 1]})
     fig.tight_layout(pad=2.5)
-
     canvas = FigureCanvasTkAgg(fig, master=root)
     canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
-    # status bar
-    status_var = tk.StringVar()
-    ttk.Label(root, textvariable=status_var, font=("Helvetica", 10)).pack(pady=2)
+    ind_var = tk.StringVar()
+    ind_lbl = tk.Label(root, textvariable=ind_var, font=("Helvetica", 16, "bold"), pady=4)
+    ind_lbl.pack()
+    sta_var = tk.StringVar()
+    tk.Label(root, textvariable=sta_var, font=("Helvetica", 9), fg="grey").pack()
+    tk.Label(root, text="◀/▶ toggle   Enter confirm   Backspace back",
+             font=("Helvetica", 8), fg="#888").pack(pady=(0, 6))
 
-    btn_frame = ttk.Frame(root)
-    btn_frame.pack(pady=6)
+    state = {"idx": 0, "label": "OK"}
 
-    # ── draw current unit ──────────────────────────────────────────────────────
-    def draw(idx):
-        ax_raster.cla()
-        ax_wave.cla()
-        row = candidates.iloc[idx]
+    def _refresh_indicator():
+        ok = state["label"] == "OK"
+        ind_var.set("  ✓  OK  " if ok else "  ✗  NOISE  ")
+        ind_lbl.config(bg="#1a7a1a" if ok else "#9b1c1c", fg="white")
 
-        spikes   = np.asarray(row["spike_times"])
-        waveform = row.get("waveform_mean", None)
-        bc       = row["bc_label"]
-        uid_info = "  ".join(str(row[c]) for c in LABEL_COLS)
-
-        plot_unit(ax_raster, ax_wave, spikes, trial_starts, waveform)
-        ax_raster.set_title(f"{uid_info}   bc_label={bc}", fontsize=8, loc="left")
-        ax_wave.set_title("Mean waveform", fontsize=8)
-        fig.suptitle(f"Unit {idx + 1} / {total}", fontsize=9, y=1.01)
+    def _draw(idx):
+        ax_r.cla(); ax_w.cla()
+        row = cands.iloc[idx]
+        plot_unit(ax_r, ax_w, np.asarray(row["spike_times"]),
+                  trial_starts, row.get("waveform_mean"))
+        ax_r.set_title("  ".join(str(row[c]) for c in LABEL_COLS)
+                        + f"   bc_label={row['bc_label']}", fontsize=8, loc="left")
+        fig.suptitle(f"Unit {idx+1}/{total}"
+                     + (f"  [prev: {pending[idx]}]" if idx in pending else ""),
+                     fontsize=9, y=1.01)
         canvas.draw()
-        status_var.set(f"{idx + 1} / {total}  |  {total - idx - 1} remaining")
+        sta_var.set(f"{idx+1}/{total}  |  {sum(v=='NOISE' for v in pending.values())} NOISE  "
+                    f"{sum(v=='OK' for v in pending.values())} OK")
+        state["label"] = pending.get(idx, "OK")
+        _refresh_indicator()
 
-    # ── save label and advance ─────────────────────────────────────────────────
-    def label(value: str):
-        row = candidates.iloc[state["idx"]]
-        record = {c: row[c] for c in LABEL_COLS}
-        record["manual_label"] = value          # "OK" or "NOISE"
-        record["bc_label"]     = row["bc_label"]
+    def _toggle(e=None):
+        state["label"] = "NOISE" if state["label"] == "OK" else "OK"
+        _refresh_indicator()
 
-        pd.DataFrame([record]).to_csv(
-            output_csv, mode="a",
-            header=not pd.io.common.file_exists(output_csv),
-            index=False,
-        )
-        advance()
-
-    def advance():
-        state["idx"] += 1
-        if state["idx"] >= total:
-            status_var.set("Done!  All units labeled.")
-            root.after(1500, root.destroy)
+    def _confirm(e=None):
+        pending[state["idx"]] = state["label"]
+        n_since_save[0] += 1
+        if n_since_save[0] >= AUTOSAVE_EVERY: _flush()
+        if state["idx"] + 1 >= total:
+            _flush(); sta_var.set("Done!"); root.after(1500, root.destroy)
         else:
-            draw(state["idx"])
+            state["idx"] += 1; _draw(state["idx"])
 
-    # ── buttons ───────────────────────────────────────────────────────────────
-    ttk.Button(btn_frame, text="✓  OK",    width=14,
-               command=lambda: label("OK")).grid(row=0, column=0, padx=8)
-    ttk.Button(btn_frame, text="✗  NOISE", width=14,
-               command=lambda: label("NOISE")).grid(row=0, column=1, padx=8)
-    ttk.Button(btn_frame, text="→  Skip",  width=14,
-               command=advance).grid(row=0, column=2, padx=8)
+    def _back(e=None):
+        if state["idx"] > 0: state["idx"] -= 1; _draw(state["idx"])
 
-    # keyboard shortcuts
-    root.bind("o", lambda _: label("OK"))
-    root.bind("n", lambda _: label("NOISE"))
-    root.bind("s", lambda _: advance())
+    root.bind("<Left>",      _toggle)
+    root.bind("<Right>",     _toggle)
+    root.bind("<Return>",    _confirm)
+    root.bind("<BackSpace>", _back)
+    root.protocol("WM_DELETE_WINDOW", lambda: (_flush(), root.destroy()))
 
-    draw(0)
-    root.mainloop()
+    _draw(0); root.mainloop()
