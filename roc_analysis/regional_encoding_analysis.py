@@ -167,7 +167,7 @@ def analyze_regional_encoding_complete(data_df,
                                        progress_bar=True,
                                        n_jobs=None):
     """
-    Complete regional encoding analysis across all models and groups.
+    Complete regional encoding roc_analysis across all models and groups.
 
     Tests which brain regions encode each variable for each reward group.
 

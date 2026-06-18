@@ -81,7 +81,7 @@ def make_example_df(row_config=ROW_CONFIG, brain_areas=BRAIN_AREAS, seed=42) -> 
 def _lookup(df, analysis, area, pos_dir, neg_dir,
             analysis_col, area_col, direction_col, value_col,
             nonsig_dir='non-selective', scale=100.0):
-    """Return (pos, neg, nonsig) as fractions 0-1 for one (analysis, area) cell.
+    """Return (pos, neg, nonsig) as fractions 0-1 for one (roc_analysis, area) cell.
 
     scale : divide raw values by this to convert to 0-1
             (100 if your df stores percentages, 1 if already fractions)

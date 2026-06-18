@@ -1,5 +1,5 @@
 """
-Single function for focality index roc_analysis of GLM encoding variables.
+Single function for focality index analysis of GLM encoding variables.
 
 Usage:
     from focality_analysis_simple import analyze_focality
@@ -165,7 +165,7 @@ def bias_corrected_accelerated_ci(boot_values, observed_value, jack_estimates=No
 
 def analyze_focality_old(data_df, saving_path=None, n_bootstrap=1000, n_permutations=1000):
     """
-    Focality roc_analysis: resample neurons to get distributions, test difference.
+    Focality analysis: resample neurons to get distributions, test difference.
 
     For each group (R+ or R-):
       - Resample neurons with replacement (n_bootstrap times)
@@ -676,7 +676,7 @@ def permutation_test(data, area_column='area_acronym_custom', n_permutations=100
 def analyze_focality(data_df, saving_path=None, area_column='area_acronym_custom',
                      n_bootstrap=5000, n_permutations=10000):
     """
-    Complete focality roc_analysis using Approach 2: Group-level with mouse-resampling.
+    Complete focality analysis using Approach 2: Group-level with mouse-resampling.
 
     Parameters:
     -----------
@@ -907,7 +907,7 @@ def analyze_focality(data_df, saving_path=None, area_column='area_acronym_custom
 def analyze_focality_with_bca(data_df, saving_path=None, n_bootstrap=1000,
                               n_permutations=100, use_jackknife=False):
     """
-    Focality roc_analysis with bias-corrected accelerated (BCa) bootstrap CIs.
+    Focality analysis with bias-corrected accelerated (BCa) bootstrap CIs.
 
     Modified version that uses BCa instead of percentile CIs.
     """
@@ -1274,10 +1274,10 @@ def permutation_test_neurons(data, area_column='area_acronym_custom', n_permutat
 def analyze_focality_neurons(data_df, saving_path=None, area_column='area_acronym_custom',
                              n_bootstrap=5000, n_permutations=10000):
     """
-    Focality roc_analysis by resampling NEURONS (not mice).
+    Focality analysis by resampling NEURONS (not mice).
 
     WARNING: This approach ignores hierarchical structure (neurons nested in mice).
-    Use for exploratory roc_analysis only. For rigorous inference, use mouse-level resampling.
+    Use for exploratory analysis only. For rigorous inference, use mouse-level resampling.
 
     Parameters:
     -----------
@@ -1307,7 +1307,7 @@ def analyze_focality_neurons(data_df, saving_path=None, area_column='area_acrony
     print("=" * 70)
     print("⚠️  WARNING: This approach ignores hierarchical structure")
     print("⚠️  Neurons within mice are correlated - not independent")
-    print("⚠️  Use for exploratory roc_analysis only")
+    print("⚠️  Use for exploratory analysis only")
     print("\nStatistical approach:")
     print("  1. Compute observed focality (pooled neurons per group)")
     print("  2. Bootstrap CIs (resample neurons with replacement)")

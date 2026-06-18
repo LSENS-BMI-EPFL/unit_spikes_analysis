@@ -187,7 +187,7 @@ def filter_process_data_old(data_df, n_units_min=20, n_mice_per_area_min=3, keep
 
 def compute_prop_significant(roc_df, area_col, per_subject=True):
     """
-    Compute proportions of significant neurons per area, analysis type, reward group, - and direction,
+    Compute proportions of significant neurons per area, roc_analysis type, reward group, - and direction,
     i.e. over the entire dataset aggregated over mice.
     """
     if per_subject:
@@ -297,7 +297,7 @@ def compute_si_differences(roc_df):
 
     results = roc_df.copy()
 
-    # Keep analysis types relevant i.e. those with pre and post during passive
+    # Keep roc_analysis types relevant i.e. those with pre and post during passive
     results = results[results['analysis_type'].str.contains('passive')]
 
     # Some mice lack passive data (either pre or post, or both): drop these nans
@@ -305,7 +305,7 @@ def compute_si_differences(roc_df):
     results = results[~results['mouse_id'].isin(mice_with_incomplete_passive)]
 
     for anal_type in ['whisker_passive', 'auditory_passive', 'wh_vs_aud_passive']:
-        # Filter for only the relevant analysis type
+        # Filter for only the relevant roc_analysis type
         df = roc_df[roc_df['analysis_type'].isin([f'{anal_type}_pre', f'{anal_type}_post'])].copy()
 
         # Pivot so each neuron has pre and post SI in separate columns
@@ -333,7 +333,7 @@ def compute_si_differences(roc_df):
             -(pivot_df['si_post'] - pivot_df['si_pre'])  # Negative SI post
         )
 
-        # Create a unique column name for this analysis type
+        # Create a unique column name for this roc_analysis type
         delta_col = f"delta_si_{anal_type}"
         pivot_df[delta_col] = delta_si
 

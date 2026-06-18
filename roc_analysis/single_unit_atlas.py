@@ -1099,4 +1099,7 @@ if __name__ == '__main__':
                                       'cam_key': cam_key,
                                    'camera': camera
                                       })
-                    plot_single_neuron_atlas(data=data_subset, params=params, saving_p
+                    plot_single_neuron_atlas(data=data_subset, params=params, saving_path=saving_path)
+
+
+        print('Done.')

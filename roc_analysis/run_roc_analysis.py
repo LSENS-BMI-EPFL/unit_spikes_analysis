@@ -35,7 +35,7 @@ from selectivity_grid import plot_selectivity
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type for each reward group separately.
+    Plot proportions of significant neurons per area, roc_analysis type for each reward group separately.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -114,7 +114,7 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
 
 def plot_pop_selectivity_across_areas(data_df, per_subject, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type for each reward group separately.
+    Plot proportions of significant neurons per area, roc_analysis type for each reward group separately.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -173,7 +173,7 @@ def plot_pop_selectivity_across_areas(data_df, per_subject, area_order, area_col
 
 def plot_proportion_across_areas_reward_group(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, and per reward group.
+    Plot proportions of significant neurons per area, roc_analysis type, and per reward group.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -234,7 +234,7 @@ def plot_proportion_across_areas_reward_group(data_df, area_order, area_color_li
 
 def plot_pop_selectivity_across_areas_reward_group(data_df, per_subject, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, and per reward group.
+    Plot proportions of significant neurons per area, roc_analysis type, and per reward group.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -288,7 +288,7 @@ def plot_pop_selectivity_across_areas_reward_group(data_df, per_subject, area_or
 
 def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, for each reward separately found in
+    Plot proportions of significant neurons per area, roc_analysis type, for each reward separately found in
     pre-learning passive trials vs. proportions in the post-learning passive trials.
     Plots for all significant neurons only.
     :param data_df: dataframe with proportions of significant neurons per area
@@ -443,7 +443,7 @@ def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list,
 
 def plot_pop_selectivity_before_vs_after_across_areas(data_df, per_subject, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, for each reward separately found in
+    Plot proportions of significant neurons per area, roc_analysis type, for each reward separately found in
     pre-learning passive trials vs. proportions in the post-learning passive trials.
     Plots for all significant neurons only.
     :param data_df: dataframe with proportions of significant neurons per area
@@ -596,7 +596,7 @@ def plot_pop_selectivity_before_vs_after_across_areas(data_df, per_subject, area
 
 def plot_proportion_across_areas_pre_vs_post(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, reward group that are modulated comparing pre and post passive trials.
+    Plot proportions of significant neurons per area, roc_analysis type, reward group that are modulated comparing pre and post passive trials.
     Plots for per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -815,13 +815,13 @@ def main():
     # Get data information
     hostname = socket.gethostname()
     if 'haas' in hostname:
-        DATA_PATH = pathlib.Path('/mnt/lsens-analysis/')
-        NWB_PATH = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
-        FIGURE_PATH =  pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/combined_results/roc_analysis')
+        DATA_PATH = pathlib.Path('/mnt/lsens-roc_analysis/')
+        NWB_PATH = pathlib.Path('/mnt/lsens-roc_analysis/Axel_Bisi/NWB_combined')
+        FIGURE_PATH =  pathlib.Path('/mnt/lsens-roc_analysis/Axel_Bisi/combined_results/roc_analysis')
         INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')
 
     else:
-        DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis')
+        DATA_PATH = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis')
         NWB_PATH = r'M:\analysis\Axel_Bisi\NWB_combined'
         FIGURE_PATH = r'M:\analysis\Axel_Bisi\combined_results\roc_analysis'
         INFO_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
@@ -889,7 +889,7 @@ def main():
 
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
-    print('ROC analysis types:', roc_df['analysis_type'].unique())
+    print('ROC roc_analysis types:', roc_df['analysis_type'].unique())
 
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]

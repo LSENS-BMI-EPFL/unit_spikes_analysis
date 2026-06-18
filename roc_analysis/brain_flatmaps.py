@@ -248,7 +248,7 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
     dual_metrics = ['absolute', 'fraction', 'sign']
     annotation_states = [True, False]
 
-    #one analysis vs the other
+    #one roc_analysis vs the other
     comparison_pairs = [
         (['whisker_passive_pre', 'whisker_passive_post'], 'R+'),
         (['whisker_passive_pre', 'whisker_passive_post'], 'R-'),
@@ -276,7 +276,7 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
                         save_flatmap_figure(fig, text, output_dir=dual_hemisphere_output, dpi=500)
                         plt.close(fig)
                 except Exception as e:
-                    print(f"Error generating dual map analysis 1 vs 2: {analyses_pair}, {reward_group}, {metric}, annotate={annotate}: {e}")
+                    print(f"Error generating dual map roc_analysis 1 vs 2: {analyses_pair}, {reward_group}, {metric}, annotate={annotate}: {e}")
 
 
     # R+ vs R-
@@ -311,7 +311,7 @@ def generate_all_flatmaps(df, color_bar_type, output_dir):
 ## Single hemisphere helper functions 
 def get_single_analysis_colormap(analysis_type, intensity_range=(0.2, 1.0)):
     """ 
-    Get colormap for a specific analysis and reward group.
+    Get colormap for a specific roc_analysis and reward group.
     Used for single hemisphere plots."""
 
     base_color = 'Blues' #default for now
@@ -380,7 +380,7 @@ def get_single_analysis_colormap(analysis_type, intensity_range=(0.2, 1.0)):
 ## Dual hemispheres helper functions 
 def get_analysis_colormap(analysis_type, intensity_range=(0.2, 1.0)):
     """
-    Get colormap for analysis type only (dual hemisphere version).
+    Get colormap for roc_analysis type only (dual hemisphere version).
     Similar to get_single_analysis_colormap but doesn't consider reward group.
     """
 
@@ -413,7 +413,7 @@ def get_analysis_colormap(analysis_type, intensity_range=(0.2, 1.0)):
     return LinearSegmentedColormap.from_list(f'custom_{analysis_type}', colors)
 
 def get_base_colormap(intensity_range=(0.2, 1.0)):
-    """Get default blue colormap when no specific analysis type is specified."""
+    """Get default blue colormap when no specific roc_analysis type is specified."""
     base_color = 'Blues'
     base_cmap = matplotlib.colormaps.get_cmap(base_color)
     colors = base_cmap(np.linspace(intensity_range[0], intensity_range[1], 256))
@@ -444,7 +444,7 @@ def get_reward_group_colormap(reward_group, intensity_range=(0.2, 1.0)):
 
 def get_analysis_and_reward_colormap(analysis_type, intensity_range=(0.2, 1.0)):
     """
-    Get colormap for specific analysis and reward group combination.
+    Get colormap for specific roc_analysis and reward group combination.
     Dual hemisphere version.
     """
 
@@ -636,7 +636,7 @@ def get_data_and_regions(df_filtered, metric, reward_group=None):
 ## Single hemisphere plots 
 def generate_single_hemisphere(df, analysis_type, reward_group, metric='absolute', annotate=True, figsize=(10, 12), dpi=500, cmap=None):
     """
-    Generate single hemisphere flatmap for one analysis and reward group.
+    Generate single hemisphere flatmap for one roc_analysis and reward group.
     Plots left hemisphere only. Regions with no data are light gray,
     regions with units but no selectivity are dark gray.
     """
@@ -785,8 +785,8 @@ def generate_dual_hemispheres(df, analysis_types, color_bar_type, reward_group=N
     
     Three comparison modes:
     1. Two analyses, same reward group 
-    2. Same analysis, R+ vs R- 
-    3. Same analysis, positive vs negative selectivity 
+    2. Same roc_analysis, R+ vs R-
+    3. Same roc_analysis, positive vs negative selectivity
 
     """
     br = BrainRegions()
@@ -840,7 +840,7 @@ def generate_dual_hemispheres(df, analysis_types, color_bar_type, reward_group=N
                 left_title, right_title, annotate
             )
         
-        else: # by analysis type x reward group 
+        else: # by roc_analysis type x reward group
             plot_dual_colorbar(
                 fig, ax, br, all_swanson_regions, df_all_swanson,
                 left_data, right_data,
@@ -850,7 +850,7 @@ def generate_dual_hemispheres(df, analysis_types, color_bar_type, reward_group=N
                 left_title, right_title, annotate
             )
 
-    # one analysis by reward groups or signs
+    # one roc_analysis by reward groups or signs
     elif len(analysis_types) == 1:
         analysis_type = analysis_types[0]
         
@@ -1227,7 +1227,7 @@ def main(args):
     roc_df['neuron_id'] = roc_df.index.astype(int)
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
-    print('ROC analysis types:', roc_df['analysis_type'].unique())
+    print('ROC roc_analysis types:', roc_df['analysis_type'].unique())
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
     print("Done.")
@@ -1294,7 +1294,7 @@ if __name__ == '__main__':
     ## one_color_bar: always a single colorbar for all plots
 
     # reward_group_colorbar: 
-    #   - two colorbars only when comparing R+ vs R- within the same analysis
+    #   - two colorbars only when comparing R+ vs R- within the same roc_analysis
     #   - otherwise one colorbar
     #   - color depends on reward group (red for R-, green for R+)
 
