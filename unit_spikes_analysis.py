@@ -9,10 +9,16 @@
 
 # Imports
 import os
+import sys
 import socket
 import pathlib
 import pandas as pd
 
+import sys
+sys.path.insert(0, r"M:\analysis\Axel_Bisi\NWB_reader")
+sys.path.insert(0, r"M:\analysis\Axel_Bisi\Github\allen_utils")
+
+from load_helpers import load_jaw_onset_data
 from analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
 from analysis.roc_analysis_utils import load_roc_results
 from inflection.load_hmm_results import ROOT_PATH_AXEL
@@ -20,7 +26,6 @@ from inflection.load_hmm_results import ROOT_PATH_AXEL
 import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
-
 from noise_unit_detection import identify_noise_units
 
 from unit_spike_report import generate_unit_spike_report
@@ -34,7 +39,7 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
-from rastermap_clustering_psth import run_rastermap_psth
+from rastermap_clustering_psth import run_rastermap_psth, run_stats_only
 
 if __name__ == '__main__':
 
@@ -48,16 +53,20 @@ if __name__ == '__main__':
 
     hostname = socket.gethostname()
     if 'haas' in hostname:
-        N_WORKERS = 100
+        N_WORKERS = 120
         ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
         ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWB')
         INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')  # temp before mounted
         OUTPUT_PATH = pathlib.Path(f'/mnt/lsens-analysis/{experimenter}/combined_results')
+
+        sys.path.insert(0, "/home/bisi/code")
+        sys.path.insert(0, "/home/bisi/code/NWB_reader")
+
     else:
         N_WORKERS=30
         ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWB_combined')
         ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                        'NWBFull')
+                                        'NWB')
         INFO_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
                                  'dataset_info')
         OUTPUT_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
@@ -106,14 +115,14 @@ if __name__ == '__main__':
     subject_ids = [mouse for mouse in subject_ids if any(mouse in name for name in all_nwb_mice)]
 
     # Exclude specific mice
-    excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095'] #invalid NWB file 006, 038 ephys_exclude
-    excluded_mice = []
+    excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB144'] #invalid NWB file 006, 038 ephys_exclude
+    #excluded_mice = [] #Ab144 ccf labels with Nans
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
     #subject_ids = ['AB162', 'AB131', 'AB164']
-    #subject_ids = subject_ids[::3]
+    #subject_ids = subject_ids[::15]
 
     print(f"Subject IDs to do: {subject_ids}")
 
@@ -141,6 +150,7 @@ if __name__ == '__main__':
     analyses_to_do_single = ['roc_analysis']
     analyses_to_do_multi = ['noise_unit_detection']
     analyses_to_do_multi = ['rastermap_psth']
+    #analyses_to_do_multi = ['noise_classification']
 
 
     # --------------
@@ -153,8 +163,16 @@ if __name__ == '__main__':
     print(nwb_list)
     #nwb_list = nwb_list[::5]
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
+    print('Mouse IDs', unit_table.mouse_id.unique())
+    print('Mouse IDs', unit_table.reward_group.unique())
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
-    print(unit_table.layer_number.unique())
+
+    ## Load jaw onset times, then join onto trial table
+    jaw_onset_table = load_jaw_onset_data(nwb_list)
+    trial_table = trial_table.merge(
+        jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
+        on=['mouse_id', 'session_id', 'trial_id'], how='left')
+    trial_table['jaw_onset_time'] = trial_table['start_time'] + trial_table['jaw_dlc_onset']
 
     # ----------------------------------------
     # Perform analyses for each mouse NWB file
@@ -205,19 +223,22 @@ if __name__ == '__main__':
         print('Multi-mouse analyses')
 
         if 'unit_labels_processing' in analyses_to_do_multi:
-            unit_label_describe(unit_table, OUTPUT_PATH)
+            unit_label_describe(unit_table, output_path=OUTPUT_PATH)
 
         if 'unit_anat_processing' in analyses_to_do_multi:
-            unit_anat_describe(unit_table, OUTPUT_PATH)
+            unit_anat_describe(unit_table, output_path=OUTPUT_PATH)
 
         if 'noise_unit_detection' in analyses_to_do_multi:
             identify_noise_units(unit_table, trial_table, output_path=OUTPUT_PATH)
 
         if 'area_pairs_describe' in analyses_to_do_multi:
-            plot_number_area_pairs_heatmap(trial_table, unit_table, OUTPUT_PATH)
+            plot_number_area_pairs_heatmap(trial_table, unit_table, output_path=OUTPUT_PATH)
 
         if 'rsu_vs_fsu' in analyses_to_do_multi:
-            classify_rsu_vs_fsu(unit_table, OUTPUT_PATH)
+            classify_rsu_vs_fsu(unit_table, output_path=OUTPUT_PATH)
+
+        if 'striatal_type' in analyses_to_do_multi:
+            classify_striatal_units(unit_table, output_path=OUTPUT_PATH)
 
         if 'passive_psths_prepost' in analyses_to_do_multi:
             roc_df = load_roc_results(OUTPUT_PATH, max_workers=N_WORKERS)
@@ -239,4 +260,14 @@ if __name__ == '__main__':
             run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 
         if 'rastermap_psth' in analyses_to_do_multi:
+            print(unit_table.columns)
             run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)
+            #results = run_stats_only(r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_new\n_clusters_100\both\zscore_full\whisker_auditory\combined") # give path is here
+
+        #if 'noise_classification' in analyses_to_do_multi:
+        #    from noise_classification import label_gui, train_classifier, apply_classifier
+#
+        #    output = os.path.join(OUTPUT_PATH, 'noise_classification', 'labels.csv')
+        #    #label_gui.run_labeling_gui(unit_table, trial_table, output)
+        #    #train_classifier.train(labels_csv = os.path.join(OUTPUT_PATH, 'noise_classification', 'labels.csv'),unit_table = unit_table,trial_table = trial_table,model_dir = os.path.join(OUTPUT_PATH, 'noise_classification', 'model'))
+        #    apply_classifier.apply(unit_table = unit_table,model_dir = os.path.join(OUTPUT_PATH, 'noise_classification', 'model'),output_csv = os.path.join(OUTPUT_PATH, 'noise_classification', 'predictions.csv'),bc_labels_to_screen = ("good", "mua"))

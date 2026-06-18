@@ -8,17 +8,30 @@
 
 # Imports
 import os
+import sys
+import socket
 import numpy as np
 import pandas as pd
 import pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
+
+hostname = socket.gethostname()
+print('Current host:', hostname)
+if 'haas' in hostname:
+    N_WORKERS = 120
+    ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/combined_results')
+    ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/combined_results')
+
+    sys.path.append("/home/bisi/code/NWB_reader")
+    import NWB_reader_functions as nwb_reader
+
+else:
+    ROOT_PATH_AXEL = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
+    ROOT_PATH_MYRIAM = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
+
 import NWB_reader_functions as nwb_reader
-
-ROOT_PATH_AXEL = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
-ROOT_PATH_MYRIAM = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
-
 
 def load_learning_curves_data(path_to_data, subject_ids):
     print('Loading learning curve data...')

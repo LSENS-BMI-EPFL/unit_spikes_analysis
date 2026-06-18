@@ -896,7 +896,7 @@ def _save_waveform_overlay_by_duration_percentile(
     t = (np.arange(n_samples) - global_trough_idx) / sampling_rate_khz   # ms
 
     # ── Colour map: blue (short/FSU) → red (long/RSU) ────────────────────
-    cmap     = cm.get_cmap('coolwarm', n_percentile_bins)
+    cmap     = plt.get_cmap('coolwarm', n_percentile_bins)
     n_cols   = min(n_percentile_bins, 5)
     n_rows   = math.ceil(n_percentile_bins / n_cols)
 
