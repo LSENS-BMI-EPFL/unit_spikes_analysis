@@ -387,7 +387,7 @@ def calculate_roc(class_1_counts, class_2_counts, shuffle=False):
     return fpr, tpr, thresholds, roc_auc
 
 def  select_spike_counts(unit_data, analysis_type):
-    """ Select spike counts based on analysis type. """
+    """ Select spike counts based on roc_analysis type. """
 
     if analysis_type == 'whisker_passive_pre':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_pre')]['pre_spikes']
@@ -470,10 +470,10 @@ def  select_spike_counts(unit_data, analysis_type):
 
 def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     """
-    Process a single unit for ROC analysis.
+    Process a single unit for ROC roc_analysis.
     :param neuron_id: unit ID
     :param proc_unit_table: processed unit table
-    :param analysis_type: type of analysis
+    :param analysis_type: type of roc_analysis
     :param results_path: path to save results
     :return:
     """
@@ -510,7 +510,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed debug: AUC greater than chance
     p_value_neg = np.sum(permuted_aucs <= roc_auc) / n_permutations
 
-    # Determine significance and direction of signifiance based on p-values and analysis type
+    # Determine significance and direction of signifiance based on p-values and roc_analysis type
     if 'wh_vs_aud' in analysis_type:
         directions = ['auditory', 'whisker'] # auditory is spikes_2!
     else:
@@ -585,11 +585,11 @@ def _process_unit_task(args):
 
 def roc_analysis(nwb_file, results_path):
     """
-    Perform ROC analysis on spike data from a NWB file.
+    Perform ROC roc_analysis on spike data from a NWB file.
     :param nwb_file: path to NWB file
     :param results_path: path to save results
     """
-    print('Starting ROC analysis for file:', nwb_file)
+    print('Starting ROC roc_analysis for file:', nwb_file)
 
     proc_unit_table = extract_spike_data(nwb_file)
     mouse_id = proc_unit_table['mouse_id'].values[0]
@@ -616,7 +616,7 @@ def roc_analysis(nwb_file, results_path):
 
     neuron_ids = proc_unit_table['neuron_id'].unique()
 
-    # Build the full task list across ALL analysis types and neurons at once
+    # Build the full task list across ALL roc_analysis types and neurons at once
     tasks = [
         (neuron_id, analysis_type, results_path)
         for analysis_type in analyses_to_do
@@ -642,12 +642,12 @@ def roc_analysis(nwb_file, results_path):
 
 def roc_analysis_old(nwb_file, results_path):
     """
-    Perform ROC analysis on spike data from a NWB file.
+    Perform ROC roc_analysis on spike data from a NWB file.
     :param nwb_file: path to NWB file
     :param results_path: path to save results
     :return:
     """
-    print('Starting ROC analysis for file:', nwb_file)
+    print('Starting ROC roc_analysis for file:', nwb_file)
 
     # Process spike data
     proc_unit_table = extract_spike_data(nwb_file)
@@ -683,7 +683,7 @@ def roc_analysis_old(nwb_file, results_path):
     results = []
 
     for analysis_type in analyses_to_do:
-        print(f'ROC analysis type: {analysis_type}')
+        print(f'ROC roc_analysis type: {analysis_type}')
         # Use multiprocessing to process each neuron_id in parallel
         neuron_ids = proc_unit_table['neuron_id'].unique()
 
