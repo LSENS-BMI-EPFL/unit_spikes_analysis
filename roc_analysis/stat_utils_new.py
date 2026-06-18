@@ -263,8 +263,8 @@ def run_proportion_hierarchical_test(
 
     Tests
     -----
-    1. Permutation test on whisker Δ   — expect group effect
-    2. Permutation test on auditory Δ  — expect null
+    1. Permutation test on whisker Δ
+    2. Permutation test on auditory Δ
     3. Permutation test on whisker Δ − auditory Δ  — interaction
 
     Parameters

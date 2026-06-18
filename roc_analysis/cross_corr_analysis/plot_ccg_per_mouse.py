@@ -87,7 +87,7 @@ def plot_single_neuron_correlogram_with_sem(corr_neuronal_data, output_path=None
                 plt.tight_layout()
                 
                 if output_path:
-                    # output_path/mouse/area/
+                    # OUTPUT_PATH/mouse/area/
                     save_dir = os.path.join(output_path, mouse, area)
                     os.makedirs(save_dir, exist_ok=True)
                     filename_base = f"neuron_{unit}_cross_corr_with_sem"
@@ -135,7 +135,7 @@ def plot_area_correlogram(corr_neuronal_data, output_path=None):
             plt.tight_layout()
 
             if output_path:
-                # output_path/mouse/
+                # OUTPUT_PATH/mouse/
                 save_dir = os.path.join(output_path, mouse)
                 os.makedirs(save_dir, exist_ok=True)
                 safe_area = area.replace('/', '_').replace('\\', '_')

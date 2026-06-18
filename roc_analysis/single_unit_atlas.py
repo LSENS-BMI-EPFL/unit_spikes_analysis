@@ -1,5 +1,5 @@
 """
-Plot ROC analysis results on the Allen CCF atlas using brainrender. Standalone script.
+Plot ROC roc_analysis results on the Allen CCF atlas using brainrender. Standalone script.
 """
 # Imports
 import os
@@ -213,7 +213,7 @@ def get_metric_value(unit_row, mode, logp_min, logp_max):
 
 def plot_single_neuron_atlas_old(data, params=None, saving_path=None):
     """
-    Plot ROC analysis results on the Allen CCF atlas using brainrender.
+    Plot ROC roc_analysis results on the Allen CCF atlas using brainrender.
     :param data: pd.DataFrame containing ROC results and neuron locations.
     :param params:
     :param saving_path:
@@ -377,7 +377,7 @@ def plot_single_neuron_atlas_old(data, params=None, saving_path=None):
 
 def plot_single_neuron_atlas(data, params=None, saving_path=None):
     """
-    Plot ROC/GLM analysis results on the Allen CCF atlas using brainrender.
+    Plot ROC/GLM roc_analysis results on the Allen CCF atlas using brainrender.
     Optimized for speed.
     """
     # Params
@@ -606,26 +606,26 @@ if __name__ == '__main__':
         plot_roc = False
         plot_glm = True
 
-        print('Plotting single-neuron analysis results on CCF atlas...')
+        print('Plotting single-neuron roc_analysis results on CCF atlas...')
 
         # Set paths
         experimenter = 'Axel_Bisi'
-        ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'NWBFull_bis')
-        ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
+        ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis', experimenter, 'NWBFull_bis')
+        ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis', 'Myriam_Hamon',
                                         'NWBFull_new')
         INFO_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'z_LSENS', 'Share', 'Axel_Bisi_Share',
                                  'dataset_info')
         if plot_roc:
-            DATA_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'combined_results')
+            DATA_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis', experimenter, 'combined_results')
         elif plot_glm:
-            DATA_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon', 'combined_results')
+            DATA_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis', 'Myriam_Hamon', 'combined_results')
 
         # Make output folder
         if plot_roc:
             folder_name = 'roc_atlas_cmap'
         else:
             folder_name = 'glm_atlas_cmap'
-        FIGURE_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
+        FIGURE_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'roc_analysis', experimenter,
                                    'combined_results', folder_name)
 
         # Get mouse information
@@ -681,7 +681,7 @@ if __name__ == '__main__':
             print('Present mice: \n', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(),
                   'per reward group',
                   roc_df.groupby('reward_group')['mouse_id'].nunique())
-            print('ROC analysis types: \n' , roc_df['analysis_type'].unique())
+            print('ROC roc_analysis types: \n' , roc_df['analysis_type'].unique())
 
         elif plot_glm:
 
@@ -937,7 +937,7 @@ if __name__ == '__main__':
 
         run_region_stat = False
         if run_region_stat:
-            # Run complete analysis
+            # Run complete roc_analysis
             results = analyze_regional_encoding_complete(
                 data_df,
                 area_column='area_acronym_custom',
@@ -1099,7 +1099,4 @@ if __name__ == '__main__':
                                       'cam_key': cam_key,
                                    'camera': camera
                                       })
-                    plot_single_neuron_atlas(data=data_subset, params=params, saving_path=saving_path)
-
-
-        print('Done.')
+                    plot_single_neuron_atlas(data=data_subset, params=params, saving_p

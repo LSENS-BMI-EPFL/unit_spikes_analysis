@@ -4,7 +4,7 @@ import pathlib
 import numpy as np
 import pandas as pd
 import roc_utils as ru 
-import allen_utils_old as allen
+import allen_utils as allen
 import NWB_reader_functions as nwb_reader
 
 DATA_PATH = os.path.join('/Volumes', 'Petersen-Lab', 'z_LSENS', 'Share', 'Dana_Shayakhmetova', 'NWBFull_Copy')
