@@ -98,7 +98,9 @@ def load_jaw_onset_data(nwb_files, experimenter='AB', max_workers=12):
         print("\n".join(messages))
 
     if not data_list:
-        raise FileNotFoundError("No jaw onset .pkl files were loaded successfully.")
+        print("No jaw onset .pkl files were loaded successfully.")
+        return None
+        #raise FileNotFoundError("No jaw onset .pkl files were loaded successfully.")
 
     # Combine into single DataFrame
     jaw_onset_table = pd.concat(data_list, ignore_index=True)
