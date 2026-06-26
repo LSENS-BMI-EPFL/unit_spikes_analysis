@@ -147,7 +147,7 @@ DEFAULT_CONFIG = {
     "figure_dpi":        300,
     "min_trials_for_test": 2 * 10 + 1 + 5,
     "n_bootstrap":       2000,       # for CI on forest-plot means
-    "n_workers":         1,          # parallel sessions
+    "n_workers":         25,          # parallel sessions
 }
 
 # ============================================================================
@@ -1643,15 +1643,11 @@ def plot_grand_summary(combined, config, out_dir, trial_table):
 # ============================================================================
 
 def _forest_plot(ax, areas, mouse_means_df, rg_vals, rg_labels, rg_colors,
-                 value_col, mwu_fdr_by_area, wilcoxon_pfdr_by_area, n_boot,
+                 value_col, mwu_fdr_by_area, wilcoxon_pfdr, n_boot,
                  xlabel="Mean  ±  95% CI", area_order=None):
     """
     Shared forest-plot renderer.
     mouse_means_df must have columns: mouse_id, area, reward_group, <value_col>
-
-    mwu_fdr_by_area      : dict {area: fdr_p}  — MWU R+ vs R− per area
-    wilcoxon_pfdr_by_area: dict {area: fdr_p}  — Wilcoxon-vs-0 per area
-                           Both are keyed by area name so ordering is safe.
 
     area_order : optional list from allen_utils.get_custom_area_order().
                  Present areas are sorted to match its position; areas absent
@@ -1673,8 +1669,8 @@ def _forest_plot(ax, areas, mouse_means_df, rg_vals, rg_labels, rg_colors,
             v = sub_rg[sub_rg["area"] == a][value_col].dropna().values
             m = v.mean() if len(v) else np.nan
             lo, hi = _bootstrap_ci(v, n_boot=n_boot) if len(v) >= 2 else (m, m)
-            means.append(m)
-            lo_ci.append(lo)
+            means.append(m);
+            lo_ci.append(lo);
             hi_ci.append(hi)
             ns.append(len(v))
         offset = rgi * step - half
@@ -1699,19 +1695,19 @@ def _forest_plot(ax, areas, mouse_means_df, rg_vals, rg_labels, rg_colors,
     ax.axvline(0, color="k", lw=1.0, ls="--", zorder=2)
     x_max = max(np.nanmax(np.abs(all_means)) * 1.6, 0.15) if all_means else 0.3
 
-    # Stars are looked up by area name — safe regardless of sort order
     for yi, a in enumerate(areas):
-        mwu_lbl = _stat_label(mwu_fdr_by_area.get(a, np.nan))
-        if mwu_lbl and mwu_lbl != "ns":
-            ax.text(x_max * 0.97, y_pos[yi], mwu_lbl, ha="right", va="center",
+        lbl = _stat_label(mwu_fdr_by_area.get(a, np.nan))
+        if lbl and lbl != "ns":
+            ax.text(x_max * 0.97, y_pos[yi], lbl, ha="right", va="center",
                     fontsize=11, color="k", fontweight="bold")
-        wil_lbl = _stat_label(wilcoxon_pfdr_by_area.get(a, np.nan))
-        if wil_lbl and wil_lbl != "ns":
-            ax.text(-x_max * 0.97, y_pos[yi], wil_lbl, ha="left", va="center",
+    for yi, p in enumerate(wilcoxon_pfdr):
+        lbl = _stat_label(p)
+        if lbl and lbl != "ns":
+            ax.text(-x_max * 0.97, y_pos[yi], lbl, ha="left", va="center",
                     fontsize=9, color="#555555")
 
     ax.set_xlim(-x_max, x_max)
-    ax.set_yticks(y_pos)
+    ax.set_yticks(y_pos);
     ax.set_yticklabels(areas, fontsize=10)
     ax.set_xlabel(xlabel, fontsize=11)
     ax.invert_yaxis()
@@ -1785,52 +1781,37 @@ def area_reward_group_statistics(combined, config, out_dir, trial_table, area_or
                                           reward_group=f"{rg_labels[0]}_vs_{rg_labels[1]}",
                                           stat=np.nan, p=pf_v, p_fdr=pf_v))
 
-            # Wilcoxon-vs-0 collapsed over RG — stored as {area: fdr_p}
+            # Wilcoxon-vs-0 collapsed over RG for forest-plot FDR stars
             pv_all = [_one_sample_wilcoxon(mm[mm["area"] == a]["r"].dropna().values)
                       for a in areas]
             pv_all_arr = np.array(pv_all, dtype=float)
-            pfdr_all_arr = np.ones(len(areas))
+            pfdr_all = np.ones(len(areas))
             valid_all = np.isfinite(pv_all_arr)
             if valid_all.any():
-                _, pfdr_all_arr[valid_all], _, _ = multipletests(
+                _, pfdr_all[valid_all], _, _ = multipletests(
                     pv_all_arr[valid_all], method="fdr_bh")
-            # keyed by area name so _forest_plot ordering is always safe
-            wilcoxon_pfdr_by_area = dict(zip(areas, pfdr_all_arr))
 
-            # ── Forest plot: signed r, partial r, |partial r| ─────────────
+            # ── Forest plot: signed r and partial r side-by-side ──────────
             mm_partial = mouse_means(
                 lc_all.dropna(subset=["partial_r"]), value_col="partial_r")
-            # |partial_r| column for the absolute forest plot
-            lc_abs = lc_all.dropna(subset=["partial_r"]).copy()
-            lc_abs["abs_partial_r"] = lc_abs["partial_r"].abs()
-            mm_abs = mouse_means(lc_abs, value_col="abs_partial_r")
 
-            # PERMANOVA on partial_r mouse means (correct value_col)
-            pf_pr, pp_pr = _permanova(
-                mm_partial, group_col="reward_group", value_col="partial_r", n_perm=999)
-
-            perm_str    = f"p={pp:.3f}"    if np.isfinite(pp)    else "p=n/a"
-            perm_str_pr = f"p={pp_pr:.3f}" if np.isfinite(pp_pr) else "p=n/a"
-
-            fig, axes = plt.subplots(1, 3,
-                                     figsize=(21, max(3.2, len(areas) * 0.52 + 1.2)),
+            fig, axes = plt.subplots(1, 2,
+                                     figsize=(14, max(3.2, len(areas) * 0.52 + 1.2)),
                                      gridspec_kw=dict(wspace=0.55))
 
+            perm_str = f"p={pp:.3f}" if np.isfinite(pp) else "p=n/a"
             for ax, mm_df, val_col, ttl in [
-                (axes[0], mm,         "r",             "Signed r  (learning curve)"),
-                (axes[1], mm_partial, "partial_r",     "Partial r  (LC | motion)"),
-                (axes[2], mm_abs,     "abs_partial_r", "|Partial r|  (LC | motion)"),
+                (axes[0], mm, "r", "Signed r  (learning curve)"),
+                (axes[1], mm_partial, "partial_r", "Partial r  (LC | motion)"),
             ]:
                 _forest_plot(ax, areas, mm_df, rg_vals, rg_labels, rg_colors,
-                             val_col, mwu_fdr_by_area, wilcoxon_pfdr_by_area, n_boot,
+                             val_col, mwu_fdr_by_area, pfdr_all, n_boot,
                              area_order=area_order)
                 ax.set_title(ttl, fontsize=10, pad=5)
                 ax.legend(loc="lower right", fontsize=10, handlelength=1.2)
 
             fig.suptitle(
-                f"{epoch} vs LC  (bc={bc})\n"
-                f"Signed r PERMANOVA: {perm_str}  ·  "
-                f"Partial r PERMANOVA: {perm_str_pr}\n"
+                f"{epoch} vs LC  (bc={bc})  —  PERMANOVA(mouse means): {perm_str}\n"
                 "Stars right: MWU R+/R− FDR  ·  Stars left: Wilcoxon-vs-0 FDR",
                 fontsize=9, y=1.01)
             fig.tight_layout()
@@ -2012,11 +1993,8 @@ def load_existing_results(config, mouse_ids=None, session_days=None) -> pd.DataF
 def _process_one_session(args):
     """Top-level function (picklable) for ProcessPoolExecutor."""
     (session_id, mouse_id, session_day,
-     unit_table, trial_table, tmp_dir, cfg) = args
+     unit_table, trial_table, cfg) = args
 
-    import pickle as _pickle
-    unit_table  = _pickle.loads((tmp_dir / "unit_table.pkl").read_bytes())
-    trial_table = _pickle.loads((tmp_dir / "trial_table.pkl").read_bytes())
 
 
     print(f"[shift_test] {mouse_id} / {session_day}  (session {session_id})")
@@ -2161,16 +2139,9 @@ def run_shift_test_analysis(unit_table, trial_table, output_path,
     if session_days is not None:
         session_keys = session_keys[session_keys["session_day"].isin(session_days)]
 
-    # Write tables to disk once — avoids large IPC serialization (CPython 3.14 WinError 87)
-    import tempfile, pickle as _pickle
-    _tmp_dir = Path(tempfile.mkdtemp())
-    (_tmp_dir / "unit_table.pkl").write_bytes(_pickle.dumps(unit_table))
-    (_tmp_dir / "trial_table.pkl").write_bytes(_pickle.dumps(trial_table))
-
-
     args_list = [
         (row["session_id"], row["mouse_id"], row["session_day"],
-         unit_table, trial_table, _tmp_dir, cfg)
+         unit_table, trial_table, cfg)
         for _, row in session_keys.iterrows()
     ]
 

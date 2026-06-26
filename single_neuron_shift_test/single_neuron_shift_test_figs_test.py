@@ -147,7 +147,7 @@ DEFAULT_CONFIG = {
     "figure_dpi":        300,
     "min_trials_for_test": 2 * 10 + 1 + 5,
     "n_bootstrap":       2000,       # for CI on forest-plot means
-    "n_workers":         25,          # parallel sessions
+    "n_workers":         1,          # parallel sessions
 }
 
 # ============================================================================
@@ -1794,6 +1794,7 @@ def area_reward_group_statistics(combined, config, out_dir, trial_table, area_or
             # ── Forest plot: signed r and partial r side-by-side ──────────
             mm_partial = mouse_means(
                 lc_all.dropna(subset=["partial_r"]), value_col="partial_r")
+            pp, pf = _permanova(mm_partial, group_col="reward_group", value_col="r", n_perm=999)
 
             fig, axes = plt.subplots(1, 2,
                                      figsize=(14, max(3.2, len(areas) * 0.52 + 1.2)),
@@ -2141,6 +2142,13 @@ def run_shift_test_analysis(unit_table, trial_table, output_path,
         session_keys = session_keys[session_keys["mouse_id"].isin(mouse_ids)]
     if session_days is not None:
         session_keys = session_keys[session_keys["session_day"].isin(session_days)]
+
+    # Write tables to disk once — avoids large IPC serialization (CPython 3.14 WinError 87)
+    import tempfile, pickle as _pickle
+    _tmp_dir = Path(tempfile.mkdtemp())
+    (_tmp_dir / "unit_table.pkl").write_bytes(_pickle.dumps(unit_table))
+    (_tmp_dir / "trial_table.pkl").write_bytes(_pickle.dumps(trial_table))
+
 
     args_list = [
         (row["session_id"], row["mouse_id"], row["session_day"],
