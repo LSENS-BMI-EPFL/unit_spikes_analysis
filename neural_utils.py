@@ -1037,3 +1037,164 @@ def build_session_dynamics_table(trial_table, unit_table, params, proc_data_path
             json.dump(params, f)
 
     return sess_dyn_df
+
+
+
+
+def _extract_imec_id(df):
+    """
+    Return a copy of the dataframe with an integer imec_id column.
+
+    If imec_id already exists, it is converted to an integer.
+    Otherwise it is extracted from electrode_group strings such as:
+        imec0_shank0 -> 0
+        imec1        -> 1
+    """
+    df = df.copy()
+
+    if "imec_id" in df.columns:
+        df["imec_id"] = (
+            df["imec_id"]
+            .astype(str)
+            .str.extract(r"(\d+)", expand=False)
+            .astype(int)
+        )
+
+    elif "electrode_group" in df.columns:
+        df["imec_id"] = (
+            df["electrode_group"]
+            .astype(str)
+            .str.extract(r"imec(\d+)", expand=False)
+            .astype(int)
+        )
+
+    else:
+        raise ValueError(
+            "DataFrame contains neither 'imec_id' nor 'electrode_group'."
+        )
+
+    return df
+
+
+def merge_unit_quantifications(unit_table, *dfs, verbose=True):
+    """
+    Merge one or more unit-level dataframes onto unit_table.
+
+    Merge keys:
+        mouse_id
+        session_id
+        cluster_id
+        imec_id
+
+    imec_id is extracted from electrode_group when necessary.
+
+    Parameters
+    ----------
+    unit_table : pd.DataFrame
+        Primary dataframe.
+
+    *dfs : pd.DataFrame
+        Additional dataframes to merge.
+
+    verbose : bool
+        Print alignment diagnostics.
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+
+    base = _extract_imec_id(unit_table)
+
+    keys = [
+        "mouse_id",
+        "session_id",
+        "imec_id",
+        "cluster_id",
+    ]
+
+    for i, df in enumerate(dfs):
+
+        other = _extract_imec_id(df)
+
+        # Ensure merge keys exist
+        missing = [k for k in keys if k not in other.columns]
+        if missing:
+            raise ValueError(
+                f"DataFrame {i} is missing merge keys: {missing}"
+            )
+
+        # Check duplicate merge keys
+        dup = other.duplicated(keys)
+        if dup.any():
+            print(
+                f"\nWARNING: DataFrame {i} contains "
+                f"{dup.sum()} duplicated merge keys."
+            )
+            print(
+                other.loc[dup, keys]
+                .sort_values(["mouse_id", "session_id"])
+            )
+
+        # Compare keys
+        compare = base[keys].merge(
+            other[keys],
+            how="outer",
+            indicator=True,
+        )
+
+        missing_in_other = compare["_merge"] == "left_only"
+        missing_in_base = compare["_merge"] == "right_only"
+
+        if verbose:
+
+            if missing_in_other.any():
+                print(
+                    f"\nDataFrame {i}: "
+                    f"{missing_in_other.sum()} unit(s) from unit_table "
+                    "were not found."
+                )
+
+                summary = (
+                    compare.loc[missing_in_other]
+                    .groupby(["mouse_id", "session_id"])
+                    .size()
+                    .rename("n_missing")
+                    .reset_index()
+                    .sort_values(["mouse_id", "session_id"])
+                )
+
+                print(summary.to_string(index=False))
+
+            if missing_in_base.any():
+                print(
+                    f"\nDataFrame {i}: "
+                    f"{missing_in_base.sum()} unit(s) are not present "
+                    "in unit_table."
+                )
+
+                summary = (
+                    compare.loc[missing_in_base]
+                    .groupby(["mouse_id", "session_id"])
+                    .size()
+                    .rename("n_extra")
+                    .reset_index()
+                    .sort_values(["mouse_id", "session_id"])
+                )
+
+                print(summary.to_string(index=False))
+
+        # Merge only new columns
+        cols_to_merge = [
+            c for c in other.columns
+            if c not in keys and c not in base.columns
+        ]
+
+        base = base.merge(
+            other[keys + cols_to_merge],
+            on=keys,
+            how="left",
+            validate="one_to_one",
+        )
+
+    return base
