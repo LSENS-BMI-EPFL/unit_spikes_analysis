@@ -19,17 +19,15 @@ sys.path.insert(0, r"M:\analysis\Axel_Bisi\NWB_reader")
 sys.path.insert(0, r"M:\analysis\Axel_Bisi\Github\allen_utils")
 
 from load_helpers import load_jaw_onset_data
-from analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
-from analysis.roc_analysis_utils import load_roc_results
+from roc_analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
+from roc_analysis.roc_analysis_utils import load_roc_results
 from inflection.load_hmm_results import ROOT_PATH_AXEL
 #import NWB_reader_functions as nwb_reader
 import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from noise_unit_detection import identify_noise_units
-
 from unit_spike_report import generate_unit_spike_report
-# from raster_utils import plot_rasters
 from roc_utils import roc_analysis
 from task_modulation_utils import task_modulation_analysis
 from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
@@ -40,9 +38,13 @@ from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
 from rastermap_clustering_psth import run_rastermap_psth, run_stats_only
+from single_neuron_shift_test.single_neuron_shift_test_figs_test_new import run_shift_test_analysis
+#from neural_inflection.neural_inflection_analysis_figs import load_shift_test_results, get_learning_df, run_analysis, run_figures_only
+from neural_inflection.neural_inflection_fast import load_shift_test_results, get_learning_df, run_analysis, run_figures_only
 
 if __name__ == '__main__':
 
+    load_tables = True
     single_mouse = False
     multiple_mice = True
     joint_analysis = True
@@ -116,17 +118,18 @@ if __name__ == '__main__':
 
     # Exclude specific mice
     excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB144'] #invalid NWB file 006, 038 ephys_exclude
-    #excluded_mice = [] #Ab144 ccf labels with Nans
+    excluded_mice = ['AB077','AB144'] #Ab144 ccf labels with Nans
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
     #subject_ids = ['AB162', 'AB131', 'AB164']
+    #subject_ids = ['AB162']
     #subject_ids = subject_ids[::15]
 
     print(f"Subject IDs to do: {subject_ids}")
 
-    # subject_ids = ['AB131']
+    #subject_ids = ['AB131']
 
     ### --------------------
     # Define analyses to do
@@ -151,6 +154,8 @@ if __name__ == '__main__':
     analyses_to_do_multi = ['noise_unit_detection']
     analyses_to_do_multi = ['rastermap_psth']
     #analyses_to_do_multi = ['noise_classification']
+    analyses_to_do_multi = ['single_neuron_shift_test']
+    analyses_to_do_multi = ['neural_inflection']
 
 
     # --------------
@@ -160,21 +165,26 @@ if __name__ == '__main__':
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
     nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
-    print(nwb_list)
-    #nwb_list = nwb_list[::5]
-    trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
-    print('Mouse IDs', unit_table.mouse_id.unique())
-    print('Mouse IDs', unit_table.reward_group.unique())
-    unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
 
-    ## Load jaw onset times, then join onto trial table
-    jaw_onset_table = load_jaw_onset_data(nwb_list)
-    trial_table = trial_table.merge(
-        jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
-        on=['mouse_id', 'session_id', 'trial_id'], how='left')
-    trial_table['jaw_onset_time'] = trial_table['start_time'] + trial_table['jaw_dlc_onset']
+    #nwb_list = nwb_list[::10]
+    mice = ("AB119", "AB131", "AB132", "AB133")
+    nwb_list = [n for n in nwb_list if any(m in n for m in mice)]
 
-    # ----------------------------------------
+    if load_tables:
+        trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
+        unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+
+        #subject_ids = [s for s in subject_ids if 'AB13' in s]
+
+        ## Load jaw onset times, then join onto trial table
+        jaw_onset_table = load_jaw_onset_data(nwb_neural_files)
+        if jaw_onset_table is not None:
+            trial_table = trial_table.merge(
+                jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
+                on=['mouse_id', 'session_id', 'trial_id'], how='left')
+            trial_table['jaw_onset_time'] = trial_table['start_time'] + trial_table['jaw_dlc_onset']
+
+        # ----------------------------------------
     # Perform analyses for each mouse NWB file
     # ----------------------------------------
 
@@ -204,6 +214,9 @@ if __name__ == '__main__':
                     if 'unit_raster' in analyses_to_do_single:
                         plot_rasters(nwb_file, results_path)
 
+                    if 'unit_spike_report' in analyses_to_do_single:
+                        generate_unit_spike_report(nwb_file, results_path)
+
                     if 'roc_analysis' in analyses_to_do_single:
                         roc_analysis(nwb_file, results_path)
 
@@ -213,6 +226,15 @@ if __name__ == '__main__':
 
                     if 'unit_glm' in analyses_to_do_single:
                         run_unit_glm_pipeline_with_pool(nwb_file, results_path)
+
+                    if 'task_modulation' in analyses_to_do_single:
+                        task_modulation_analysis(nwb_file, results_path)
+
+                    if 'noise_correlation' in analyses_to_do_single:
+                        noise_correlation_analysis(nwb_file, results_path)
+
+
+
 
     ### ------------------------------------------
     # Analyses aggregating data from multiple mice
@@ -263,6 +285,22 @@ if __name__ == '__main__':
             print(unit_table.columns)
             run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)
             #results = run_stats_only(r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_new\n_clusters_100\both\zscore_full\whisker_auditory\combined") # give path is here
+
+        if 'single_neuron_shift_test' in analyses_to_do_multi:
+            run_shift_test_analysis(
+                unit_table=unit_table,
+                trial_table=trial_table,  #  needed for performance tertiles
+                output_path=OUTPUT_PATH,
+                figures_only=True,
+            )
+
+        if 'neural_inflection' in analyses_to_do_multi:
+            path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
+            shift_df = load_shift_test_results(subject_ids)
+            learning_df = get_learning_df(path_to_data, subject_ids)
+            run_analysis(unit_table, trial_table, learning_df, shift_df=shift_df)
+            run_figures_only(learning_df)
+
 
         #if 'noise_classification' in analyses_to_do_multi:
         #    from noise_classification import label_gui, train_classifier, apply_classifier
