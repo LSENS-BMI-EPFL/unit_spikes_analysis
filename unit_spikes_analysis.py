@@ -8,22 +8,16 @@
 
 
 # Imports
-import os
-import sys
 import socket
 import pathlib
-import pandas as pd
 
 import sys
 sys.path.insert(0, r"M:\analysis\Axel_Bisi\NWB_reader")
 sys.path.insert(0, r"M:\analysis\Axel_Bisi\Github\allen_utils")
 
 from load_helpers import load_jaw_onset_data
-from roc_analysis.cross_corr_analysis.create_neuronal_df import OUTPUT_DIR
 from roc_analysis.roc_analysis_utils import load_roc_results
-from inflection.load_hmm_results import ROOT_PATH_AXEL
 #import NWB_reader_functions as nwb_reader
-import allen_utils as allen_utils
 
 from raster_utils import plot_rasters
 from noise_unit_detection import identify_noise_units
@@ -37,10 +31,10 @@ from unit_desc_utils import *
 from noise_correl_utils import noise_correlation_analysis
 
 from passive_psth_utils import run_passive_psths
-from rastermap_clustering_psth import run_rastermap_psth, run_stats_only
+#from rastermap_psth.rastermap_clustering_psth import run_rastermap_psth
 from single_neuron_shift_test.single_neuron_shift_test_figs_test_new import run_shift_test_analysis
 #from neural_inflection.neural_inflection_analysis_figs import load_shift_test_results, get_learning_df, run_analysis, run_figures_only
-from neural_inflection.neural_inflection_fast import load_shift_test_results, get_learning_df, run_analysis, run_figures_only
+from rastermap_psth.area_latency_rastermap import run_area_latency_rastermap
 
 if __name__ == '__main__':
 
@@ -118,8 +112,10 @@ if __name__ == '__main__':
 
     # Exclude specific mice
     excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB144'] #invalid NWB file 006, 038 ephys_exclude
-    excluded_mice = ['AB077','AB144'] #Ab144 ccf labels with Nans
+    excluded_mice = ['AB068', 'AB077','AB144'] #Ab144 ccf labels with Nans
+    done_mice = ['AB082','AB086', 'AB120', 'AB162', 'AB134', 'AB141'] #Ab144 ccf labels with Nans
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
+    #subject_ids = ['AB144']
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
@@ -155,7 +151,8 @@ if __name__ == '__main__':
     analyses_to_do_multi = ['rastermap_psth']
     #analyses_to_do_multi = ['noise_classification']
     analyses_to_do_multi = ['single_neuron_shift_test']
-    analyses_to_do_multi = ['neural_inflection']
+    #analyses_to_do_multi = ['neural_inflection']
+    analyses_to_do_multi = ['area_latency_rastermap']
 
 
     # --------------
@@ -167,8 +164,8 @@ if __name__ == '__main__':
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
 
     #nwb_list = nwb_list[::10]
-    mice = ("AB119", "AB131", "AB132", "AB133")
-    nwb_list = [n for n in nwb_list if any(m in n for m in mice)]
+    #mice = ("AB119", "AB131", "AB132", "AB133")
+    #nwb_list = [n for n in nwb_list if any(m in n for m in mice)]
 
     if load_tables:
         trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
@@ -282,9 +279,11 @@ if __name__ == '__main__':
             run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 
         if 'rastermap_psth' in analyses_to_do_multi:
-            print(unit_table.columns)
             run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)
             #results = run_stats_only(r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_new\n_clusters_100\both\zscore_full\whisker_auditory\combined") # give path is here
+
+        if 'area_latency_rastermap' in analyses_to_do_multi:
+            run_area_latency_rastermap(unit_table, trial_table, OUTPUT_PATH)
 
         if 'single_neuron_shift_test' in analyses_to_do_multi:
             run_shift_test_analysis(
@@ -296,10 +295,10 @@ if __name__ == '__main__':
 
         if 'neural_inflection' in analyses_to_do_multi:
             path_to_data = r'M:\analysis\Axel_Bisi\combined_results'
-            shift_df = load_shift_test_results(subject_ids)
-            learning_df = get_learning_df(path_to_data, subject_ids)
-            run_analysis(unit_table, trial_table, learning_df, shift_df=shift_df)
-            run_figures_only(learning_df)
+            #shift_df = load_shift_test_results(subject_ids)
+            #learning_df = get_learning_df(path_to_data, subject_ids)
+            #run_analysis(unit_table, trial_table, learning_df, shift_df=shift_df)
+            #run_figures_only(learning_df)
 
 
         #if 'noise_classification' in analyses_to_do_multi:

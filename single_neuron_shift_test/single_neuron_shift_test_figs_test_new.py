@@ -1548,6 +1548,7 @@ def plot_grand_summary(combined, config, out_dir, trial_table):
         _ax_defaults(axes[0], "Reward group", "Pearson r", "Signed r — evoked vs LC")
         if len(rg_vals) == 2 and all(len(v) > 2 for v in vals):
             _, p = stats.mannwhitneyu(*vals, alternative="two-sided")
+            _, p = stats.ttest_ind(*vals, equal_var=False)
             _sig_bracket(axes[0], 0, 1, axes[0].get_ylim()[1], _stat_label(p))
         for i, (v, c) in enumerate(zip(vals, rg_colors)):
             _strip_mean_sem(axes[1], i, np.abs(v), c)
@@ -1717,6 +1718,53 @@ def _forest_plot(ax, areas, mouse_means_df, rg_vals, rg_labels, rg_colors,
     ax.invert_yaxis()
 
 
+def _compute_metric_stats(mm_df, val_col, areas, rg_vals, rg_labels, n_perm=999):
+    """
+    For one mouse-means DataFrame and one value column, compute:
+      - MWU R+ vs R− per area, FDR-BH corrected  → {area: fdr_p}
+      - Wilcoxon-vs-0 per area collapsed over RG, FDR-BH corrected → {area: fdr_p}
+      - PERMANOVA omnibus (reward_group factor)   → (F, p)
+
+    All tests operate on mouse-level means (no pseudoreplication).
+    Wilcoxon deduplicates across reward groups before testing.
+    """
+    # ── PERMANOVA ────────────────────────────────────────────────────────────
+    pf, pp = _permanova(mm_df, group_col="reward_group",
+                        value_col=val_col, n_perm=n_perm)
+
+    # ── MWU R+ vs R− per area ────────────────────────────────────────────────
+    mwu_fdr_by_area: dict[str, float] = {}
+    if len(rg_vals) == 2:
+        mwu_pv, mwu_areas = [], []
+        for a in areas:
+            v1 = mm_df[(mm_df["area"] == a) & (mm_df["reward_group"] == rg_vals[0])
+                       ][val_col].dropna().values
+            v2 = mm_df[(mm_df["area"] == a) & (mm_df["reward_group"] == rg_vals[1])
+                       ][val_col].dropna().values
+            if len(v1) >= 3 and len(v2) >= 3:
+                _, p = stats.mannwhitneyu(v1, v2, alternative="two-sided")
+                _, p = stats.ttest_ind(v1, v2, equal_var=False)
+                mwu_pv.append(p)
+                mwu_areas.append(a)
+        if mwu_pv:
+            _, pfdr_mwu, _, _ = multipletests(mwu_pv, method="fdr_bh")
+            mwu_fdr_by_area = dict(zip(mwu_areas, pfdr_mwu))
+
+    # ── Wilcoxon-vs-0, one mean per mouse per area (collapsed over RG) ───────
+    mm_collapsed = mm_df.groupby(["mouse_id", "area"])[val_col].mean().reset_index()
+    pv_all = [_one_sample_wilcoxon(
+                  mm_collapsed[mm_collapsed["area"] == a][val_col].dropna().values)
+              for a in areas]
+    pv_arr = np.array(pv_all, dtype=float)
+    pfdr_arr = np.ones(len(areas))
+    valid = np.isfinite(pv_arr)
+    if valid.any():
+        _, pfdr_arr[valid], _, _ = multipletests(pv_arr[valid], method="fdr_bh")
+    wilcoxon_pfdr_by_area = dict(zip(areas, pfdr_arr))
+
+    return mwu_fdr_by_area, wilcoxon_pfdr_by_area, (pf, pp)
+
+
 def area_reward_group_statistics(combined, config, out_dir, trial_table, area_order=None):
     use_p = config["use_p"]
     dpi = config["figure_dpi"]
@@ -1740,101 +1788,111 @@ def area_reward_group_statistics(combined, config, out_dir, trial_table, area_or
 
             mm = mouse_means(lc_all)  # (mouse_id, area, reward_group, r)
 
-            # PERMANOVA on mouse means (not raw neurons)
-            pf, pp = _permanova(mm, group_col="reward_group", value_col="r", n_perm=999)
-            stat_rows.append(dict(test="permanova_rg_mouse_means", epoch=epoch,
-                                  bc=bc, area="all", reward_group="all",
-                                  stat=pf, p=pp, p_fdr=np.nan))
-
-            # One-sample Wilcoxon per area on mouse means (FDR across areas)
-            for rg, rg_lbl in zip(rg_vals, rg_labels):
-                sub_rg = mm[mm["reward_group"] == rg]
-                pv_osw = [_one_sample_wilcoxon(
-                    sub_rg[sub_rg["area"] == a]["r"].dropna().values)
-                    for a in areas]
-                pv_arr = np.array(pv_osw, dtype=float)
-                valid = np.isfinite(pv_arr)
-                pfdr = np.ones(len(areas))
-                if valid.any():
-                    _, pfdr[valid], _, _ = multipletests(pv_arr[valid], method="fdr_bh")
-                for a, p_raw, p_fdr in zip(areas, pv_arr, pfdr):
-                    stat_rows.append(dict(test="wilcoxon_vs0_mouse_means",
-                                          epoch=epoch, bc=bc, area=a,
-                                          reward_group=rg_lbl, stat=np.nan,
-                                          p=p_raw, p_fdr=p_fdr))
-
-            # MWU R+ vs R- per area on mouse means (FDR)
-            mwu_fdr_by_area = {}
-            if len(rg_vals) == 2:
-                mwu_pv, mwu_areas = [], []
-                for a in areas:
-                    v1 = mm[(mm["area"] == a) & (mm["reward_group"] == rg_vals[0])
-                            ]["r"].dropna().values
-                    v2 = mm[(mm["area"] == a) & (mm["reward_group"] == rg_vals[1])
-                            ]["r"].dropna().values
-                    if len(v1) >= 3 and len(v2) >= 3:
-                        _, p = stats.mannwhitneyu(v1, v2, alternative="two-sided")
-                        mwu_pv.append(p);
-                        mwu_areas.append(a)
-                if mwu_pv:
-                    _, pfdr_mwu, _, _ = multipletests(mwu_pv, method="fdr_bh")
-                    mwu_fdr_by_area = dict(zip(mwu_areas, pfdr_mwu))
-                for a, pf_v in mwu_fdr_by_area.items():
-                    stat_rows.append(dict(test="mwu_rplus_vs_rminus_mouse_means",
-                                          epoch=epoch, bc=bc, area=a,
-                                          reward_group=f"{rg_labels[0]}_vs_{rg_labels[1]}",
-                                          stat=np.nan, p=pf_v, p_fdr=pf_v))
-
-            # Wilcoxon-vs-0 collapsed over RG — stored as {area: fdr_p}
-            pv_all = [_one_sample_wilcoxon(mm[mm["area"] == a]["r"].dropna().values)
-                      for a in areas]
-            pv_all_arr = np.array(pv_all, dtype=float)
-            pfdr_all_arr = np.ones(len(areas))
-            valid_all = np.isfinite(pv_all_arr)
-            if valid_all.any():
-                _, pfdr_all_arr[valid_all], _, _ = multipletests(
-                    pv_all_arr[valid_all], method="fdr_bh")
-            # keyed by area name so _forest_plot ordering is always safe
-            wilcoxon_pfdr_by_area = dict(zip(areas, pfdr_all_arr))
-
-            # ── Forest plot: signed r, partial r, |partial r| ─────────────
+            # ── Mouse means for all three metrics ─────────────────────────
             mm_partial = mouse_means(
                 lc_all.dropna(subset=["partial_r"]), value_col="partial_r")
-            # |partial_r| column for the absolute forest plot
             lc_abs = lc_all.dropna(subset=["partial_r"]).copy()
             lc_abs["abs_partial_r"] = lc_abs["partial_r"].abs()
             mm_abs = mouse_means(lc_abs, value_col="abs_partial_r")
 
-            # PERMANOVA on partial_r mouse means (correct value_col)
-            pf_pr, pp_pr = _permanova(
-                mm_partial, group_col="reward_group", value_col="partial_r", n_perm=999)
+            metrics = [
+                ("r",             "Signed r  (LC)",        mm,         "signed_r"),
+                ("partial_r",     "Partial r  (LC | M)",   mm_partial, "partial_r"),
+                ("abs_partial_r", "|Partial r|  (LC | M)", mm_abs,     "abs_partial_r"),
+            ]
 
-            perm_str    = f"p={pp:.3f}"    if np.isfinite(pp)    else "p=n/a"
-            perm_str_pr = f"p={pp_pr:.3f}" if np.isfinite(pp_pr) else "p=n/a"
+            # ── Per-metric stats (PERMANOVA + MWU post-hoc + Wilcoxon-vs-0) ─
+            metric_stats = {}   # val_col → (mwu_by_area, wil_by_area, (F, p))
+            perm_strs = {}
+            for val_col, ttl, mm_df, metric_tag in metrics:
+                mwu_d, wil_d, (pf_m, pp_m) = _compute_metric_stats(
+                    mm_df, val_col, areas, rg_vals, rg_labels)
+                metric_stats[val_col] = (mwu_d, wil_d)
+                perm_strs[val_col] = f"p={pp_m:.3f}" if np.isfinite(pp_m) else "p=n/a"
 
-            fig, axes = plt.subplots(1, 3,
-                                     figsize=(21, max(3.2, len(areas) * 0.52 + 1.2)),
-                                     gridspec_kw=dict(wspace=0.55))
+                # save to stat_rows
+                stat_rows.append(dict(test=f"permanova_rg_{metric_tag}",
+                                      epoch=epoch, bc=bc, area="all",
+                                      reward_group="all", stat=pf_m, p=pp_m,
+                                      p_fdr=np.nan))
+                for a, p_fdr in mwu_d.items():
+                    stat_rows.append(dict(
+                        test=f"mwu_rplus_vs_rminus_{metric_tag}",
+                        epoch=epoch, bc=bc, area=a,
+                        reward_group=f"{rg_labels[0]}_vs_{rg_labels[1]}",
+                        stat=np.nan, p=p_fdr, p_fdr=p_fdr))
+                for a, p_fdr in wil_d.items():
+                    stat_rows.append(dict(
+                        test=f"wilcoxon_vs0_{metric_tag}",
+                        epoch=epoch, bc=bc, area=a,
+                        reward_group="all", stat=np.nan,
+                        p=p_fdr, p_fdr=p_fdr))
 
-            for ax, mm_df, val_col, ttl in [
-                (axes[0], mm,         "r",             "Signed r  (learning curve)"),
-                (axes[1], mm_partial, "partial_r",     "Partial r  (LC | motion)"),
-                (axes[2], mm_abs,     "abs_partial_r", "|Partial r|  (LC | motion)"),
-            ]:
-                _forest_plot(ax, areas, mm_df, rg_vals, rg_labels, rg_colors,
-                             val_col, mwu_fdr_by_area, wilcoxon_pfdr_by_area, n_boot,
-                             area_order=area_order)
-                ax.set_title(ttl, fontsize=10, pad=5)
-                ax.legend(loc="lower right", fontsize=10, handlelength=1.2)
-
-            fig.suptitle(
+            suptitle_base = (
                 f"{epoch} vs LC  (bc={bc})\n"
-                f"Signed r PERMANOVA: {perm_str}  ·  "
-                f"Partial r PERMANOVA: {perm_str_pr}\n"
-                "Stars right: MWU R+/R− FDR  ·  Stars left: Wilcoxon-vs-0 FDR",
-                fontsize=9, y=1.01)
-            fig.tight_layout()
-            _save_fig(fig, sub_dir, f"forest_{epoch}_bc{bc}", dpi)
+                f"PERMANOVA — "
+                f"signed r: {perm_strs['r']}  ·  "
+                f"partial r: {perm_strs['partial_r']}  ·  "
+                f"|partial r|: {perm_strs['abs_partial_r']}\n"
+                "Stars right: MWU R+/R− post-hoc FDR  ·  Stars left: Wilcoxon-vs-0 FDR"
+            )
+
+            # ── Sort helper: decreasing |mean(R+) − mean(R-)| per metric ──
+            def _diff_order(mm_df, val_col):
+                if len(rg_vals) < 2:
+                    return list(areas)
+                diffs = {}
+                for a in areas:
+                    sub = mm_df[mm_df["area"] == a]
+                    grp_means = [sub[sub["reward_group"] == rg][val_col].dropna().mean()
+                                 for rg in rg_vals]
+                    diffs[a] = (abs(grp_means[1] - grp_means[0])
+                                if all(np.isfinite(m) for m in grp_means) else np.nan)
+                return sorted(areas,
+                              key=lambda a: (-diffs[a]
+                                             if np.isfinite(diffs[a]) else np.inf))
+
+            orderings = [
+                ("allen",    area_order, "Allen area order"),
+                ("diffmean", None,       "Decreasing |R+−R−| mean diff"),
+            ]
+
+            # ── 3-panel overview figure for each ordering ─────────────────
+            for ord_tag, ord_list, ord_label in orderings:
+                fig, axes = plt.subplots(
+                    1, 3,
+                    figsize=(21, max(3.2, len(areas) * 0.52 + 1.2)),
+                    gridspec_kw=dict(wspace=0.55))
+                for ax, (val_col, ttl, mm_df, _) in zip(axes, metrics):
+                    mwu_d, wil_d = metric_stats[val_col]
+                    order = ord_list if ord_tag == "allen" else _diff_order(mm_df, val_col)
+                    _forest_plot(ax, areas, mm_df, rg_vals, rg_labels, rg_colors,
+                                 val_col, mwu_d, wil_d, n_boot, area_order=order)
+                    ax.set_title(ttl, fontsize=10, pad=5)
+                    ax.legend(loc="lower right", fontsize=10, handlelength=1.2)
+                    if val_col == 'abs_partial_r':
+                        ax.xlim(-0.05, 0.5)
+                fig.suptitle(f"{suptitle_base}\n({ord_label})", fontsize=9, y=1.01)
+                fig.tight_layout()
+                _save_fig(fig, sub_dir, f"forest_{epoch}_bc{bc}_{ord_tag}", dpi)
+
+            # ── Standalone single-metric figures (2 orderings × 3 metrics) ─
+            for val_col, ttl, mm_df, metric_tag in metrics:
+                mwu_d, wil_d = metric_stats[val_col]
+                for ord_tag, ord_list, ord_label in orderings:
+                    order = ord_list if ord_tag == "allen" else _diff_order(mm_df, val_col)
+                    figS, axS = plt.subplots(
+                        figsize=(7, max(3.2, len(areas) * 0.52 + 1.2)))
+                    _forest_plot(axS, areas, mm_df, rg_vals, rg_labels, rg_colors,
+                                 val_col, mwu_d, wil_d, n_boot,
+                                 xlabel=ttl, area_order=order)
+                    axS.set_title(f"{ttl}\n{epoch}  bc={bc}  ({ord_label})",
+                                  fontsize=10, pad=5)
+                    axS.legend(loc="lower right", fontsize=10, handlelength=1.2)
+                    figS.suptitle(suptitle_base, fontsize=9, y=1.01)
+                    figS.tight_layout()
+                    _save_fig(figS, sub_dir,
+                              f"forest_{metric_tag}_{epoch}_bc{bc}_{ord_tag}", dpi)
 
     if stat_rows:
         pd.DataFrame(stat_rows).to_csv(
