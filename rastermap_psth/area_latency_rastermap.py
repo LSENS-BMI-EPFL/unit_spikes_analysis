@@ -520,7 +520,7 @@ def run_area_latency_rastermap(units: pd.DataFrame,
     units["_rg_str"] = rg_raw.values
 
     # ── bc_label filter for FR pass (good only, as in parent) ─────────────
-    units_good = units[units["bc_label"] == "good"].copy()
+    units_good = units[units["bc_label"].isin(["good","mua"])].copy()
     all_ids    = units_good.index.tolist()
     print(f"  {len(units)} total → {len(units_good)} bc=good units")
 
