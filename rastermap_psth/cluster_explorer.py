@@ -1,7 +1,7 @@
 """
 cluster_explorer.py
 --------------------
-Standalone script to explore rastermap clusters from a saved embedding.
+Standalone script to explore rastermap_psth clusters from a saved embedding.
 Loads raw NWB data, matches neurons by unit_id (positional index), and
 generates per-neuron and per-cluster figures.
 
@@ -338,7 +338,7 @@ def fig_cluster_summary(cluster_id: int,
     Cluster-level figure:
       Row 0: mean ± SEM PSTH per trial type, R+ vs R- overlay (stim-aligned)
       Row 1: mean ± SEM PSTH per trial type, R+ vs R- overlay (jaw-aligned)
-      Row 2: population raster heatmap (neurons × time, rastermap order, stim-aligned)
+      Row 2: population raster heatmap (neurons × time, rastermap_psth order, stim-aligned)
       Row 3: brain region bar + pie, waveform type bar
     """
     n_neurons = len(cluster_units)
@@ -446,7 +446,7 @@ def fig_cluster_summary(cluster_id: int,
                      label="z-score FR")
     ax_pop.axvline(0, color="k", lw=1.0, ls="--")
     ax_pop.set_xlabel("time from stim onset (s)", fontsize=8)
-    ax_pop.set_ylabel("neuron (rastermap order)", fontsize=8)
+    ax_pop.set_ylabel("neuron (rastermap_psth order)", fontsize=8)
     ax_pop.set_title("Population heatmap — whisker hits, stim aligned", fontsize=9)
     _style_ax(ax_pop)
 

@@ -1,5 +1,5 @@
 """
-rastermap_psth.py — Population PSTH matrix with rastermap ordering, UMAP, k-means.
+rastermap_psth.py — Population PSTH matrix with rastermap_psth ordering, UMAP, k-means.
 
 Condition order: whisker_pre | whisker_post | auditory_pre | auditory_post
 Z-score: per neuron, single std from baseline bins pooled across all 4 conditions.
@@ -7,7 +7,7 @@ Z-score: per neuron, single std from baseline bins pooled across all 4 condition
 Entry point
 ───────────
     run_rastermap_psth(units, trials, out_root, **cfg_overrides)
-        Full pipeline: build PSTHs → rastermap → UMAP → k-means → stats.
+        Full pipeline: build PSTHs → rastermap_psth → UMAP → k-means → stats.
 
     run_stats_only(out_folder)
         Re-run reward-group enrichment statistics on an existing embedding
@@ -46,10 +46,10 @@ Figures (main pipeline)
     fig2_fr_distribution.png   — FR histogram with threshold
     fig3_neuron_counts.png     — neurons per mouse pre/post filters
     fig4_sample_neurons.png    — random sample, 4-cond PSTHs overlaid
-    fig5_population_matrix.png — input order | rastermap order (subplots)
-    fig6_cluster_profiles.png  — mean PSTH per rastermap cluster
+    fig5_population_matrix.png — input order | rastermap_psth order (subplots)
+    fig6_cluster_profiles.png  — mean PSTH per rastermap_psth cluster
     fig7_pca_variance.png      — scree + cumulative variance
-    fig8_umap.png              — unicolor | rastermap-cluster coloured
+    fig8_umap.png              — unicolor | rastermap_psth-cluster coloured
     fig9_kmeans.png            — k-means UMAP | elbow
 """
 from __future__ import annotations
@@ -83,7 +83,7 @@ import plotting_utils
 # TODO: remove unused PCA?
 # TODO: Implement trad GMM Approach and compaore clustering / have it in different script for all the methods
 # TODO: Test just baseline corrected
-# TODO: order of clustering kmeans/GMMs applied on ordered rastermap cmatrix
+# TODO: order of clustering kmeans/GMMs applied on ordered rastermap_psth cmatrix
 # TODO: use estimated waveform duration category from results
 # TODO: cluster coactivation
 # TODO: pseudoreplication issue? cluster dominated by one mouse/one area?
@@ -125,7 +125,7 @@ DEFAULT_CFG: dict[str, Any] = dict(
     n_example_neurons    = 30,
     example_alpha        = 0.5,       # weight: 0=centroid only, 1=LZ only
     use_wf_classification_csv = True, # if True: load RSU(WW)/FSU(NW) labels from per-mouse waveform_analysis CSV instead of duration-percentile split
-    cross_validate       = True,     # if True: fit rastermap on odd trials, evaluate on even
+    cross_validate       = True,     # if True: fit rastermap_psth on odd trials, evaluate on even
     cv_zscore_independent = True,    # if True: z-score odd and even trials independently; if False: fit normaliser on odd, apply to even
 )
 
@@ -732,7 +732,7 @@ def build_feature_matrix_strided(unit_ids, st_map, mouse_map, session_map, event
     return np.vstack(results), t_ctrs, n_bins_list
 
 
-# ── rastermap ──────────────────────────────────────────────────────────────────
+# ── rastermap_psth ──────────────────────────────────────────────────────────────────
 
 def fit_rastermap(X, n_clusters):
     n_pcs  = min(200, X.shape[0] - 1, X.shape[1] - 1)
@@ -1133,7 +1133,7 @@ def fig8_umap(emb, cluster_labels, n_clusters, out_dir):
     ax1.set_title("UMAP"); ax1.set_xlabel("UMAP 1"); ax1.set_ylabel("UMAP 2")
     sc = ax2.scatter(emb[:, 0], emb[:, 1], s=2, c=cluster_labels,
                      cmap="tab20", alpha=0.8, linewidths=0, vmin=0, vmax=n_clusters - 1)
-    ax2.set_title("UMAP — rastermap clusters"); ax2.set_xlabel("UMAP 1")
+    ax2.set_title("UMAP — rastermap_psth clusters"); ax2.set_xlabel("UMAP 1")
     cb = plt.colorbar(sc, cax=cax, label="Rastermap cluster")
     fig.tight_layout()
     _save(fig, out_dir / "fig8_umap", dpi=400)
@@ -1369,7 +1369,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
     n_neurons = len(isort)
     edges     = [0] + list(boundaries) + [n_neurons]
 
-    # sort all metadata arrays by rastermap order
+    # sort all metadata arrays by rastermap_psth order
     reward_s   = reward_arr[isort]
     waveform_s = waveform_arr[isort]
     layer_s    = layer_arr[isort]
@@ -1417,7 +1417,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
 
 
 def fig11_area_per_cluster(unit_ids, cluster_labels, area_arr, n_clusters, out_dir):
-    """Stacked bar: area composition per rastermap cluster."""
+    """Stacked bar: area composition per rastermap_psth cluster."""
     all_areas  = sorted(set(area_arr))
     cmap       = matplotlib.colormaps.get_cmap("tab20")#plt.cm.get_cmap("tab20", len(all_areas))
     area_color = {a: cmap(i) for i, a in enumerate(all_areas)}
@@ -1452,13 +1452,13 @@ def fig11_area_per_cluster(unit_ids, cluster_labels, area_arr, n_clusters, out_d
     fig.legend(handles, all_areas, loc="lower center",
                ncol=min(8, len(all_areas)), fontsize=6,
                bbox_to_anchor=(0.5, -0.03))
-    fig.suptitle("Area composition per rastermap cluster", fontsize=10)
+    fig.suptitle("Area composition per rastermap_psth cluster", fontsize=10)
     fig.tight_layout()
     _save(fig, out_dir / "fig11_area_per_cluster", dpi=400)
 
 
 def fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_clusters, out_dir):
-    """R+/R- proportion per rastermap cluster with per-cluster Fisher's exact + BH correction."""
+    """R+/R- proportion per rastermap_psth cluster with per-cluster Fisher's exact + BH correction."""
     is_rplus       = reward_arr == "R+"
     n_tot_rp       = is_rplus.sum()
     n_tot_rm       = (~is_rplus).sum()
@@ -1502,7 +1502,7 @@ def fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_clusters, o
     ax.set_xticklabels([f"C{k+1}\n(n={ns[k]})" for k in range(n_clusters)], fontsize=7)
     ax.set_ylabel("Proportion")
     ax.set_ylim(0, 1.12)
-    ax.set_title("Reward group composition per rastermap cluster\n"
+    ax.set_title("Reward group composition per rastermap_psth cluster\n"
                  "(* BH-corrected Fisher's exact, α=0.05)", fontsize=9)
     ax.legend(fontsize=8)
     fig.tight_layout()
@@ -1655,7 +1655,7 @@ def figCV_rastermap_comparison(X_odd, X_even, n_bins_list, isort, boundaries,
     fig, axes = plt.subplots(1, 3, figsize=(22, 9), dpi=400,
                              gridspec_kw={"width_ratios": [10, 10, 1]})
     im1 = _draw_matrix(axes[0], X_odd[isort],  n_bins_list, boundaries, vmax, cfg,
-                       f"Odd trials — rastermap order (n={len(X_odd)})")
+                       f"Odd trials — rastermap_psth order (n={len(X_odd)})")
     im2 = _draw_matrix(axes[1], X_even[isort], n_bins_list, boundaries, vmax, cfg,
                        f"Even trials — same order (n={len(X_even)})")
     for ax, im in zip(axes[:2], [im1, im2]):
@@ -1933,7 +1933,7 @@ def run_rastermap_psth(units: pd.DataFrame,
     print(f"  X shape (before filtering): {X.shape}")
 
     # ── feature matrix diagnostics — filter NaN/Inf/degenerate rows BEFORE
-    # rastermap/k-means/UMAP fitting and before any figure uses X, so that
+    # rastermap_psth/k-means/UMAP fitting and before any figure uses X, so that
     # (a) clustering isn't corrupted by NaN rows, and (b) fig5/fig6/etc. never
     # see a NaN row in the first place (NaNs propagate through cluster means
     # and crash matplotlib's axis autoscaling otherwise).
@@ -1948,7 +1948,7 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     odd = nan_rows | inf_rows | zero_rows | constant_rows
     if odd.sum() > 0:
-        print(f"  Total odd rows: {odd.sum()} — dropping before rastermap/UMAP")
+        print(f"  Total odd rows: {odd.sum()} — dropping before rastermap_psth/UMAP")
         odd_uids = [unit_ids[i] for i in np.where(odd)[0]]
         print(f"  Example odd uids: {odd_uids[:10]}")
         unit_ids       = [uid for uid, o in zip(unit_ids, odd) if not o]
@@ -1969,7 +1969,7 @@ def run_rastermap_psth(units: pd.DataFrame,
     fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map, cond_infos, cfg, out_folder)
 
     n_k = cfg["n_rastermap_clusters"]
-    print(f"Running rastermap (n_clusters={n_k})...")
+    print(f"Running rastermap_psth (n_clusters={n_k})...")
     isort, boundaries = fit_rastermap(X, n_k)
 
     cluster_labels = np.empty(len(unit_ids), dtype=int)
@@ -2032,7 +2032,7 @@ def run_rastermap_psth(units: pd.DataFrame,
 
         print(f"  X_odd shape: {X_odd.shape}  X_even shape: {X_even.shape}")
 
-        print(f"  Fitting rastermap on odd trials (n_clusters={n_k})...")
+        print(f"  Fitting rastermap_psth on odd trials (n_clusters={n_k})...")
         isort_cv, boundaries_cv = fit_rastermap(X_odd, n_k)
 
         cluster_labels_cv = np.empty(len(unit_ids), dtype=int)
@@ -2111,7 +2111,7 @@ def run_rastermap_psth(units: pd.DataFrame,
 # ── reward-group enrichment statistics ────────────────────────────────────────
 
 def run_reward_group_stats(out_folder: Path | str) -> dict:
-    """Mouse-level R+/R− enrichment analysis across rastermap clusters.
+    """Mouse-level R+/R− enrichment analysis across rastermap_psth clusters.
 
     Loads embedding_results.npz from *out_folder* (must contain mouse_arr and
     reward_arr saved by run_rastermap_psth).  All outputs go to
@@ -2155,7 +2155,7 @@ def run_reward_group_stats(out_folder: Path | str) -> dict:
 
     # Needed for the combined per-cluster stats-matrix figure (column 3:
     # mean PSTH difference) — X is per-neuron concatenated PSTH, isort/boundaries
-    # define rastermap cluster order, n_bins_list/t_ctrs define condition layout.
+    # define rastermap_psth cluster order, n_bins_list/t_ctrs define condition layout.
     X              = data["X"]
     isort          = data["isort"]
     boundaries     = data["boundaries"]
@@ -2412,7 +2412,7 @@ def _fig_stats_overview(f_matrix, reward_groups, pvals_raw, pvals_fdr, reject,
             transform=ax.transAxes,
             color="darkred" if permanova_p < 0.05 else "dimgrey")
 
-    fig.suptitle("R+/R− enrichment across rastermap clusters", fontsize=11)
+    fig.suptitle("R+/R− enrichment across rastermap_psth clusters", fontsize=11)
     fig.tight_layout()
     _save(fig, stats_dir / "figS1_stats_overview", dpi=400)
 
@@ -2518,7 +2518,7 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
                               n_bins_list, t_ctrs,
                               n_clusters, stats_dir):
     """Vertical, cluster-indexed summary figure (rows = clusters 1..n, in
-    rastermap output order — matches fig5_population_matrix / fig6 layout).
+    rastermap_psth output order — matches fig5_population_matrix / fig6 layout).
 
     Five columns, sharing the y-axis (cluster index):
       1. f_{m,k}        — group mean ± SEM as a dot-and-errorbar per group
@@ -2695,7 +2695,7 @@ def run_stats_only(out_folder: str | Path) -> dict:
     """Re-run the reward-group enrichment analysis on an existing embedding.
 
     Use this when you want to run or re-run statistics without recomputing
-    the full rastermap pipeline.  All required data (cluster_labels, mouse_arr,
+    the full rastermap_psth pipeline.  All required data (cluster_labels, mouse_arr,
     reward_arr) must already be present in embedding_results.npz — which is
     guaranteed if the embedding was produced by run_rastermap_psth with the
     current version of this script.
