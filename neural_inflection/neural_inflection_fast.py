@@ -29,6 +29,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import matplotlib as mpl
+mpl.use('Agg')   # non-interactive backend — prevents GUI buffer refs on Windows
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
@@ -100,9 +101,13 @@ RG_LABELS  = {1: "R+", 0: "R-"}
 
 def _savefig(fig: plt.Figure, path: Path):
     """Save figure as PNG, PDF and SVG sequentially.
-    Matplotlib renderers are not thread-safe; parallel saving corrupts output."""
+    Explicit canvas clear + gc between formats prevents CPython 3.14 Windows
+    BytesIO/numpy buffer finalisation race (BufferError on BytesIO resize)."""
+    import gc
     for ext in (".png", ".pdf", ".svg"):
         fig.savefig(path.with_suffix(ext), bbox_inches="tight")
+        fig.canvas.flush_events()
+        gc.collect()
 
 
 # ---------------------------------------------------------------------------
@@ -296,13 +301,21 @@ def _fit_sigmoid(t: np.ndarray, y: np.ndarray):
         return np.nan, np.nan, np.nan, np.nan, np.inf, np.inf, False
 
 
-def model_comparison(t: np.ndarray, y: np.ndarray) -> dict:
+# Column names matching model_comparison tuple return order
+MC_FIELDS = (
+    "aic_constant","aic_linear","aic_sigmoid",
+    "rss_constant","rss_linear","rss_sigmoid",
+    "best_model","sigmoid_wins","linear_wins",
+    "L","k","t0","b",
+    "linear_slope","linear_intercept",
+    "t0_idx","direction","linear_direction",
+)
+
+
+def model_comparison(t: np.ndarray, y: np.ndarray) -> tuple:
+    """Returns a flat tuple in MC_FIELDS order — avoids per-row dict allocation."""
     mu,    rss_c, aic_c  = _fit_constant(y)
     sl, ic, rss_l, aic_l = _fit_linear(t, y)
-    # Skip sigmoid when neither constant nor linear can be beaten:
-    # sigmoid needs ΔAIC > 2 vs both; if linear itself is > 2 worse than
-    # constant, sigmoid almost never wins — but we still fit it for completeness.
-    # Only skip if data is constant (zero variance) — safe early exit.
     if rss_c == 0:
         L, k, t0, b, rss_s, aic_s, valid = np.nan, np.nan, np.nan, np.nan, np.inf, np.inf, False
     else:
@@ -323,17 +336,15 @@ def model_comparison(t: np.ndarray, y: np.ndarray) -> dict:
 
     linear_direction = np.nan if np.isnan(sl) else (1 if sl > 0 else -1)
 
-    return {
-        "aic_constant": aic_c, "aic_linear": aic_l, "aic_sigmoid": aic_s,
-        "rss_constant": rss_c, "rss_linear": rss_l, "rss_sigmoid": rss_s,
-        "best_model":  ("sigmoid" if sigmoid_wins else
-                        ("linear" if linear_wins else "constant")),
-        "sigmoid_wins": sigmoid_wins, "linear_wins": linear_wins,
-        "L": L, "k": k, "t0": t0, "b": b,
-        "linear_slope": sl, "linear_intercept": ic,
-        "t0_idx": t0_idx, "direction": direction,
-        "linear_direction": linear_direction,
-    }
+    return (
+        aic_c, aic_l, aic_s,
+        rss_c, rss_l, rss_s,
+        "sigmoid" if sigmoid_wins else ("linear" if linear_wins else "constant"),
+        sigmoid_wins, linear_wins,
+        L, k, t0, b,
+        sl, ic,
+        t0_idx, direction, linear_direction,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,11 +354,18 @@ def model_comparison(t: np.ndarray, y: np.ndarray) -> dict:
 def _neuron_worker(unit_id, area, mouse_id, session_id, imec_id, probe,
                    reward_group, spike_times,
                    trial_starts_w, n_w, trial_starts_a, n_a):
-    spk  = np.sort(np.asarray(spike_times))
-    meta = dict(unit_id=unit_id, area_acronym_custom=area,
-                mouse_id=mouse_id, session_id=session_id,
-                imec_id=imec_id, probe=probe, reward_group=reward_group)
-    results = []
+    """
+    Returns (rows, fr_map) where:
+      rows   : list of flat tuples, one per (stim, epoch) combination
+      fr_map : dict (trial_type, epoch) -> fr array  (for example figures)
+    Each tuple layout: MC_FIELDS + meta + (trial_type, epoch, n_trials, mean_fr)
+    """
+    spk = np.asarray(spike_times)
+    if spk.size > 1 and not np.all(spk[:-1] <= spk[1:]):
+        spk = np.sort(spk)
+
+    rows   = []
+    fr_map = {}
     for trial_type, trial_starts, n_trials in [
         ("whisker",  trial_starts_w, n_w),
         ("auditory", trial_starts_a, n_a),
@@ -356,35 +374,50 @@ def _neuron_worker(unit_id, area, mouse_id, session_id, imec_id, probe,
             continue
         baseline, evoked_bc = compute_epoch_fr(spk, trial_starts)
         t = np.arange(n_trials, dtype=float)
-        for epoch, y in [("baseline", baseline), ("evoked", evoked_bc)]:
-            res = model_comparison(t, y)
-            res.update(meta)
-            res.update({"trial_type": trial_type, "epoch": epoch,
-                        "n_trials": n_trials, "mean_fr": float(y.mean()),
-                        "fr_series": y.tolist()})
-            results.append(res)
-    return results
+        for epoch, y in (("baseline", baseline), ("evoked", evoked_bc)):
+            mc  = model_comparison(t, y)
+            row = mc + (
+                unit_id, area, mouse_id, session_id, imec_id, probe, reward_group,
+                trial_type, epoch, n_trials, float(y.mean()),
+            )
+            rows.append(row)
+            fr_map[(trial_type, epoch)] = y
+    return rows, fr_map
 
 
-def analyse_session(unit_table: pd.DataFrame, trial_table: pd.DataFrame) -> list[dict]:
+# Column names for the full result DataFrame
+_RESULT_COLS = MC_FIELDS + (
+    "unit_id","area_acronym_custom","mouse_id","session_id",
+    "imec_id","probe","reward_group",
+    "trial_type","epoch","n_trials","mean_fr",
+)
+
+
+def analyse_session(unit_table: pd.DataFrame, trial_table: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns a DataFrame directly — built from columnar tuple data.
+    fr_series stored only for top-N_EXAMPLE sigmoid neurons per stim/epoch.
+    """
+    unit_table = unit_table.copy()
     unit_table["presenceRatio"] = unit_table["presenceRatio"].astype(float)
     good = unit_table[
         (unit_table["bc_label"] == "good") &
         (unit_table["presenceRatio"] > 0.8)
     ]
     if good.empty:
-        return []
+        return pd.DataFrame(columns=_RESULT_COLS)
+
     trial_starts_w, n_w = get_active_trial_starts(trial_table, "whisker")
     trial_starts_a, n_a = get_active_trial_starts(trial_table, "auditory")
-    # Extract arrays directly — avoids pickling entire DataFrame rows
-    ids      = good["unit_id"].values
-    areas    = good["area_acronym_custom"].values
-    mids     = good["mouse_id"].values
-    sids     = good["session_id"].values
-    imecs    = good["imec_id"].values if "imec_id" in good.columns else np.full(len(good), np.nan)
-    probes   = good["probe"].values   if "probe"   in good.columns else np.full(len(good), np.nan)
-    rgs      = good["reward_group"].values if "reward_group" in good.columns else np.full(len(good), np.nan)
-    spikes   = good["spike_times"].values
+
+    ids    = good["unit_id"].values
+    areas  = good["area_acronym_custom"].values
+    mids   = good["mouse_id"].values
+    sids   = good["session_id"].values
+    imecs  = good["imec_id"].values   if "imec_id"      in good.columns else np.full(len(good), np.nan)
+    probes = good["probe"].values     if "probe"        in good.columns else np.full(len(good), np.nan)
+    rgs    = good["reward_group"].values if "reward_group" in good.columns else np.full(len(good), np.nan)
+    spikes = good["spike_times"].values
 
     worker_args = [
         (ids[i], areas[i], mids[i], sids[i], imecs[i], probes[i], rgs[i],
@@ -393,22 +426,46 @@ def analyse_session(unit_table: pd.DataFrame, trial_table: pd.DataFrame) -> list
     ]
 
     try:
-        batches = Parallel(n_jobs=N_JOBS, backend="loky", timeout=120)(
+        outputs = Parallel(n_jobs=N_JOBS, backend="loky", timeout=300)(
             delayed(_neuron_worker)(*args) for args in worker_args
         )
     except Exception as e:
         print(f"WARNING: parallel processing failed ({e}), falling back to sequential.")
-        batches = [_neuron_worker(*args) for args in worker_args]
+        outputs = [_neuron_worker(*args) for args in worker_args]
 
-    return [item for batch in batches for item in batch]
+    # outputs is list of (rows, fr_map) per neuron
+    all_rows = []
+    fr_store = {}   # (unit_id, trial_type, epoch) -> fr array
+    for (rows, fr_map), uid in zip(outputs, ids):
+        all_rows.extend(rows)
+        for (tt, ep), arr in fr_map.items():
+            fr_store[(uid, tt, ep)] = arr
+
+    if not all_rows:
+        return pd.DataFrame(columns=_RESULT_COLS)
+
+    # Build DataFrame from columnar data — much faster than list-of-dicts
+    df = pd.DataFrame.from_records(all_rows, columns=_RESULT_COLS)
+
+    # Attach fr_series only for sigmoid-winning neurons (for example figures)
+    sig_mask = df["sigmoid_wins"].astype(bool)
+    df["fr_series"] = None
+    if sig_mask.any():
+        for idx in df.index[sig_mask]:
+            key = (df.at[idx, "unit_id"], df.at[idx, "trial_type"], df.at[idx, "epoch"])
+            arr = fr_store.get(key)
+            if arr is not None:
+                df.at[idx, "fr_series"] = arr.tolist()
+
+    return df
 
 
 # ---------------------------------------------------------------------------
 # Save / load
 # ---------------------------------------------------------------------------
 
-def save_results(results: list[dict], session_id: str) -> pd.DataFrame:
-    df = pd.DataFrame(results)
+def save_results(df: pd.DataFrame, session_id: str) -> pd.DataFrame:
+    """df is already a DataFrame from analyse_session."""
     df.drop(columns=["fr_series"], errors="ignore").to_csv(
         BASE_OUT / f"{session_id}_sigmoid_results.csv", index=False)
     return df
@@ -444,7 +501,9 @@ def _ordered_areas(areas: list[str]) -> list[str]:
     area_set = set(areas)
     known   = [a for a in allen if a in area_set]
     unknown = sorted(a for a in areas if a not in set(allen))
-    return known + unknown
+    out = known + unknown
+    print(out)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -646,8 +705,11 @@ def _plot_example_neuron(row: pd.Series, out_path: Path):
     ax5.set_ylabel("ΔAIC (sigmoid − other)"); ax5.set_title("Sigmoid advantage")
     ax5.legend(fontsize=10)
 
+    import gc
     _savefig(fig, out_path)
     plt.close(fig)
+    del fig
+    gc.collect()
 
 
 def plot_example_neurons(results_df: pd.DataFrame, n: int = N_EXAMPLE,
@@ -1082,6 +1144,7 @@ def _build_pointplot(lag_df, ordered, direction, xlim, ax, annotate_sig=True):
     mouse_med = (sub.groupby(["mouse_id", "area_acronym_custom", "reward_group"])
                  ["lag"].median().reset_index())
 
+
     rp_all = mouse_med[mouse_med["reward_group"] == 1]["lag"].dropna().values
     rm_all = mouse_med[mouse_med["reward_group"] == 0]["lag"].dropna().values
     p_omni = _permanova(rp_all, rm_all)
@@ -1097,9 +1160,9 @@ def _build_pointplot(lag_df, ordered, direction, xlim, ax, annotate_sig=True):
             mean_v = vals.mean()
             sem_v  = vals.std(ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0
             ax.scatter(vals, np.full(len(vals), i + jitter),
-                       color=color, s=22, alpha=0.50, zorder=3)
+                       color=color, s=28, alpha=0.3, zorder=3)
             ax.errorbar(mean_v, i + jitter, xerr=sem_v, fmt="o",
-                        color=color, ms=8, lw=2, capsize=4, zorder=4)
+                        color=color, ms=12, lw=2, capsize=4, zorder=4)
 
         rp_v = mouse_med[(mouse_med["area_acronym_custom"] == area) &
                           (mouse_med["reward_group"] == 1)]["lag"].dropna().values
@@ -1116,16 +1179,19 @@ def _build_pointplot(lag_df, ordered, direction, xlim, ax, annotate_sig=True):
             [pvals[a] for a in areas_tested], method="fdr_bh")
         for area, pc in zip(areas_tested, pvals_corr):
             if pc < 0.05:
+                print('sig-posthoc')
                 sig_areas.add(area)
                 i = ordered.index(area)
                 ax.text(xlim[1] + (xlim[1] - xlim[0]) * 0.02, i,
                         f"* p={pc:.3f}", va="center", fontsize=10,
                         color="k", clip_on=False)
 
+
     ax.axvline(0, color="k", lw=1.2, ls=":")
     ax.set_xlim(xlim)
     ax.set_yticks(range(len(ordered)))
     # bold y-tick labels for significant areas
+    print('sig areas', sig_areas)
     ax.set_yticklabels(
         [f"* {a}" if a in sig_areas else a for a in ordered],
         fontsize=11
@@ -1159,11 +1225,13 @@ def plot_lag_summary_pointplot(lag_df: pd.DataFrame, shared_areas: list[str],
 
     # --- figure 1: Allen order ---
     allen_ordered = _ordered_areas(shared_areas)
+    allen_ordered = allen_ordered[::-1]
     fig, axes = plt.subplots(1, 2,
                               figsize=(14, max(5, len(allen_ordered) * 0.60 + 1.5)),
                               sharey=True)
     pvals_inc, mmed_inc = _build_pointplot(lag_df, allen_ordered, 1, xlim, axes[0])
-    _build_pointplot(lag_df, allen_ordered, -1, xlim, axes[1])
+    pvals_inc, mmed_inc = _build_pointplot(lag_df, allen_ordered, -1, xlim, axes[1])
+
     axes[1].legend(handles=handles, loc="lower right", fontsize=11)
     fig.suptitle("Lag by area — mouse-median ± SEM  (Allen order)", fontsize=15, y=1.01)
     fig.tight_layout()
@@ -1175,13 +1243,28 @@ def plot_lag_summary_pointplot(lag_df: pd.DataFrame, shared_areas: list[str],
     sub_inc = lag_df[
         (lag_df["direction"] == 1) &
         (lag_df["area_acronym_custom"].isin(shared_areas))
-    ].dropna(subset=["lag"])
-    med_inc = (sub_inc.groupby(["area_acronym_custom", "reward_group"])
-               ["lag"].median().unstack(fill_value=0))
-    med_inc["abs_diff"] = (med_inc.get(1, pd.Series(0, index=med_inc.index)) -
-                           med_inc.get(0, pd.Series(0, index=med_inc.index))).abs()
+        ].dropna(subset=["lag"])
+
+    # Mouse medians (same quantity as in the plot)
+    mouse_med = (
+        sub_inc
+        .groupby(["mouse_id", "area_acronym_custom", "reward_group"])["lag"]
+        .median()
+        .reset_index()
+    )
+
+    # Median across mice
+    med_inc = (
+        mouse_med
+        .groupby(["area_acronym_custom", "reward_group"])["lag"]
+        .median()
+        .unstack()
+    )
+
+    med_inc["abs_diff"] = (med_inc[1] - med_inc[0]).abs()
     diff_ordered = med_inc.sort_values("abs_diff", ascending=False).index.tolist()
     diff_ordered = [a for a in diff_ordered if a in shared_areas]  # safety
+    print(diff_ordered)
 
     fig, axes = plt.subplots(1, 2,
                               figsize=(14, max(5, len(diff_ordered) * 0.60 + 1.5)),
@@ -1278,7 +1361,7 @@ def plot_lag_summary_heatmap(lag_df: pd.DataFrame, shared_areas: list[str],
             # mark peak per area
             for i, pk in enumerate(peaks):
                 if not np.isnan(pk):
-                    hax.plot(pk, i, "w^", ms=5, zorder=5)
+                    hax.plot(pk, i, "k0", ms=5, zorder=5)
             hax.set_yticks(range(len(peak_ordered)))
             hax.set_yticklabels(peak_ordered, fontsize=10)
             hax.set_xlabel("Lag (behavioral − neural, trials)"); hax.set_xlim(lag_range)
@@ -1314,7 +1397,7 @@ def plot_lag_summary_heatmap(lag_df: pd.DataFrame, shared_areas: list[str],
         fig_k, axes_k = plt.subplots(1, 2,
                                       figsize=(14, max(5, len(peak_ordered) * 0.55 + 2)),
                                       sharey=True)
-        cmap_areas = plt.cm.get_cmap("tab20", len(peak_ordered))
+        #cmap_areas = plt.cm.get_cmap("tab20", len(peak_ordered))
 
         for ax, rg, mat in [(axes_k[0], 1, mat_rp), (axes_k[1], 0, mat_rm)]:
             for i, area in enumerate(peak_ordered):
@@ -1423,7 +1506,7 @@ def _make_summary_figures(results_df: pd.DataFrame, learning_df: pd.DataFrame):
             plot_lag_difference_distribution(lag_df, direction,
                                               tag=tag, out_dir=sub_dir)
 
-        plot_lag_distribution_by_group(lag_df, shared_areas, out_dir=sub_dir)
+        #plot_lag_distribution_by_group(lag_df, shared_areas, out_dir=sub_dir)
         plot_lag_summary_pointplot(lag_df, shared_areas, out_dir=sub_dir, tag=tag)
         plot_lag_summary_heatmap(lag_df, shared_areas, out_dir=sub_dir)
 
@@ -1443,16 +1526,27 @@ def run_analysis(unit_table: pd.DataFrame,
     else:
         unit_table = apply_drift_filter(unit_table, shift_df)
 
-    all_results = []
-    for sid in unit_table["session_id"].unique():
-        print(f"Processing session {sid} ...")
-        u   = unit_table[unit_table["session_id"] == sid]
-        t   = trial_table[trial_table["session_id"] == sid]
-        res = analyse_session(u, t)
-        df  = save_results(res, sid)
-        all_results.append(df)
+    sessions = unit_table["session_id"].unique()
 
-    results_df = pd.concat(all_results, ignore_index=True)
+    def _process_session(sid):
+        print(f"Processing session {sid} ...")
+        u  = unit_table[unit_table["session_id"] == sid]
+        t  = trial_table[trial_table["session_id"] == sid]
+        df = analyse_session(u, t)
+        save_results(df, sid)
+        return df
+
+    # Outer parallelism over sessions using threads (inner uses loky processes).
+    # prefer="threads" avoids nested process pool conflicts on Windows.
+    try:
+        all_results = Parallel(n_jobs=min(N_JOBS, len(sessions)), prefer="threads")(
+            delayed(_process_session)(sid) for sid in sessions
+        )
+    except Exception as e:
+        print(f"WARNING: session-level parallelism failed ({e}), falling back to sequential.")
+        all_results = [_process_session(sid) for sid in sessions]
+
+    results_df = pd.concat([df for df in all_results if not df.empty], ignore_index=True)
 
     if "reward_group" not in results_df.columns:
         rg = unit_table[["unit_id", "reward_group"]].drop_duplicates()
@@ -1503,9 +1597,9 @@ def run_figures_only(learning_df: pd.DataFrame):
     for m in sorted(missing):
         print(f"WARNING: no results found for mouse {m}")
 
-    for mouse_id in sorted(results_df["mouse_id"].unique()):
-        print(f"  Mouse figures: {mouse_id}")
-        make_mouse_figures(mouse_id, results_df, lag_df)
+    #for mouse_id in sorted(results_df["mouse_id"].unique()):
+    #    print(f"  Mouse figures: {mouse_id}")
+    #    make_mouse_figures(mouse_id, results_df, lag_df)
 
     # recompute lag for run_figures_only default (whisker evoked) for per-mouse figures
     lag_df = compute_lags(results_df, learning_df)
