@@ -240,7 +240,7 @@ def _draw_area_matrix(ax, mat, n_bins_list, conds, cond_align_cols,
     vmax = vmax if vmax > 0 else 1.0
 
     im = ax.imshow(mat, aspect="auto", interpolation="none",
-                   cmap=custom_hotcold_cmap, vmin=-vmax, vmax=vmax,
+                   cmap='coolwarm', vmin=-vmax, vmax=vmax,
                    extent=[0, n_total, n_areas, 0])
 
     dt      = cfg["stride_ms"] / 1000
@@ -493,7 +493,7 @@ def run_area_latency_rastermap(units: pd.DataFrame,
         get_conditions(cfg)
 
     # ── output folder ─────────────────────────────────────────────────────
-    out_folder = Path(out_root) / "area_latency_rastermap_hotcol"
+    out_folder = Path(out_root) / "area_latency_rastermap"
     out_folder.mkdir(parents=True, exist_ok=True)
     print(f"Output → {out_folder}")
 

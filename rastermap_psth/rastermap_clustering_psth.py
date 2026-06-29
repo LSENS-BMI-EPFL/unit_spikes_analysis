@@ -402,8 +402,8 @@ def _bin_and_smooth(raster, t_pre, t_post, stride_ms, sigma_ms):
         smooth = gaussian_filter1d(
             rate,
             sigma=sigma_bins,
-            mode="constant",
-            cval=0.0
+            mode="nearest",
+            #cval=0.0
         )
 
         # crop back to requested interval
