@@ -12,10 +12,14 @@ Metrics computed per area × reward_group × encoding_variable:
     (all three split by direction: positive / negative)
   GLM
     - fraction_significant      : fraction of units with significant LRT
-    - mean_delta_test_corr      : mean(test_corr_full - test_corr_reduced)
+    - mean_delta_test_corr      : mean(test_corr_full - test_corr_reduced) / test_corr_full
 
   Latency (whisker stimulus + lick onset, area-averaged PSTH step-function fit)
     - response_latency_ms       : onset latency per area, correlated vs anatomy
+    Vectorized + parallelized across (reward_group, area, event) jobs.
+    A stimulus-locked artifact (e.g. magnetic/electrical) in [-5, +5] ms around
+    t=0 is removed and replaced with Poisson-simulated spikes drawn from each
+    unit's own pre-stimulus baseline rate, so the PSTH is smooth through t=0.
 
 Stratifications applied to every metric:
   - Reward group  : R+ vs R- overlaid | separate | R+−R− difference | pooled
@@ -29,7 +33,8 @@ Pipeline
 3.  Load ROC or GLM results; merge area labels
 4.  keep_shared_areas (good units only, per-RG thresholds + total minimum)
 5.  compute_roc_metrics / compute_glm_metrics  per area × stratification
-6.  compute_latency_metrics  from area-averaged PSTHs (whisker + lick)
+6.  compute_latency_metrics  from area-averaged PSTHs (whisker + lick),
+    vectorized PSTH construction, parallel across (rg, area, event)
 7.  Merge anatomical variables (Liu log + raw, Harris hierarchy)
 8.  plot_metric_vs_anatomy for every metric × anatomical variable
       Fig A : R+ and R- overlaid
@@ -39,6 +44,7 @@ Pipeline
 """
 
 import os, socket, pathlib
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -74,6 +80,7 @@ DEEP_LAYERS        = {'4', '5', '6', '6a', '6b'}
 
 MAX_WORKERS = 29
 
+
 # ── unit classification ───────────────────────────────────────────────────────
 
 def add_cell_type(unit_table):
@@ -97,11 +104,11 @@ def add_cell_type(unit_table):
 
 def add_layer_group(unit_table):
     """
-    Add 'layer_group' column from 'layer' column produced by
+    Add 'layer_group' column from 'layer_number' column produced by
     allen.process_allen_labels: 'superficial', 'deep', or 'unknown'.
     """
     if 'layer_number' not in unit_table.columns:
-        print('[WARN] "layer" column not found; layer_group set to "unknown".')
+        print('[WARN] "layer_number" column not found; layer_group set to "unknown".')
         unit_table['layer_group'] = 'unknown'
         return unit_table
 
@@ -222,48 +229,100 @@ def compute_glm_metrics(glm_df, area_col=AREA_COL):
     return pd.DataFrame(rows)
 
 
-# ── PSTH + latency ────────────────────────────────────────────────────────────
+# ── PSTH + latency (vectorized, parallelized, artifact-corrected) ────────────
 
-def build_psth(spike_times_list, trial_starts, pre_s=0.2, post_s=0.6,
-               bin_ms=10):
+def _remove_stimulus_artifact(spike_times, artifact_win=(-0.005, 0.005),
+                              baseline_win=(-0.2, -0.01), t_ref=0.0,
+                              rng=None):
     """
-    Build a trial-averaged PSTH for a population of units.
+    Remove spikes within `artifact_win` of `t_ref` (absolute time) and
+    replace them with Poisson-simulated spikes drawn from the unit's own
+    baseline firing rate (computed in `baseline_win`, also relative to
+    `t_ref`). This is applied per-trial-alignment by the caller; here
+    `spike_times` are already the trial-relative spike times for one trial
+    (i.e. spikes - t0), and t_ref = 0.
 
-    Parameters
-    ----------
-    spike_times_list : list of 1-D arrays
-        One array per unit, spike times in seconds (absolute).
-    trial_starts : 1-D array
-        Trial alignment times in seconds.
-    pre_s, post_s : float
-        Window around alignment, in seconds.
-    bin_ms : float
-        Bin width in ms.
-
-    Returns
-    -------
-    times : 1-D array  (bin centres, seconds relative to alignment)
-    psth  : 1-D array  (mean firing rate, spikes/s)
+    Returns a new array of trial-relative spike times.
     """
-    bin_s   = bin_ms / 1000.0
-    edges   = np.arange(-pre_s, post_s + bin_s, bin_s)
-    times   = (edges[:-1] + edges[1:]) / 2
-    n_bins  = len(times)
-    n_units = len(spike_times_list)
+    if rng is None:
+        rng = np.random.default_rng()
+
+    lo, hi = artifact_win
+    in_artifact = (spike_times >= lo) & (spike_times <= hi)
+    clean = spike_times[~in_artifact]
+
+    # Estimate baseline rate from this trial's own pre-stimulus window
+    blo, bhi = baseline_win
+    base_dur = bhi - blo
+    if base_dur <= 0:
+        return clean
+    n_base_spikes = np.sum((spike_times >= blo) & (spike_times < bhi))
+    base_rate = n_base_spikes / base_dur  # spikes/s
+
+    # Simulate Poisson spikes within the artifact window at baseline rate
+    art_dur = hi - lo
+    n_sim = rng.poisson(base_rate * art_dur)
+    if n_sim > 0:
+        sim_spikes = rng.uniform(lo, hi, size=n_sim)
+        clean = np.concatenate([clean, sim_spikes])
+
+    return clean
+
+
+def _build_psth_for_job(spike_times_list, trial_starts, pre_s, post_s,
+                        bin_ms, artifact_win, baseline_win, seed):
+    """
+    Vectorized PSTH construction for one (area, reward_group, event) job,
+    with stimulus-artifact correction applied per-trial per-unit.
+
+    Returns (times, psth) — psth is mean firing rate across units, spikes/s.
+    """
+    rng = np.random.default_rng(seed)
+
+    bin_s  = bin_ms / 1000.0
+    edges  = np.arange(-pre_s, post_s + bin_s, bin_s)
+    times  = (edges[:-1] + edges[1:]) / 2
+    n_bins = len(times)
+
+    n_units  = len(spike_times_list)
     n_trials = len(trial_starts)
     if n_units == 0 or n_trials == 0:
         return times, np.full(n_bins, np.nan)
 
     counts = np.zeros((n_units, n_bins))
+
     for ui, spikes in enumerate(spike_times_list):
         spikes = np.asarray(spikes)
-        for t0 in trial_starts:
-            rel = spikes - t0
-            h, _ = np.histogram(rel, bins=edges)
-            counts[ui] += h
+        if spikes.size == 0:
+            continue
 
-    # Convert to firing rate (spikes/s), average over units
-    rate = counts / (n_trials * bin_s)   # shape: (n_units, n_bins)
+        # Vectorized trial-relative spike extraction:
+        # for each trial start, find spikes within [t0-pre_s, t0+post_s]
+        # using searchsorted on sorted spike times (fast, no python loop
+        # over individual spikes).
+        sorted_spikes = np.sort(spikes)
+
+        all_rel = []
+        for t0 in trial_starts:
+            lo_t = t0 - pre_s
+            hi_t = t0 + post_s
+            i0 = np.searchsorted(sorted_spikes, lo_t, side='left')
+            i1 = np.searchsorted(sorted_spikes, hi_t, side='right')
+            if i1 <= i0:
+                continue
+            rel = sorted_spikes[i0:i1] - t0
+            # artifact correction (per trial, per unit)
+            rel = _remove_stimulus_artifact(
+                rel, artifact_win=artifact_win,
+                baseline_win=baseline_win, rng=rng)
+            all_rel.append(rel)
+
+        if all_rel:
+            rel_concat = np.concatenate(all_rel)
+            h, _ = np.histogram(rel_concat, bins=edges)
+            counts[ui] = h
+
+    rate = counts / (n_trials * bin_s)
     psth = rate.mean(axis=0)
     return times, psth
 
@@ -302,19 +361,67 @@ def fit_step_latency(times, psth, baseline_win=(-0.2, 0.0),
     above = post_vals > threshold
     for i in range(len(above) - 1):
         if above[i] and above[i+1]:
-            return float(post_times[i]) * 1000.0   # convert to ms
+            return float(post_times[i]) * 1000.0
     return np.nan
+
+
+def _latency_job(job):
+    """
+    Worker function for one (reward_group, area, event) job.
+    job is a dict with keys:
+      rg, area, event, spike_times_list, trial_starts,
+      pre_s, post_s, bin_ms, smooth_sigma_ms, threshold_sd,
+      artifact_win, baseline_win, seed
+    Returns a result dict (one row) or None if too few trials/units.
+    """
+    if job['spike_times_list'] is None or len(job['spike_times_list']) == 0:
+        return None
+    if len(job['trial_starts']) < 5:
+        return None
+
+    times, psth = _build_psth_for_job(
+        job['spike_times_list'], job['trial_starts'],
+        pre_s=job['pre_s'], post_s=job['post_s'], bin_ms=job['bin_ms'],
+        artifact_win=job['artifact_win'], baseline_win=job['baseline_win'],
+        seed=job['seed'])
+
+    latency = fit_step_latency(
+        times, psth,
+        baseline_win=(-job['pre_s'], 0.0),
+        smooth_sigma_ms=job['smooth_sigma_ms'],
+        bin_ms=job['bin_ms'],
+        threshold_sd=job['threshold_sd'])
+
+    return {
+        AREA_COL              : job['area'],
+        'reward_group'        : job['rg'],
+        'event'               : job['event'],
+        'response_latency_ms' : latency,
+        'n_units'             : len(job['spike_times_list']),
+    }
 
 
 def compute_latency_metrics(unit_table, trial_table,
                             area_col=AREA_COL,
                             pre_s=0.2, post_s=0.6,
                             bin_ms=10, smooth_sigma_ms=20,
-                            threshold_sd=3.0):
+                            threshold_sd=3.0,
+                            artifact_win=(-0.005, 0.005),
+                            artifact_baseline_win=(-0.2, -0.01),
+                            max_workers=MAX_WORKERS):
     """
     Compute response onset latency per area for two events:
       1. Whisker stimulus onset  (trial_type == 'whisker_trial')
       2. Lick onset              (lick_flag in [0, 1])
+
+    Vectorized PSTH construction (searchsorted-based spike extraction per
+    trial instead of full-array spike subtraction) and parallelized across
+    (reward_group, area, event) jobs using ProcessPoolExecutor.
+
+    A stimulus-locked artifact in `artifact_win` (default ±5 ms around the
+    alignment time) is removed and replaced with Poisson-simulated spikes
+    drawn from each unit's own per-trial baseline rate (estimated in
+    `artifact_baseline_win`), so the PSTH is smooth through t=0.
 
     unit_table must have: unit_id, mouse_id, reward_group, area_col,
                           spike_times (array or list).
@@ -324,19 +431,17 @@ def compute_latency_metrics(unit_table, trial_table,
     Returns a DataFrame with columns:
       area_col, reward_group, event, response_latency_ms, n_units.
     """
-    rows = []
-
-    # Define events as (label, trial_table boolean mask)
     events = {
         'whisker_stimulus': trial_table['trial_type'] == 'whisker_trial',
         'lick_onset'      : trial_table['lick_flag'].isin([0, 1]),
     }
 
+    # Build job list
+    jobs = []
+    seed_counter = 0
     for (rg, area), area_units in unit_table.groupby(['reward_group', area_col]):
         if len(area_units) == 0:
             continue
-
-        # Collect spike times for all units in this area × reward group
         spike_times_list = [
             np.asarray(row['spike_times'])
             for _, row in area_units.iterrows()
@@ -348,23 +453,38 @@ def compute_latency_metrics(unit_table, trial_table,
 
         for event_label, trial_mask in events.items():
             trial_starts = trial_table.loc[trial_mask, 'start_time'].values
-            if len(trial_starts) < 5:
-                continue
-            times, psth = build_psth(spike_times_list, trial_starts,
-                                     pre_s=pre_s, post_s=post_s,
-                                     bin_ms=bin_ms)
-            latency = fit_step_latency(times, psth,
-                                       baseline_win=(-pre_s, 0.0),
-                                       smooth_sigma_ms=smooth_sigma_ms,
-                                       bin_ms=bin_ms,
-                                       threshold_sd=threshold_sd)
-            rows.append({
-                area_col              : area,
-                'reward_group'        : rg,
-                'event'               : event_label,
-                'response_latency_ms' : latency,
-                'n_units'             : len(spike_times_list),
+            jobs.append({
+                'rg'               : rg,
+                'area'             : area,
+                'event'            : event_label,
+                'spike_times_list' : spike_times_list,
+                'trial_starts'     : trial_starts,
+                'pre_s'            : pre_s,
+                'post_s'           : post_s,
+                'bin_ms'           : bin_ms,
+                'smooth_sigma_ms'  : smooth_sigma_ms,
+                'threshold_sd'     : threshold_sd,
+                'artifact_win'     : artifact_win,
+                'baseline_win'     : artifact_baseline_win,
+                'seed'             : seed_counter,
             })
+            seed_counter += 1
+
+    print(f'  {len(jobs)} latency jobs (area × reward_group × event)...')
+
+    rows = []
+    if max_workers and max_workers > 1:
+        with ProcessPoolExecutor(max_workers=25) as executor:
+            futures = {executor.submit(_latency_job, job): job for job in jobs}
+            for fut in as_completed(futures):
+                res = fut.result()
+                if res is not None:
+                    rows.append(res)
+    else:
+        for job in jobs:
+            res = _latency_job(job)
+            if res is not None:
+                rows.append(res)
 
     return pd.DataFrame(rows)
 
@@ -451,7 +571,7 @@ def plot_metric_vs_anatomy(metrics_df, anat_col, x_label,
     n_models   = len(models)
     n_cols     = min(4, n_models)
     n_rows     = int(np.ceil(n_models / n_cols))
-    ps         = 3.5   # panel size inches
+    ps         = 3.5
 
     fig_A, axes_A = plt.subplots(n_rows, n_cols,
                                   figsize=(ps*n_cols, ps*n_rows), dpi=300)
@@ -463,7 +583,6 @@ def plot_metric_vs_anatomy(metrics_df, anat_col, x_label,
     for idx, model in enumerate(models):
         disp = model_name_dict.get(model, model)
 
-        # A: overlaid
         ax_a, lines, subs = axes_A[idx], [], []
         for rg in ['R+', 'R-']:
             s = metrics_df[(metrics_df['analysis_type'] == model) &
@@ -480,7 +599,6 @@ def plot_metric_vs_anatomy(metrics_df, anat_col, x_label,
                   title=f"{disp}\n"+"\n".join(lines),
                   xlabel=x_label, ylabel=y_label)
 
-        # B: separate
         for ri, rg in enumerate(['R+', 'R-']):
             ax_b = axes_B[idx*2+ri]
             s    = metrics_df[(metrics_df['analysis_type'] == model) &
@@ -507,7 +625,6 @@ def plot_metric_vs_anatomy(metrics_df, anat_col, x_label,
             saving_path, dark_background=False)
         plt.close(fig)
 
-    # C: R+−R− difference
     anat_map = (metrics_df[[AREA_COL, anat_col]]
                 .dropna(subset=[anat_col]).drop_duplicates(AREA_COL)
                 .set_index(AREA_COL)[anat_col])
@@ -548,7 +665,6 @@ def plot_metric_vs_anatomy(metrics_df, anat_col, x_label,
         saving_path, dark_background=False)
     plt.close(fig_C)
 
-    # D: pooled
     pooled = (metrics_df.groupby(['analysis_type', AREA_COL])
               .agg(**{metric_col: (metric_col,'mean'),
                       'n_units'  : ('n_units','sum')})
@@ -592,7 +708,7 @@ def run_all_plots(metrics_df, model_name_dict, result_label,
         'fraction_significant' : 'Fraction significant',
         'mean_selectivity'     : 'Mean selectivity (signed)',
         'mean_abs_selectivity' : 'Mean |selectivity|',
-        'mean_delta_test_corr' : 'Mean Δtest corr (full−reduced)',
+        'mean_delta_test_corr' : 'Mean Δtest corr (full−reduced)/full',
         'response_latency_ms'  : 'Response onset latency (ms)',
     }
     present = {k: v for k,v in all_metrics.items()
@@ -666,8 +782,6 @@ if __name__ == '__main__':
         (mouse_info_df['recording']     == 1)]
     valid_mice = mouse_info_df['mouse_id'].unique()
 
-    #valid_mice = valid_mice[::20]
-
     # ── NWB loading ───────────────────────────────────────────────────────────
     print('Loading NWB files...')
     nwb_list = []
@@ -687,8 +801,6 @@ if __name__ == '__main__':
     unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
     unit_table = add_cell_type(unit_table)    # uses 'duration', threshold 0.35 ms
     unit_table = add_layer_group(unit_table)  # uses 'layer_number' from process_allen_labels
-
-
     print(f'  {len(unit_table)} good units | {unit_table["mouse_id"].nunique()} mice')
 
     UNIT_COLS = ['mouse_id', 'neuron_id', 'unit_id', 'bc_label',
@@ -752,12 +864,14 @@ if __name__ == '__main__':
                                    & glm_df['lrt_significant'])
         glm_df['reward_group'] = glm_df['reward_group'].map({1:'R+', 0:'R-'})
 
-        # delta_test_corr = test_corr_full - test_corr_reduced
+        # delta_test_corr = (test_corr_full - test_corr_reduced) / test_corr_full
         full_corr = (glm_df[glm_df['model_name'] == 'full']
-                     .set_index(['mouse_id','neuron_id'])['test_corr']
+                     .drop_duplicates(subset=['mouse_id', 'neuron_id', 'reward_group'])
+                     .set_index(['mouse_id', 'neuron_id', 'reward_group'])['test_corr']
                      .rename('test_corr_full'))
-        glm_df = glm_df.join(full_corr, on=['mouse_id','neuron_id'])
-        glm_df['delta_test_corr'] = (glm_df['test_corr_full'] - glm_df['test_corr']) / glm_df['test_corr_full']
+        glm_df = glm_df.join(full_corr, on=['mouse_id', 'neuron_id', 'reward_group'])
+        glm_df['delta_test_corr'] = (
+            (glm_df['test_corr_full'] - glm_df['test_corr']) / glm_df['test_corr_full'])
 
         glm_df = glm_df.drop(
             columns=list(set(UNIT_COLS)-{'mouse_id','neuron_id'}), errors='ignore')
@@ -798,22 +912,24 @@ if __name__ == '__main__':
 
     # ── latency metrics ───────────────────────────────────────────────────────
     if RUN_LATENCY:
-        print('\nComputing PSTH latencies...')
+        print('\nComputing PSTH latencies (vectorized, parallel, '
+              'artifact-corrected)...')
         latency_df = compute_latency_metrics(
             unit_table  = unit_table,
             trial_table = trial_table,
             area_col    = AREA_COL,
             pre_s=0.2, post_s=0.6, bin_ms=10,
-            smooth_sigma_ms=20, threshold_sd=3.0)
+            smooth_sigma_ms=20, threshold_sd=3.0,
+            artifact_win=(-0.005, 0.005),
+            artifact_baseline_win=(-0.2, -0.01),
+            max_workers=MAX_WORKERS)
         latency_df = merge_anatomy(latency_df, area_col=AREA_COL)
         lat_out = FIGURE_PATH / result_label / 'latency'
         os.makedirs(lat_out, exist_ok=True)
         latency_df.to_csv(lat_out / 'response_latency.csv', index=False)
 
-        # One scatter per event (whisker_stimulus, lick_onset)
         for event in latency_df['event'].unique():
             ev_df = latency_df[latency_df['event'] == event].copy()
-            # add dummy analysis_type so plot_metric_vs_anatomy works
             ev_df['analysis_type'] = event
             for anat_col, x_label in ANATOMICAL_VARS.items():
                 if anat_col not in ev_df.columns or ev_df[anat_col].isna().all():
@@ -824,7 +940,6 @@ if __name__ == '__main__':
                     {event: event}, str(lat_out), tag=f'_{event}')
 
     # ── stratified runs ───────────────────────────────────────────────────────
-    # (tag, optional query string to filter src_df)
     RUNS = [
         ('',             None),
         ('_RSU',         'cell_type == "RSU"'),
