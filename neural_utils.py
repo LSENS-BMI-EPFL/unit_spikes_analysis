@@ -34,34 +34,39 @@ TRIAL_MAP = {
 }
 
 
-def process_single_nwb(nwb):
+def process_single_nwb(nwb, day_to_analyze = 0):
     try:
         beh_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb)
-        sess_meta = nwb_reader.get_session_metadata(nwb)
-        session_type = sess_meta.get('session_type')
+        if day_to_analyze == 'learning' and day !=0:
+            return None
+        elif day_to_analyze == 'expert' and day == 0:
+            return None
+        elif day_to_analyze == 'all' and day <0:
+            return None
 
-        if day != 0:
-            return None
-        if 'ephys' not in session_type:
-            print('Skipping non-ephys session')
-            return None
+        #if day_to_analyze != 'all':
+        #    if day_to_analyze == 0 and day !=0:
+        #        return None
+        #    elif day_to_analyze > 0 and day == 0:
+        #        return None
+
 
         unit_table = nwb_reader.get_unit_table(nwb)
-        unit_table['neuron_id'] = unit_table.index
         if unit_table is None or 'bc_label' not in unit_table.columns:
             return None
 
         trial_table = nwb_reader.get_trial_table(nwb)
-        trial_table['trial_id'] = trial_table.index
 
         mouse_id = nwb_reader.get_mouse_id(nwb)
         session_id = nwb_reader.get_session_id(nwb)
-        reward_group = sess_meta.get('wh_reward')
+        sess_metadata = nwb_reader.get_session_metadata(nwb)
+        reward_group = sess_metadata['wh_reward']
 
         trial_table['mouse_id'] = mouse_id
         trial_table['session_id'] = session_id
-        trial_table['context'] = trial_table['context'].astype(str)
         trial_table['reward_group'] = reward_group
+        trial_table['context'] = trial_table['context'].astype(str)
+        trial_table['day'] = day
 
         if trial_table['context'].str.contains('nan').all():
             trial_table['context'] = 'active'
@@ -74,14 +79,7 @@ def process_single_nwb(nwb):
         unit_table['session_id'] = session_id
         unit_table['reward_group'] = reward_group
         unit_table['day'] = day
-        unit_table['behaviour'] = beh_type
-
         print('Warning: number of root neurons :', mouse_id, len(unit_table[unit_table.ccf_acronym=='root']))
-        root_units = unit_table[unit_table.ccf_acronym=='root']
-        if not root_units.empty:
-            elec_groups = root_units['electrode_group'].unique()
-            elec_names = [e.name for e in elec_groups]
-            #print(f"Root units found in {mouse_id}: {len(root_units)} with electrode groups: {elec_names}")
 
         unit_table = convert_electrode_group_object_to_columns(unit_table)
 
@@ -95,7 +93,7 @@ def process_single_nwb(nwb):
         print(f"Error processing {nwb}: {e}")
         return None
 
-def combine_ephys_nwb(nwb_list, max_workers=24):
+def combine_ephys_nwb(nwb_list,day_to_analyze=0, max_workers=24):
     """
     Combine neural and behavioural data from multiple NWB files using multiprocessing and tqdm.
     :param nwb_list: list of NWB file paths.
@@ -107,7 +105,7 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
     unit_table_list = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_single_nwb, nwb): nwb for nwb in nwb_list}
+        futures = {executor.submit(process_single_nwb, nwb, day_to_analyze = day_to_analyze): nwb for nwb in nwb_list}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Loading NWB files"):
             result = future.result()
@@ -124,11 +122,31 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
     unit_table = pd.concat(unit_table_list, ignore_index=True) if unit_table_list else pd.DataFrame()
 
     if not unit_table.empty:
-        #unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen.get_excluded_areas())]
+        print('Removing excluded areas from unit table and creating global unit IDs...')
+        unit_table = unit_table[~unit_table['ccf_atlas_acronym'].isin(allen.get_excluded_areas())]
         unit_table = unit_table.reset_index(drop=True)
-        unit_table['unit_id'] = unit_table.index
+        unit_table['unit_id'] = unit_table.index            # global unit identifier
 
     return trial_table, unit_table, ephys_nwb_list
+
+def convert_electrode_group_object_to_columns(data):
+    """
+    Convert electrode group object to dictionary.
+    Creates a new column in the dataframe.
+    :param data: pd.DataFrame containing the NWB electrode group field.
+    :return:
+    """
+    elec_group_list = data['electrode_group'].values
+    elec_group_name = [e.name for e in elec_group_list]
+    #ata['electrode_group'] = elec_group_name
+    data["electrode_group"] = [getattr(e, "name", e) for e in elec_group_list]
+
+    elec_group_location = [e.location.replace('nan', 'None') for e in elec_group_list]
+    elec_group_location_dict = [eval(e) for e in elec_group_location]
+    data['location'] = elec_group_location_dict
+    data['target_region'] = [e.get('area') for e in elec_group_location_dict]
+
+    return data
 
 def convert_electrode_group_object_to_columns(data):
     """

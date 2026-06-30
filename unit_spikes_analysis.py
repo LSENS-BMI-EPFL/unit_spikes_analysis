@@ -168,7 +168,7 @@ if __name__ == '__main__':
     #nwb_list = [n for n in nwb_list if any(m in n for m in mice)]
 
     if load_tables:
-        trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, max_workers=N_WORKERS)
+        trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, day_to_analyze=0, max_workers=N_WORKERS)
         unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
 
         #subject_ids = [s for s in subject_ids if 'AB13' in s]
