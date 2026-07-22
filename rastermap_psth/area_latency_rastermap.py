@@ -58,7 +58,7 @@ from rastermap import Rastermap
 #TODO: low and high performance states rastermap
 
 # ── reuse helpers from parent pipeline ────────────────────────────────────────
-from rastermap_psth.rastermap_clustering_psth import (
+from rastermap_psth.rastermap_clustering_psth_delete import (
     DEFAULT_CFG,
     get_conditions,
     get_cond_infos,
@@ -74,14 +74,6 @@ from rastermap_psth.rastermap_clustering_psth import (
     layer_number_mapper,
 )
 
-# ── config ─────────────────────────────────────────────────────────────────────
-AREA_CFG: dict[str, Any] = {
-    **DEFAULT_CFG,
-    "min_mice_per_area"   : 3,    # minimum mice contributing to an area (per reward group)
-    "min_neurons_per_mouse": 10,   # minimum neurons per mouse per area (good + mua)
-    "bc_labels_area"      : {"good", "mua"},  # labels counted for area inclusion
-    "n_jobs"              : 25,
-}
 
 # ── area matrix helpers ────────────────────────────────────────────────────────
 
@@ -91,8 +83,21 @@ def diverging_cmap(cmap_left, cmap_right, name='diverging', N=256):
     colors = np.vstack([left, right])
     return mc.LinearSegmentedColormap.from_list(name, colors)
 
-custom_hotcold_cmap = diverging_cmap(cmr.get_sub_cmap('cmr.arctic', 0, 0.85),
+CUSTOM_HOTCOLD_CMAP_DARK = diverging_cmap(cmr.get_sub_cmap('cmr.arctic', 0, 0.85),
                              cmr.get_sub_cmap('cmr.ember', 0, 0.85))
+CUSTOM_HOTCOLD_CMAP = diverging_cmap(cmr.get_sub_cmap('cmr.arctic_r', 0.0, 0.55),
+                             cmr.get_sub_cmap('cmr.sunburst_r', 0.0, 0.55))
+
+
+# ── config ─────────────────────────────────────────────────────────────────────
+AREA_CFG: dict[str, Any] = {
+    **DEFAULT_CFG,
+    "min_mice_per_area"   : 3,    # minimum mice contributing to an area (per reward group)
+    "min_neurons_per_mouse": 10,   # minimum neurons per mouse per area (good + mua)
+    "bc_labels_area"      : {"good", "mua"},  # labels counted for area inclusion
+    "n_jobs"              : 25,
+    "cmap"                : "hotcold", #coolwarm, Greys,
+}
 
 def _build_area_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
                        area_arr, valid_areas, cfg, conds, cond_align_cols,
@@ -207,8 +212,9 @@ def _build_area_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
         # amplitude is in units of baseline std of the area mean.
         bl_vals = row[global_base_mask]
         bl_mean = bl_vals.mean()
-        bl_std  = bl_vals.std()
-        mat[i]  = (row - bl_mean) / (bl_std + 1e-9)
+        #bl_std  = bl_vals.std()
+        mat[i]  = (row - bl_mean) #/ (bl_std + 1e-9) # baseline subtract onl<
+        #mat[i]  = row
 
     return mat, t_ctrs, n_bins_list
 
@@ -239,8 +245,12 @@ def _draw_area_matrix(ax, mat, n_bins_list, conds, cond_align_cols,
     vmax = np.nanpercentile(np.abs(mat), 95)
     vmax = vmax if vmax > 0 else 1.0
 
+    if cfg["cmap"]=="hotcold":
+        cmap = CUSTOM_HOTCOLD_CMAP
+    elif cfg["cmap"]=="hotcold_dark":
+        cmap = CUSTOM_HOTCOLD_CMAP_DARK
     im = ax.imshow(mat, aspect="auto", interpolation="none",
-                   cmap='coolwarm', vmin=-vmax, vmax=vmax,
+                   cmap=cmap, vmin=-vmax, vmax=vmax,
                    extent=[0, n_total, n_areas, 0])
 
     dt      = cfg["stride_ms"] / 1000
@@ -493,7 +503,7 @@ def run_area_latency_rastermap(units: pd.DataFrame,
         get_conditions(cfg)
 
     # ── output folder ─────────────────────────────────────────────────────
-    out_folder = Path(out_root) / "area_latency_rastermap"
+    out_folder = Path(out_root) / "area_latency_rastermap" / f"area_latency_rastermap_{cfg["cmap"]}"
     out_folder.mkdir(parents=True, exist_ok=True)
     print(f"Output → {out_folder}")
 

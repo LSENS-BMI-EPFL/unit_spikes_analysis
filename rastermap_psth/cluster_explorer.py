@@ -24,6 +24,7 @@ unit-table row into embedding_results.npz at pipeline time, e.g.:
 EMBEDDING_PATH = r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_test\n_clusters_100\both\zscore\whisker_auditory\combined\embedding_results.npz"
 
 CLUSTERS_TO_EXPLORE = [2,10,11,36,45,75,76,99]   # edit this list
+CLUSTERS_TO_EXPLORE = [75,76]   # edit this list
 
 # NWB roots
 NWB_ROOT_AB = r"M:\analysis\Axel_Bisi\NWB_combined"
@@ -35,7 +36,7 @@ T_PRE_JAW,   T_POST_JAW   = -0.35, 0.35
 
 # PSTH binning / smoothing
 BIN_SIZE   = 0.01    # seconds
-SIGMA_BINS = 2       # gaussian smooth (bins)
+SIGMA_BINS = 1       # gaussian smooth (bins)
 
 # R+/R- colours
 COLOR_RPLUS  = "forestgreen"
@@ -43,7 +44,7 @@ COLOR_RMINUS = "crimson"
 COLOR_NEUTRAL = "steelblue"
 
 # Workers for NWB loading
-N_WORKERS = 4
+N_WORKERS = 28
 # ──────────────────────────────────────────────────────────────────────────────
 
 #from __future__ import annotations
@@ -85,9 +86,11 @@ def load_all_data(nwb_paths: list[Path]):
     trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(
         [str(p) for p in nwb_paths], max_workers=N_WORKERS
     )
+    print(unit_table.reward_group.unique())
+    print(trial_table.reward_group.unique())
     unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
 
-    jaw_onset_table = load_jaw_onset_data(nwb_neural_files)
+    jaw_onset_table = load_jaw_onset_data(nwb_neural_files, max_workers=N_WORKERS)
     trial_table = trial_table.merge(
         jaw_onset_table[["mouse_id", "session_id", "trial_id",
                          "jaw_dlc_onset", "piezo_lick_time"]],
@@ -96,6 +99,7 @@ def load_all_data(nwb_paths: list[Path]):
     trial_table["jaw_onset_time"] = (
         trial_table["start_time"] + trial_table["jaw_dlc_onset"]
     )
+    print(len(trial_table), len(unit_table))
     return trial_table, unit_table
 
 
@@ -135,23 +139,19 @@ def raster_data(spike_times: np.ndarray, t_events: np.ndarray,
     return out
 
 
-def get_reward_group(mouse_id: str, trial_table: pd.DataFrame) -> str:
-    """Infer R+/R- from trial table for a given mouse."""
-    rows = trial_table[trial_table["mouse_id"] == mouse_id]
-    if rows.empty:
-        return "unknown"
-    # reward column heuristic: use 'reward_group' if present, else infer
-    if "reward_group" in rows.columns:
-        val = rows["reward_group"].iloc[0]
-        return str(val)
-    return "unknown"
+def rg_label(val) -> str:
+    """Convert raw reward_group value (1/0 int or string) to display label."""
+    if val == 1 or str(val).strip() == "1":
+        return "R+"
+    if val == 0 or str(val).strip() == "0":
+        return "R-"
+    return str(val)
 
 
-def reward_color(reward_group: str) -> str:
-    rg = str(reward_group).upper()
-    if "R+" in rg or "RPLUS" in rg:
+def reward_color(label: str) -> str:
+    if label == "R+":
         return COLOR_RPLUS
-    if "R-" in rg or "RMINUS" in rg:
+    if label == "R-":
         return COLOR_RMINUS
     return COLOR_NEUTRAL
 
@@ -162,7 +162,7 @@ TRIAL_TYPES = [
     ("whisker_hit",   dict(trial_type="whisker_trial",  lick_flag=1)),
     ("whisker_miss",  dict(trial_type="whisker_trial",  lick_flag=0)),
     ("auditory_hit",  dict(trial_type="auditory_trial", lick_flag=1)),
-    ("auditory_miss", dict(trial_type="auditory_trial", lick_flag='False')),
+    ("auditory_miss", dict(trial_type="auditory_trial", lick_flag=0)),
     ("false_alarm",   dict(trial_type="no_stim_trial",  lick_flag=1)),
     ("correct_rejection",   dict(trial_type="no_stim_trial",  lick_flag=0)),
     ("passive_whisker", dict(context="passive",   trial_type="whisker_trial")),
@@ -174,7 +174,6 @@ TRIAL_COLORS = {
     "auditory_hit":   "#d97706",
     "auditory_miss":  "#fcd34d",
     "false_alarm":    "#dc2626",
-    "false_alarm":    "#7d7d7d",
     "passive_whisker":"#7c3aed",
 }
 
@@ -205,7 +204,7 @@ def fig_neuron(unit_row: pd.Series, spike_times: np.ndarray,
     mouse_id   = unit_row["mouse_id"]
     session_id = unit_row.get("session_id", "?")
     area       = unit_row.get("area_acronym_custom", "?")
-    rg         = get_reward_group(mouse_id, trial_table)
+    rg         = rg_label(unit_row.get("reward_group_label", unit_row.get("reward_group", "?")))
     rc         = reward_color(rg)
     wf_type    = unit_row.get("waveform_type", unit_row.get("wf_type", "?"))
 
@@ -342,12 +341,15 @@ def fig_cluster_summary(cluster_id: int,
       Row 3: brain region bar + pie, waveform type bar
     """
     n_neurons = len(cluster_units)
-    fig = plt.figure(figsize=(18, 16))
+    n_tt = len(TRIAL_TYPES)
+    # figure width scales with number of trial types
+    fig_w = max(20, n_tt * 2.8)
+    fig = plt.figure(figsize=(fig_w, 22))
     fig.suptitle(f"Cluster {cluster_id}  —  {n_neurons} neurons", fontsize=13,
-                 fontweight="bold", y=0.995)
+                 fontweight="bold", y=0.998)
 
-    outer = gridspec.GridSpec(4, 1, figure=fig, hspace=0.5,
-                              height_ratios=[1.2, 1.2, 1.5, 1.0])
+    outer = gridspec.GridSpec(4, 1, figure=fig, hspace=0.45,
+                              height_ratios=[1.1, 1.1, 2.2, 0.9])
 
     # ── rows 0-1: mean ± SEM PSTH R+ vs R- ───────────────────────────────────
     for row_i, (t_pre, t_post, align_col, title_suffix) in enumerate([
@@ -362,7 +364,7 @@ def fig_cluster_summary(cluster_id: int,
             ax = axes[ax_i]
             color_tt = TRIAL_COLORS.get(ttype, "gray")
 
-            for rg_label, rg_color, rg_ls in [
+            for rg_str, rg_color, rg_ls in [
                 ("R+", COLOR_RPLUS,  "-"),
                 ("R-", COLOR_RMINUS, "--"),
             ]:
@@ -374,7 +376,7 @@ def fig_cluster_summary(cluster_id: int,
                     spks = all_spike_times.get(uid)
                     if spks is None:
                         continue
-                    if get_reward_group(mid, trial_table).upper() not in rg_label:
+                    if unit_row["reward_group_label"] != rg_str:
                         continue
                     tdf = select_trials(trial_table, mid, sid, **kwargs)
                     events = tdf[align_col].dropna().values
@@ -389,7 +391,7 @@ def fig_cluster_summary(cluster_id: int,
                 mean = np.nanmean(arr, axis=0)
                 sem  = np.nanstd(arr, axis=0) / np.sqrt(np.sum(~np.isnan(arr), axis=0))
                 ax.plot(t, mean, color=rg_color, lw=1.5, ls=rg_ls,
-                        label=rg_label)
+                        label=rg_str)
                 ax.fill_between(t, mean - sem, mean + sem,
                                 color=rg_color, alpha=0.15)
 
@@ -412,43 +414,79 @@ def fig_cluster_summary(cluster_id: int,
         ]
         axes[-1].legend(handles=legend_elements, fontsize=7, frameon=False)
 
-    # ── row 2: population raster heatmap ─────────────────────────────────────
-    ax_pop = fig.add_subplot(outer[2])
-    bins = np.arange(T_PRE_STIM, T_POST_STIM + BIN_SIZE, BIN_SIZE)
-    t_ctrs = 0.5 * (bins[:-1] + bins[1:])
+    # ── row 2: population heatmaps — one col per trial type × stim | jaw ────────
+    # Layout: 2 rows (stim / jaw) × n_trial_types cols, each panel square-ish
+    n_tt = len(TRIAL_TYPES)
+    inner_pop = gridspec.GridSpecFromSubplotSpec(
+        2, n_tt, subplot_spec=outer[2], wspace=0.06, hspace=0.25)
 
-    # build heatmap: one row per neuron, whisker_hit events, stim-aligned
-    heatmap_rows = []
-    for _, unit_row in cluster_units.iterrows():
-        uid  = unit_row["_unit_id"]
-        mid  = unit_row["mouse_id"]
-        sid  = unit_row.get("session_id")
-        spks = all_spike_times.get(uid)
-        if spks is None:
-            heatmap_rows.append(np.full(len(t_ctrs), np.nan))
-            continue
-        tdf = select_trials(trial_table, mid, sid,
-                            trial_type="whisker_trial", lick_flag=True)
-        events = tdf["start_time"].dropna().values
-        rate, _ = psth(spks, events, T_PRE_STIM, T_POST_STIM)
-        # z-score per neuron for display
-        mu, sd = np.nanmean(rate), np.nanstd(rate)
-        heatmap_rows.append((rate - mu) / sd if sd > 0 else rate - mu)
+    def _build_heatmap(align_col, t_pre, t_post, ttype_kwargs):
+        """Return z-scored (n_neurons × n_bins) matrix for one trial type & alignment."""
+        bins = np.arange(t_pre, t_post + BIN_SIZE, BIN_SIZE)
+        t_ctrs = 0.5 * (bins[:-1] + bins[1:])
+        rows = []
+        for _, unit_row in cluster_units.iterrows():
+            uid  = unit_row["_unit_id"]
+            mid  = unit_row["mouse_id"]
+            sid  = unit_row.get("session_id")
+            spks = all_spike_times.get(uid)
+            if spks is None:
+                rows.append(np.full(len(t_ctrs), np.nan))
+                continue
+            tdf = select_trials(trial_table, mid, sid, **ttype_kwargs)
+            events = tdf[align_col].dropna().values
+            if len(events) == 0:
+                rows.append(np.full(len(t_ctrs), np.nan))
+                continue
+            rate, _ = psth(spks, events, t_pre, t_post)
+            mu, sd = np.nanmean(rate), np.nanstd(rate)
+            rows.append((rate - mu) / sd if sd > 0 else rate - mu)
+        return np.vstack(rows), t_ctrs
 
-    if heatmap_rows:
-        mat = np.vstack(heatmap_rows)
-        vmax = np.nanpercentile(np.abs(mat), 95)
-        im = ax_pop.imshow(mat, aspect="auto", origin="upper",
-                           extent=[T_PRE_STIM, T_POST_STIM, n_neurons, 0],
-                           cmap="RdBu_r", vmin=-vmax, vmax=vmax,
-                           interpolation="nearest")
-        plt.colorbar(im, ax=ax_pop, fraction=0.02, pad=0.01,
-                     label="z-score FR")
-    ax_pop.axvline(0, color="k", lw=1.0, ls="--")
-    ax_pop.set_xlabel("time from stim onset (s)", fontsize=8)
-    ax_pop.set_ylabel("neuron (rastermap_psth order)", fontsize=8)
-    ax_pop.set_title("Population heatmap — whisker hits, stim aligned", fontsize=9)
-    _style_ax(ax_pop)
+    for align_row, (t_pre, t_post, align_col, align_label) in enumerate([
+        (T_PRE_STIM, T_POST_STIM, "start_time",    "stim"),
+        (T_PRE_JAW,  T_POST_JAW,  "jaw_onset_time", "jaw"),
+    ]):
+        for tt_col, (ttype, ttype_kwargs) in enumerate(TRIAL_TYPES):
+            ax = fig.add_subplot(inner_pop[align_row, tt_col])
+            mat, t_ctrs = _build_heatmap(align_col, t_pre, t_post, ttype_kwargs)
+
+            # sort neurons by peak response time for cleaner display
+            n_bins = mat.shape[1]
+            peak_bins = np.full(len(mat), n_bins, dtype=float)
+            for i, row in enumerate(mat):
+                if not np.all(np.isnan(row)):
+                    peak_bins[i] = np.nanargmax(row)
+            peak_order = np.argsort(peak_bins)
+            mat_sorted = mat[peak_order]
+
+            if not np.all(np.isnan(mat_sorted)):
+                vmax = np.nanpercentile(np.abs(mat_sorted), 95)
+                vmax = vmax if vmax > 0 else 1.0
+                ax.imshow(mat_sorted, aspect="auto", origin="upper",
+                          extent=[t_pre, t_post, n_neurons, 0],
+                          cmap="RdBu_r", vmin=-vmax, vmax=vmax,
+                          interpolation="nearest")
+            else:
+                ax.text(0.5, 0.5, "no data", transform=ax.transAxes,
+                        ha="center", va="center", fontsize=7, color="gray")
+
+            ax.axvline(0, color="k", lw=0.7, ls="--")
+            ax.set_xlim(t_pre, t_post)
+
+            # titles and labels
+            if align_row == 0:
+                ax.set_title(ttype.replace("_", " "),
+                             fontsize=7, color=TRIAL_COLORS.get(ttype, "gray"), pad=2)
+            if tt_col == 0:
+                ax.set_ylabel(f"neuron\n({align_label})", fontsize=7)
+            else:
+                ax.set_yticklabels([])
+            if align_row == 1:
+                ax.set_xlabel("time (s)", fontsize=7)
+            else:
+                ax.set_xticklabels([])
+            _style_ax(ax)
 
     # ── row 3: metadata panels ────────────────────────────────────────────────
     inner_meta = gridspec.GridSpecFromSubplotSpec(
@@ -531,23 +569,35 @@ def main():
     all_nwb_paths = []
     seen = set()
     for mouse_id, paths in nwb_map.items():
+        if mouse_id not in ['AB131']:
+            continue
         for p in paths:
             if p not in seen:
                 all_nwb_paths.append(p)
                 seen.add(p)
 
     print(f"Loading {len(all_nwb_paths)} NWB files…")
+
     trial_table, unit_table = load_all_data(all_nwb_paths)
 
     # ── reconstruct unit_id as positional index (mirrors pipeline) ────────────
     unit_table = unit_table.reset_index(drop=True)
-    unit_table["_unit_id"] = unit_table.index   # must match pipeline
+    unit_table["_unit_id"] = unit_table.index   # must match pipeline -> it won't : redo rastermap
 
-    # attach reward group label to unit_table for convenience
-    rg_map = (trial_table.groupby("mouse_id")["reward_group"].first()
-              if "reward_group" in trial_table.columns
-              else pd.Series(dtype=str))
-    unit_table["reward_group_label"] = unit_table["mouse_id"].map(rg_map).fillna("unknown")
+    # ── build reward group label per neuron ───────────────────────────────────
+    # reward_arr from .npz contains 1 (R+) or 0 (R-), aligned to unit_ids.
+    # Map to unit_table by positional uid, convert to "R+"/"R-" display labels.
+    if reward_arr is not None:
+        uid_to_label = {int(uid): rg_label(rg) for uid, rg in zip(unit_ids, reward_arr)}
+        unit_table["reward_group_label"] = (
+            unit_table["_unit_id"].map(uid_to_label).fillna("unknown")
+        )
+    elif "reward_group" in unit_table.columns:
+        unit_table["reward_group_label"] = unit_table["reward_group"].map(rg_label)
+    else:
+        unit_table["reward_group_label"] = "unknown"
+        print("  WARNING: no reward_group found in npz or unit_table")
+    print(f"  Reward groups: {unit_table['reward_group_label'].value_counts().to_dict()}")
 
     # ── pre-fetch spike times for all needed neurons ──────────────────────────
     print("Fetching spike times…")

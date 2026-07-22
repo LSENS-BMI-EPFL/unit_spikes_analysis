@@ -15,10 +15,10 @@ import pandas as pd
 import pathlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
+import multiprocessing as mp
 
 
 hostname = socket.gethostname()
-print('Current host:', hostname)
 if 'haas' in hostname:
     N_WORKERS = 120
     ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/combined_results')
@@ -29,7 +29,7 @@ if 'haas' in hostname:
 
 else:
     ROOT_PATH_AXEL = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
-    ROOT_PATH_MYRIAM = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Axel_Bisi\combined_results')
+    ROOT_PATH_MYRIAM = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch\Petersen-Lab\analysis\Myriam_Hamon\combined_results')
 
 import NWB_reader_functions as nwb_reader
 
@@ -66,7 +66,7 @@ def load_jaw_onset_data(nwb_files, experimenter='AB', max_workers=12):
             if mouse_id.startswith('AB'):
                 data_path = ROOT_PATH_AXEL
             elif mouse_id.startswith('MH'):
-                data_path = ROOT_PATH_MYRIAM
+                data_path = ROOT_PATH_AXEL
             else:
                 return None, f"[WARN] Unknown experimenter: {experimenter} for {mouse_id}"
 
@@ -271,3 +271,85 @@ def load_wf_analysis_data(nwb_files, experimenter): #TODO: make sure merge is po
     data_table_wide = data_table.pivot_table(index=['mouse_id', 'session_id', 'unit_id'],  columns='classif_type')
     data_table_wide.columns = ['{}_{}'.format(stat, analysis) for stat, analysis in data_table_wide.columns]
     return data_table_wide
+
+
+def load_spontaneous_reward_lick_times(nwb_files, n_workers=8, load_summary=False):
+    """
+    Load per-session spontaneous-lick CSVs for a list of NWB files, in
+    parallel via ThreadPoolExecutor (I/O-bound: file existence checks + CSV
+    reads, so threads are appropriate here, unlike the NWB-processing case).
+    Returns
+    -------
+    dict: session_id -> {mouse_id, session_id, spontaneous_licks, reward_times}
+    """
+    print('Loading spontaneous/reward licks data...')
+    results = {}
+    missing, failed, skipped = [], [], []
+
+
+    def _load_one_session_csv(nwb_file):
+        """Worker: resolve the CSV path for one NWB file's session and load it."""
+        mouse_id = nwb_reader.get_mouse_id(nwb_file)
+        session_id = nwb_reader.get_session_id(nwb_file)  # adjust if named differently
+        beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+        if 'whisker' not in beh:
+            return {"status": "skipped", "mouse_id": mouse_id, "session_id": session_id}
+        experimenter = 'AB' if mouse_id.startswith('AB') else 'MH'  # adjust rule if needed
+        if experimenter == 'AB':
+            data_path = ROOT_PATH_AXEL
+        elif experimenter == 'MH':
+            data_path = ROOT_PATH_AXEL
+        file_path = os.path.join(data_path, mouse_id, 'whisker_0', 'spontaneous_licks',
+                                 f'{session_id}_spontaneous_licks.csv')
+        if not os.path.exists(file_path):
+            return {"status": "missing", "mouse_id": mouse_id, "session_id": session_id, "file_path": file_path}
+        try:
+            df = pd.read_csv(file_path)
+            return {
+                "status": "ok",
+                "mouse_id": mouse_id,
+                "session_id": session_id,
+                "spontaneous_licks": df.loc[df["event_type"].isin(['single','short_cluster','bout']), "lick_time"].to_numpy(),
+                "reward_times": df.loc[df["event_type"] == "reward_time", "lick_time"].to_numpy(),
+            }
+        except Exception as e:
+            return {"status": "failed", "mouse_id": mouse_id, "session_id": session_id, "error": str(e)}
+
+    summary_path = pathlib.Path(ROOT_PATH_AXEL) / "spontaneous_licks"
+    summary_path.mkdir(parents=True, exist_ok=True)
+    file_path = summary_path / "spontaneous_licks.csv"
+    if load_summary:
+        print('Loading combined spontaneous/reward licks data...')
+        df = pd.read_csv(file_path)
+    else:
+
+        with ThreadPoolExecutor(max_workers=n_workers) as executor:
+            futures = {executor.submit(_load_one_session_csv, f): f for f in nwb_files}
+            for future in as_completed(futures):
+                res = future.result()
+                if res["status"] == "ok":
+                    results[res["session_id"]] = {
+                        "mouse_id": res["mouse_id"],
+                        "session_id": res["session_id"],
+                        "spontaneous_licks": res["spontaneous_licks"],
+                        "reward_times": res["reward_times"],
+                    }
+                elif res["status"] == "missing":
+                    missing.append(res["file_path"])
+                    print(f"[WARN] Spontaneous licks data file not found for {res['mouse_id']}, "
+                          f"session {res['session_id']} at {res['file_path']}. Skipping.")
+                elif res["status"] == "skipped":
+                    skipped.append(res["session_id"])
+                else:
+                    failed.append((res["session_id"], res["error"]))
+                    print(f"[FAILED] {res['mouse_id']}, session {res['session_id']}: {res['error']}")
+
+        print(f"\nLoaded {len(results)}/{len(nwb_files)} sessions "
+              f"({len(missing)} missing, {len(failed)} failed, {len(skipped)} non-whisker skipped)")
+
+        df = pd.DataFrame.from_dict(results, orient="index").reset_index(drop=True)
+
+        # Save global
+        df.to_csv(file_path, index=False)
+
+    return df

@@ -119,11 +119,10 @@ DEFAULT_CFG: dict[str, Any] = dict(
     sigma_ms             = 5,
     artifact_win_s       = (-0.005, 0.005),
     whisker_trial_label  = "whisker_trial",
-    global_fr_hz         = 0.0,
+    global_fr_hz         = 0.1,
     fr_threshold_hz      = 1.0,
     square_fr            = False,
     baseline_removal     = True,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
-    include_lick_conditions = True,  # if True: add spontaneous_lick + reward_lick conditions (requires lick_df passed to run_rastermap_psth)
     reward_group_col     = "reward_group",
     area_col             = "area_acronym_custom",
     normalize            = "zscore", #"zscore" or "baseline"
@@ -186,22 +185,16 @@ def get_conditions(cfg):
         ("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
         ("whisker_trial",  "active_nolick",  "Whisker miss",       "#d6371e", "start_time"),
         ("auditory_trial", "active_lick",    "Auditory hit",       "#7c0082", "start_time"),
-        #("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"), #TODO: use spontaneous licks for this
+        ("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"), #TODO: use spontaneous licks for this
         #("no_stim_trial",  "active_nolick",  "Correct rej.",       "#a6a4a1", "start_time"),
         # Jaw-aligned conditions (lighter shades of the start_time counterparts)
         ("whisker_trial",  "active_lick",    "Whisker hit (jaw)",  "#fde89a", "jaw_onset_time"),
         ("auditory_trial", "active_lick",    "Auditory hit (jaw)", "#c9aadd", "jaw_onset_time"),
         #("no_stim_trial",  "active_lick",    "False alarm (jaw)",  "#999999", "jaw_onset_time"),
-    ]
+        # Lick-aligned conditions
+        ("spontaneous_lick", "active_lick", "Spontaneous lick (lick)", "#999999", "lick_time"),
 
-    # Lick-aligned conditions — only included when include_lick_conditions=True
-    # and a lick_df has been provided (populated into event_map via add_lick_event_map).
-    # Appended last so existing condition indices are never disturbed when flag is False.
-    if cfg.get("include_lick_conditions", False):
-        active_all += [
-            ("spontaneous_lick", "spontaneous", "Spont. lick",  "#999999", "lick_time"),
-            ("reward_lick",      "spontaneous", "Reward time",  "#bf1a1a", "lick_time"),
-        ]
+    ]
 
     if mod == "whisker":
         passive_all = [c for c in passive_all if c[0] == "whisker_trial"]
@@ -500,36 +493,6 @@ def precompute_event_map(trials: pd.DataFrame, cfg: dict,
     return event_map
 
 
-def add_lick_event_map(lick_df: pd.DataFrame, event_map: dict, cfg: dict) -> None:
-    """Append spontaneous-lick and reward-lick events to an existing event_map in-place.
-
-    lick_df : one row per session, columns:
-        mouse_id, session_id,
-        spontaneous_licks  (np.ndarray of lick times),
-        reward_times       (np.ndarray of lick times)
-    As returned by load_spontaneous_reward_lick_times().
-    """
-    mid_col = cfg.get("mouse_id_col", "mouse_id")
-    sid_col = cfg.get("session_id_col", "session_id")
-    n_spont = n_reward = 0
-
-    for _, row in lick_df.iterrows():
-        mouse_id, session_id = row[mid_col], row[sid_col]
-
-        spont_times  = row["spontaneous_licks"]
-        reward_times = row["reward_times"]
-
-        if spont_times is not None and len(spont_times):
-            event_map[(mouse_id, session_id, "spontaneous", "spontaneous_lick", "lick_time")] = np.sort(spont_times)
-            n_spont += 1
-
-        if reward_times is not None and len(reward_times):
-            event_map[(mouse_id, session_id, "spontaneous", "reward_lick", "lick_time")] = np.sort(reward_times)
-            n_reward += 1
-
-    print(f"  add_lick_event_map: {n_spont} spontaneous_lick, {n_reward} reward_lick entries added")
-
-
 def _get_events(event_map, mouse_id, session_id, context, trial_type,
                 align_col="start_time") -> np.ndarray:
     return event_map.get((mouse_id, session_id, context, trial_type, align_col), np.array([]))
@@ -696,29 +659,6 @@ def _neuron_vector_strided(st, mouse_id, session_id, event_map, cond_infos, cfg,
                 # Own-window per-trial baseline: subtract each trial's mean
                 # pre-stimulus activity before averaging.
                 rates = rates - rates[:, base_mask].mean(axis=1, keepdims=True)
-            elif acol == "lick_time":
-                # Lick-aligned: borrow baseline mean from a pool of trial-based
-                # start_time conditions (whisker hit, whisker miss, auditory hit).
-                # These give a stable, multi-condition estimate of resting FR for
-                # this neuron/session. Available siblings are used; missing ones
-                # are skipped. Falls back to 0.0 if none are present.
-                LICK_BASELINE_SIBLINGS = [
-                    ("whisker_trial",  "active_lick",   "start_time"),
-                    ("whisker_trial",  "active_nolick", "start_time"),
-                    ("auditory_trial", "active_lick",   "start_time"),
-                ]
-                bl_vals = []
-                for sib_key in LICK_BASELINE_SIBLINGS:
-                    sib_idx = cond_index.get(sib_key)
-                    if sib_idx is None:
-                        continue
-                    sib_rates = _get_rates(sib_idx)
-                    if sib_rates is None:
-                        continue
-                    sib_base_mask = cond_infos[sib_idx][4]
-                    bl_vals.append(sib_rates[:, sib_base_mask].mean())
-                borrowed_mean = float(np.mean(bl_vals)) if bl_vals else 0.0
-                rates = rates - borrowed_mean
             else:
                 # Jaw-aligned: borrow baseline mean from the matched
                 # start_time sibling (same trial_type, same context).
@@ -1178,61 +1118,27 @@ def fig3_neuron_counts(units_raw, units_good, unit_ids_final, cfg, out_dir):
     _save(fig, out_dir / "fig3_neuron_counts", dpi=400)
 
 
-def fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map, cond_infos, cfg, out_dir, fr_map=None):
-    """Random sample of neurons.
+def fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map, cond_infos, cfg, out_dir):
+    """Random sample of neurons, all conditions overlaid per subplot."""
+    n         = min(cfg["n_sample_neurons"], len(unit_ids))
+    rng       = np.random.default_rng(0)
+    sample    = rng.choice(len(unit_ids), size=n, replace=False)
+    ncols     = 6
+    nrows     = int(np.ceil(n / ncols))
 
-    Layout: one row per neuron, one column per unique alignment type present
-    in COND_ALIGN_COLS (e.g. start_time | jaw_onset_time | lick_time).
-    Conditions sharing the same alignment are overlaid in the same subplot.
-    """
-    n   = min(cfg["n_sample_neurons"], len(unit_ids))
-    # Random selection
-    rng = np.random.default_rng(0)
-    sample = rng.choice(len(unit_ids), size=n, replace=False)
-
-    # High FR selection
-    fr_vals = np.array([fr_map.get(uid, 0.0) for uid in unit_ids])
-    sorted = np.argsort(fr_vals)[::-1][:n*10]
-    rng = np.random.default_rng(0)
-    sample = rng.choice(sorted, size=n, replace=False) # sample randomly in those
-
-    # Determine the ordered unique alignment types present in this run.
-    seen, align_types = set(), []
-    for acol in COND_ALIGN_COLS:
-        if acol not in seen:
-            seen.add(acol)
-            align_types.append(acol)
-    n_align = len(align_types)
-    align_idx = {acol: i for i, acol in enumerate(align_types)}
-
-    # Readable column titles
-    align_titles = {
-        "start_time":      "Stimulus-aligned",
-        "jaw_onset_time":  "Jaw-aligned",
-        "lick_time":       "Lick-aligned",
-    }
-
-    nrows = n
-    ncols = n_align
-    fig, axes = plt.subplots(nrows, ncols,
-                             figsize=(3.5 * ncols, 2.8 * nrows),
-                             sharey="row", sharex=False, squeeze=False)
-
-    for row, idx in enumerate(sample):
-        uid = unit_ids[idx]
-        st  = st_map[uid]
-
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows),
+                              sharey=False, sharex=False)
+    axes = np.atleast_1d(axes).ravel()
+    for i, idx in enumerate(sample):
+        uid, ax = unit_ids[idx], axes[i]
+        ax.set_box_aspect(1)
+        st      = st_map[uid]
         for c, ((trial_type, context), (t_pre, t_post, t_ctr_c, n_out_c, base_mask_c)) \
                 in enumerate(zip(CONDITIONS, cond_infos)):
             acol   = COND_ALIGN_COLS[c]
-            col    = align_idx[acol]
-            ax     = axes[row, col]
-            ax.set_box_aspect(1)
-            events = _get_events(event_map, mouse_map[uid], session_map[uid],
-                                 context, trial_type, acol)
+            events = _get_events(event_map, mouse_map[uid], session_map[uid], context, trial_type, acol)
             if len(events) == 0:
                 continue
-
             dt_stride  = cfg["stride_ms"] / 1000
             k_box      = max(1, int(round(cfg["bin_ms"] / cfg["stride_ms"])))
             pad        = k_box // 2
@@ -1243,25 +1149,20 @@ def fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map, con
                                           artifact_win_s=cfg["artifact_win_s"],
                                           rng=np.random.default_rng(c),
                                           align_col=acol)
-            raster   = [r[(r >= -t_pre_ext) & (r < t_post_ext)] for r in raster]
-            rates    = _bin_rates_strided(raster, t_pre_ext, t_post_ext,
-                                         cfg["bin_ms"], cfg["stride_ms"], n_out_c)
+            raster = [r[(r >= -t_pre_ext) & (r < t_post_ext)] for r in raster]
+            rates  = _bin_rates_strided(raster, t_pre_ext, t_post_ext,
+                                        cfg["bin_ms"], cfg["stride_ms"], n_out_c)
             rates_bc = rates - rates[:, base_mask_c].mean(axis=1, keepdims=True)
-            ax.plot(t_ctr_c, rates_bc.mean(0),
-                    color=COND_COLORS[c], lw=1.0, label=COND_LABELS[c])
-
-        for col, acol in enumerate(align_types):
-            ax = axes[row, col]
-            ax.axvline(0, color="k", lw=0.5, ls="--")
-            ax.axhline(0, color="k", lw=0.5, ls="--")
-            ax.set_xlabel("Time (s)", fontsize=7)
-            ax.legend(fontsize=4, loc="upper left", frameon=False)
-            if col == 0:
-                ax.set_ylabel(f"uid={uid}\nΔFR (Hz)", fontsize=7)
-            if row == 0:
-                ax.set_title(align_titles.get(acol, acol), fontsize=8)
-
-    fig.suptitle(f"Sample neurons (n={n})", fontsize=10)
+            ax.plot(t_ctr_c, rates_bc.mean(0), color=COND_COLORS[c], lw=1.0, label=COND_LABELS[c])
+        ax.axvline(0, color="k", lw=0.5, ls="--")
+        ax.axhline(0, color="k", lw=0.5, ls="--")
+        ax.set_title(f"uid={uid}", fontsize=7)
+        ax.set_ylabel("ΔFR (Hz)", fontsize=7)
+        ax.set_xlabel("Time (s)", fontsize=7)
+        ax.legend(fontsize=4, loc="upper left",frameon=False)
+    for ax in axes[n:]:
+        ax.set_visible(False)
+    fig.suptitle(f"Sample neurons (n={n}, random)", fontsize=10)
     fig.tight_layout()
     _save(fig, out_dir / "fig4_sample_neurons", dpi=400)
 
@@ -1834,14 +1735,14 @@ def _draw_continuous_cluster_column_neurons(ax, sorted_arr, edges, n_neurons, ti
             continue
         chunk = sorted_arr[lo:hi]
         valid = chunk[~np.isnan(chunk)]
-        color = "#dddddd" if valid.size == 0 else cmap(norm(np.nanmean(valid)))
+        color = "#dddddd" if valid.size == 0 else cmap(norm(valid.mean()))
         ax.barh((lo + hi) / 2, 1.0, left=0.0, height=n_cl * 0.92,
                 color=color, edgecolor="none", align="center")
     ax.set_xlim(0, 1)
     ax.set_ylim(n_neurons, 0)
     ax.set_xticks([])
     ax.set_yticks([])
-    ax.set_title(title, fontsize=5)
+    ax.set_title(title, fontsize=8)
 
 
 def load_waveform_classification(units_good, mouse_id_col, session_id_col,
@@ -2045,12 +1946,14 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
         cb  = fig.colorbar(matplotlib.cm.ScalarMappable(norm=norm, cmap=cmap), cax=cax,
                            orientation="horizontal", aspect=10)
         cb.ax.tick_params(labelsize=5, length=2, pad=1, rotation=45)
-        if 'Harris' in title and 'Gao' in title:
+        if 'Harris' in title or 'Gao' in title:
             cb.set_ticks([norm.vmin, 0, norm.vmax])
             cb.set_ticklabels([f"{norm.vmin:.1f}",'0',f"{norm.vmax:.1f}"])
         elif 'Liu' in title:
             cb.set_ticks([0, norm.vmax])
-            cb.set_ticklabels([0, f"{norm.vmax:.0e}"])
+            cb.set_ticklabels([0,
+                               f"{norm.vmax:.0e}"
+                               ])
 
     # ── Reward group ──────────────────────────────────────────────────────────
     _draw_prop_column(axes[-1], reward_s,
@@ -2549,7 +2452,6 @@ def figCV_similarity_metrics(X_odd, X_even, isort, boundaries, cluster_labels,
 def run_rastermap_psth(units: pd.DataFrame,
                        trials: pd.DataFrame,
                        out_root: str | Path = "rastermap_psth_out",
-                       lick_df: pd.DataFrame | None = None,
                        **cfg_overrides) -> dict:
     cfg      = {**DEFAULT_CFG, **cfg_overrides}
 
@@ -2579,18 +2481,17 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     #print('Excluding non-learners...')
     mouse_info = pd.read_excel(MOUSE_INFO)
-    valid_mice = mouse_info[mouse_info['learning_category'].isin(['good','moderate','bad'])]['mouse_id'].unique()
+    valid_mice = mouse_info[mouse_info['learning_category'].isin(['good','moderate' 'bad'])]['mouse_id'].unique()
 
-    #units = units[units.mouse_id.isin(valid_mice)]
+
+    units = units[units.mouse_id.isin(valid_mice)]
     n_units = len(units)
     units['firing_rate'] = units['firing_rate'].astype(float)
     units = units[units.firing_rate>DEFAULT_CFG["global_fr_hz"]]
-    print( ' Unique mice post global firing rate:', units.mouse_id.unique())
     print("Global firing rate filter...")
     print(f"  Session-level FR filter (>={DEFAULT_CFG["global_fr_hz"]} Hz): {n_units} → {len(units)} units")
 
     trials = trials[trials.mouse_id.isin(valid_mice)]
-    print( ' Unique mice valid mice:', trials.mouse_id.unique())
 
     print("Assigning trial contexts...")
     period = cfg["period"]
@@ -2599,7 +2500,6 @@ def run_rastermap_psth(units: pd.DataFrame,
     if period in ("active", "both"):
         trials = assign_active_context(trials)
     units_raw  = units.copy()
-    print( ' Unique mice context:', units_raw.mouse_id.unique())
 
     print("Unit selection (bc_label == )...")
     units_good = units[units.bc_label.isin(["good"])]
@@ -2611,15 +2511,11 @@ def run_rastermap_psth(units: pd.DataFrame,
     st_map      = {uid: get_spike_times(units_good.loc[uid]) for uid in all_ids}
     mouse_map   = units_good[cfg["mouse_id_col"]].to_dict()
     session_map = units_good[cfg["session_id_col"]].to_dict()
-    print( 'Unique mice spike times', set(mouse_map.values()))
 
     # One groupby scan of trials instead of N_neurons × 4 boolean masks
     print("Pre-grouping trial event times...")
     event_map = precompute_event_map(trials, cfg, CONDITIONS, COND_ALIGN_COLS)
     print(f"  {len(event_map)} (mouse, session, context, trial_type, align_col) groups found")
-
-    if lick_df is not None and cfg.get("include_lick_conditions", False):
-        add_lick_event_map(lick_df, event_map, cfg)
 
     # Drop mice that have no valid jaw_onset_time events at all (across all sessions)
     if "jaw_onset_time" in COND_ALIGN_COLS:
@@ -2652,13 +2548,13 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     print("Applying FR filter...")
     unit_ids, fr_map = apply_fr_filter(all_ids, st_map, mouse_map, session_map, event_map, cfg)
-    print( 'Unique mice post PSTH FR filter', set(mouse_map[uid] for uid in unit_ids))
 
     print("Applying mouse filter (trial count)...")
     # Diagnostic figures
     fig0_data_summary(units_raw, units_good, unit_ids, trials, cfg, out_folder)
     fig1_trial_counts(trials, cfg, out_folder)
     trial_counts_df = table1b_trial_counts_per_mouse(event_map, cfg, out_folder)
+    print(trial_counts_df.head())
 
     # List mice and condition where trial counts is smaller than threshold
     filtered_df = trial_counts_df.groupby(['mouse_id', 'condition']).filter(
@@ -2671,8 +2567,6 @@ def run_rastermap_psth(units: pd.DataFrame,
         print(f"Excluding {len(mice_too_few_trials)} mice with too few trials: {mice_too_few_trials}")
         unit_ids = [uid for uid in unit_ids if mouse_map[uid] not in mice_too_few_trials]
         print(f"  {len(unit_ids)} units remaining after mouse filter")
-
-    print(' Unique mice', set(mouse_map[uid] for uid in unit_ids))
 
     # extract per-neuron metadata arrays aligned to unit_ids
     reward_map = units_good[cfg["reward_group_col"]].to_dict()
@@ -2798,8 +2692,7 @@ def run_rastermap_psth(units: pd.DataFrame,
         print(f"  X shape (final, saved): {X.shape}")
         np.save(fpath, X)
 
-        fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map,
-                            cond_infos, cfg, out_folder, fr_map)
+        fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map, event_map, cond_infos, cfg, out_folder)
 
         print(f"Running rastermap_psth (n_clusters={n_k})...")
         isort, boundaries = fit_rastermap(X, n_k)
@@ -2848,7 +2741,7 @@ def run_rastermap_psth(units: pd.DataFrame,
         fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_k, out_folder)
 
         if axon_arr is not None:
-            fig13_anatomy_axis_per_cluster(cluster_labels, axon_arr,   "wS1/2 proj.\n(Liu '24)",
+            fig13_anatomy_axis_per_cluster(cluster_labels, axon_arr,   "wS1/2 proj. strength\n(Liu '24)",
                                             "avg_ipsi",      n_k, out_folder)
             fig13_anatomy_axis_per_cluster(cluster_labels, harris_arr, "Hierarchy score\n(Harris '19)",
                                             "cc_tc_ct_iterated", n_k, out_folder)
