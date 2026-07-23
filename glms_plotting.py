@@ -61,7 +61,7 @@ if __name__ == '__main__':
     # ] # AB107''AB149',
  
     #excluded for now : : ['MH030' 'MH023' 'MH014' 'MH021' 'MH022' 'MH027' 'MH028']
-    # subject_ids = ["AB131"]
+    # subject_ids = ["AB156"]
     # subject_ids = ['AB162']
     # git_version = '40fbc11'
     git_version = '4227ca6'
@@ -78,7 +78,7 @@ if __name__ == '__main__':
     compare_gits = False
     git_versions = ['15127ae', 'b394470']
     git_versions = ['b394470', 'b394470'] 
-    git_versions = [ 'f849441' ]
+    git_versions = [ '1b14083' ]
 
     if single_mouse:
 
@@ -87,7 +87,8 @@ if __name__ == '__main__':
         plots = [ 'average_predictions_per_trial_types', 'metrics']
         plots = [ 'average_kernels_by_region', 'average_predictions_per_trial_types', 'metrics']
         plots = ['create_summary', 'metrics']
-        plots = [ 'create_summary']
+        plots = [ 'individual_trials_concat']
+        subject_ids = ['AB131']
         for subject_id in subject_ids:
             print(" ")
             print(f"Subject ID : {subject_id}")
@@ -115,9 +116,10 @@ if __name__ == '__main__':
             mouse_glm_results(nwb_list = nwb_files,model_path = model_path,plots= plots, output_path =mouse_results_path, info_path= info_path, git_version =git_version)
 
     if over_mice:
-        plots = ['metrics']
-        plots = ['average_kernels_by_region']
-        plots= [ 'metrics' ]
+        # plots = ['average_activity_predictions' ]
+        # plots= ['kernel_consistency', 'compare_kernels']
+        plots = [ 'metrics']
+        # plots = ['average_activity_predictions']
         # Get list of NWB files for each mouse
         for git_version in git_versions:
             nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]

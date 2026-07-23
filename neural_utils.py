@@ -17,7 +17,15 @@ matplotlib.use('Agg') # 'TkAgg' 'Agg' 'Qt5Agg'
 import matplotlib.pyplot as plt
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from tqdm import tqdm
+import sys
+from pathlib import Path
 
+# Determine project root dynamically
+project_root = Path(__file__).resolve().parent.parent
+
+# Add helper repos to sys.path
+sys.path.append(str(project_root / "NWB_reader"))
+sys.path.append(str(project_root / "allen_utils"))
 
 # Custom imports
 import NWB_reader_functions as nwb_reader
@@ -38,8 +46,7 @@ TRIAL_MAP = {
 def process_single_nwb(nwb):
     try:
         beh_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb)
-        if day != 0:
-            return None
+
 
         unit_table = nwb_reader.get_unit_table(nwb)
         if unit_table is None or 'bc_label' not in unit_table.columns:
@@ -124,24 +131,85 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
 
     return trial_table, unit_table, ephys_nwb_list
 
+# def convert_electrode_group_object_to_columns(data):
+#     """
+#     Convert electrode group object to dictionary.
+#     Creates a new column in the dataframe.
+#     :param data: pd.DataFrame containing the NWB electrode group field.
+#     :return: 
+#     """
+#     elec_group_list = data['electrode_group'].values
+#     #elec_group_name = [e.name for e in elec_group_list]
+#     elec_group_name = [e.name for e in elec_group_list]
+#     data['electrode_group'] = elec_group_name
+
+#     elec_group_location = [e.location.replace('nan', 'None') for e in elec_group_list]
+#     elec_group_location_dict = [eval(e) for e in elec_group_location]
+#     data['location'] = elec_group_location_dict
+#     data['target_region'] = [e.get('area') for e in elec_group_location_dict]
+
+#     return data
+
+
+def _quote_bare_names(dict_str):
+    """Quote every bare identifier in a Python-literal-like string.
+
+    electrode_group.location is written as a Python dict-literal string by
+    the NWB export pipeline (e.g. "{'area': 'wS1', 'ap': 1.2, ...}"), but
+    some files have unquoted acronyms somewhere in the structure — a dict
+    value, a list element, nested arbitrarily — instead of proper string
+    literals (e.g. "{'area': wS1, ...}"). ast.literal_eval rejects any
+    ast.Name node ("malformed node or string"), since a bare identifier
+    isn't a literal; True/False/None parse directly as Constant nodes, not
+    Name, so every ast.Name found here really is an unquoted acronym that
+    needs quoting, wherever it sits. Parsing once to find every Name node's
+    exact source span (rather than guessing with regex) handles that
+    generally; spans are rewritten back-to-front so replacing one doesn't
+    shift the offsets of ones not yet processed.
+    """
+    tree  = ast.parse(dict_str, mode='eval')
+    names = sorted((n for n in ast.walk(tree) if isinstance(n, ast.Name)),
+                   key=lambda n: n.col_offset, reverse=True)
+    for n in names:
+        start, end = n.col_offset, n.end_col_offset
+        dict_str = f"{dict_str[:start]}'{n.id}'{dict_str[end:]}"
+    return dict_str
+
+
+def _parse_location(loc_str):
+    """Parse one electrode_group.location string into a dict or plain string.
+
+    Usually a dict-literal string (e.g. "{'area': 'wS1', 'ap': 1.2, ...}"),
+    but some files store it as a bare, possibly-unquoted acronym instead
+    (e.g. "wS1"). Only reach for ast.literal_eval/_quote_bare_names when the
+    text actually looks dict-shaped; a bare acronym is used as-is rather
+    than evaluated as a Python expression.
+    """
+    loc_str = loc_str.strip()
+    if not loc_str.startswith('{'):
+        return loc_str.strip("'\"")
+    return ast.literal_eval(_quote_bare_names(loc_str))
+
+
 def convert_electrode_group_object_to_columns(data):
     """
     Convert electrode group object to dictionary.
     Creates a new column in the dataframe.
     :param data: pd.DataFrame containing the NWB electrode group field.
-    :return: 
+    :return:
     """
     elec_group_list = data['electrode_group'].values
-    #elec_group_name = [e.name for e in elec_group_list]
-    elec_group_name = [e.name for e in elec_group_list]
-    data['electrode_group'] = elec_group_name
+    data['electrode_group'] = [getattr(e, 'name', e) for e in elec_group_list]
 
-    elec_group_location = [e.location.replace('nan', 'None') for e in elec_group_list]
-    elec_group_location_dict = [eval(e) for e in elec_group_location]
-    data['location'] = elec_group_location_dict
-    data['target_region'] = [e.get('area') for e in elec_group_location_dict]
+    elec_group_location = [getattr(e, 'location', e).replace('nan', 'None')
+                           for e in elec_group_list]
+    data['location'] = [_parse_location(loc) for loc in elec_group_location]
+    data['target_region'] = [loc.get('area') if isinstance(loc, dict) else loc
+                             for loc in data['location']]
 
     return data
+
+
 
 def compute_fano_factor_from_spike_train(spike_times, event_times, bin_size, time_start, time_stop):
     """
