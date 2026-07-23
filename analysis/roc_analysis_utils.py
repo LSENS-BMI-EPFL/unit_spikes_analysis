@@ -9,10 +9,45 @@ import os, glob
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from concurrent.futures import ProcessPoolExecutor
 
 import allen_utils as allen
 
-def load_roc_results(root_path):
+def _read_csv_if_exists(f):
+    if os.path.exists(f):
+        return pd.read_csv(f)
+    return None
+
+
+def load_roc_results(root_path, max_workers=20):
+    mouse_folders = [f for f in os.listdir(root_path) if f.startswith('AB') or f.startswith('MH')]
+    files = []
+    for folder in mouse_folders:
+        mouse_id = folder[0:5]
+        res_file = os.path.join(root_path, folder, 'whisker_0', 'roc_analysis', f'{mouse_id}_roc_results_new.csv')
+        files.append(res_file)
+    print(f"  Found {len(files)} files in: {root_path}")
+
+    if not files:
+        print("  No ROC files found. Returning empty DataFrame.")
+        return pd.DataFrame()
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        dfs = list(tqdm(executor.map(_read_csv_if_exists, files),
+                        total=len(files),
+                        desc="  Loading ROC CSV files",
+                        unit="file"))
+
+    dfs = [df for df in dfs if df is not None]
+
+    if not dfs:
+        return pd.DataFrame()
+
+    return pd.concat(dfs, ignore_index=True)
+
+
+
+def load_roc_results_serial(root_path):
     files = glob.glob(os.path.join(root_path, '**', '*_roc_results_new.csv'), recursive=True)
     print(f"  Found {len(files)} files in: {root_path}")
     dfs = []
@@ -69,7 +104,52 @@ def fdr_bh(pvals, fdr=0.05):
     return reject, pvals_corrected
 
 
-def filter_process_data(data_df, n_units_min=10, n_mice_per_area_min=3, keep_shared=True):
+def filter_process_data(data_df, n_units_min=20, n_mice_per_area_min=3, n_units_per_mouse_min=3, keep_shared=True):
+    data_df = data_df.copy()
+
+    group_cols = ['analysis_type', 'area_acronym_custom']
+
+    # Step 1: filter by total unit count per (analysis_type, area)
+    area_counts = data_df.groupby(group_cols).size().rename('n_units')
+    valid = area_counts[area_counts >= n_units_min].reset_index()[group_cols]
+    data_df = data_df.merge(valid, on=group_cols)
+    print(f"After unit count filter: {len(data_df)} rows")
+
+    # Step 2: filter by minimum units per mouse per (analysis_type, area) —
+    #         keep only mice that meet the threshold, then re-apply mice-per-area filter
+    per_mouse_counts = data_df.groupby(group_cols + ['mouse_id']).size().rename('n_units_mouse').reset_index()
+    valid_mice = per_mouse_counts[per_mouse_counts['n_units_mouse'] >= n_units_per_mouse_min][group_cols + ['mouse_id']]
+    data_df = data_df.merge(valid_mice, on=group_cols + ['mouse_id'])
+    print(f"After units-per-mouse filter: {len(data_df)} rows")
+
+    # Step 3: filter by number of mice per (analysis_type, area)
+    mouse_counts = data_df.groupby(group_cols)['mouse_id'].nunique().rename('n_mice')
+    valid = mouse_counts[mouse_counts >= n_mice_per_area_min].reset_index()[group_cols]
+    data_df = data_df.merge(valid, on=group_cols)
+    print(f"After mice-per-area filter: {len(data_df)} rows")
+
+    # Step 3: optionally restrict to areas shared across reward groups,
+    #         evaluated per analysis_type
+    if keep_shared:
+        shared = (
+            data_df.groupby(group_cols)['reward_group']
+            .nunique()
+            .rename('n_groups')
+            .reset_index()
+        )
+        n_groups = data_df['reward_group'].nunique()
+        valid = shared[shared['n_groups'] == n_groups][group_cols]
+        data_df = data_df.merge(valid, on=group_cols)
+        print(f"After shared-areas filter: {len(data_df)} rows")
+
+    # Summary
+    for at, grp in data_df.groupby('analysis_type'):
+        areas = grp['area_acronym_custom'].unique()
+        print(f"  {at}: {len(areas)} areas")
+
+    return data_df
+
+def filter_process_data_old(data_df, n_units_min=20, n_mice_per_area_min=3, keep_shared=True):
     """
     Filter input dataframe of results based on criteria.
     :param data_df: input dataframe with ROC results
@@ -77,11 +157,10 @@ def filter_process_data(data_df, n_units_min=10, n_mice_per_area_min=3, keep_sha
     :param n_mice_per_area_min: minimum number of mice per area to keep
     :param keep_shared: if True, only keep areas that are present in both reward groups
     """
-
     data_df['selectivity_abs'] = data_df['selectivity'].abs()
 
     # Step 1: Add custom area column
-    data_df = allen.create_area_custom_column(data_df)
+    #data_df = allen.create_area_custom_column(data_df)
 
     # Step 2: Count occurrences and filter by threshold
     area_counts_by_analysis = data_df.groupby(['analysis_type', 'area_acronym_custom']).size()
@@ -112,16 +191,16 @@ def filter_process_data(data_df, n_units_min=10, n_mice_per_area_min=3, keep_sha
     return filtered_df
 
 
-def compute_prop_significant(roc_df, per_subject=True):
+def compute_prop_significant(roc_df, area_col, per_subject=True):
     """
     Compute proportions of significant neurons per area, analysis type, reward group, - and direction,
     i.e. over the entire dataset aggregated over mice.
     """
     if per_subject:
-        default_groups = ['mouse_id', 'analysis_type', 'reward_group', 'area_acronym_custom']
+        default_groups = ['mouse_id', 'analysis_type', 'reward_group', area_col]
         print("Computing proportions per subject...")
     else:
-        default_groups = ['analysis_type', 'reward_group', 'area_acronym_custom']
+        default_groups = ['analysis_type', 'reward_group', area_col]
         print("Computing proportions over all subjects...")
 
     # Step 1: Total neuron counts per group
@@ -146,7 +225,7 @@ def compute_prop_significant(roc_df, per_subject=True):
                 roc_df['mouse_id'].unique(),
                 roc_df['analysis_type'].unique(),
                 roc_df['reward_group'].unique(),
-                roc_df['area_acronym_custom'].unique(),
+                roc_df[area_col].unique(),
                 roc_df['direction'].unique()
             ],
             names=default_groups + ['direction']
@@ -156,7 +235,7 @@ def compute_prop_significant(roc_df, per_subject=True):
             [
                 roc_df['analysis_type'].unique(),
                 roc_df['reward_group'].unique(),
-                roc_df['area_acronym_custom'].unique(),
+                roc_df[area_col].unique(),
                 roc_df['direction'].unique()
             ],
             names=default_groups + ['direction']
@@ -199,6 +278,7 @@ def compute_prop_significant(roc_df, per_subject=True):
     mask_direction = roc_df_perc['direction'].isin(['positive', 'negative'])
     roc_df_perc.loc[mask_direction, 'proportion_all'] =roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_direction].sum())
+
     mask_direction_non = roc_df_perc['direction'].isin(['non-selective'])
     roc_df_perc.loc[mask_direction_non, 'proportion_all'] = roc_df_perc.groupby(default_groups
     )['proportion'].transform(lambda x: x[mask_direction_non].sum())
@@ -271,3 +351,5 @@ def compute_si_differences(roc_df):
         )
 
     return results
+
+
