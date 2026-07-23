@@ -989,12 +989,12 @@ def main():
     mouse_info_df = pd.read_excel(mouse_info_path)
     mouse_info_df.rename(columns={'mouse_name': 'mouse_id'}, inplace=True)
 
-    # Filter for usable mice
+    # Filter for usable mice only works for day 0 !
     mouse_info_df = mouse_info_df[
-        # (mouse_info_df['exclude'] == 0) &
-        # (mouse_info_df['exclude_ephys'] == 0) &
+        (mouse_info_df['exclude'] == 0) &
+        (mouse_info_df['exclude_ephys'] == 0) &
         (mouse_info_df['reward_group'].isin(['R+', 'R-'])) 
-        # (mouse_info_df['recording'] == 1)
+        (mouse_info_df['recording'] == 1)
         ]
     valid_mice = mouse_info_df['mouse_id'].unique()
     valid_mice = mouse_info_df['mouse_id'].unique()
@@ -1073,7 +1073,6 @@ def main():
     # Remove excluded areas
     roc_df = roc_df[~roc_df['area'].isin(allen.get_excluded_areas())]
     roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True)
-    roc_df['area_acronym_custom'] = 'brain'
     roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN,
                                  n_units_per_mouse_min=N_UNITS_PER_MOUSE_MIN, keep_shared=KEEP_SHARED_AREAS)
 
