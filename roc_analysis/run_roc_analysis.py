@@ -44,7 +44,7 @@ from selectivity_grid import plot_selectivity
 
 def plot_proportion_across_areas(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type for each reward group separately.
+    Plot proportions of significant neurons per area, roc_analysis type for each reward group separately.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -127,7 +127,7 @@ def plot_proportion_across_areas(data_df, area_order, area_color_list, output_pa
 
 def plot_pop_selectivity_across_areas(data_df, per_subject, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type for each reward group separately.
+    Plot proportions of significant neurons per area, roc_analysis type for each reward group separately.
     Plots for all significant neurons and per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -428,7 +428,7 @@ def plot_pop_selectivity_across_areas_reward_group(data_df, per_subject, area_or
 
 def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list, output_path, direction=None):
     """
-    Plot proportions of significant neurons per area, analysis type, for each reward separately found in
+    Plot proportions of significant neurons per area, roc_analysis type, for each reward separately found in
     pre-learning passive trials vs. proportions in the post-learning passive trials.
     Plots for all significant neurons only.
     :param data_df: dataframe with proportions of significant neurons per area
@@ -520,6 +520,7 @@ def plot_prop_before_vs_after_across_areas(data_df, area_order, area_color_list,
 
 
 
+            # Run statistical debug for each area
             # Run statistical debug for each area
             results = []
             for area in area_order:
@@ -753,7 +754,7 @@ def plot_pop_selectivity_before_vs_after_across_areas(data_df, per_subject, area
 
 def plot_proportion_across_areas_pre_vs_post(data_df, area_order, area_color_list, output_path):
     """
-    Plot proportions of significant neurons per area, analysis type, reward group that are modulated comparing pre and post passive trials.
+    Plot proportions of significant neurons per area, roc_analysis type, reward group that are modulated comparing pre and post passive trials.
     Plots for per directions of significance.
     :param data_df: dataframe with proportions of significant neurons per area
     :param area_order: list of areas in desired order
@@ -996,6 +997,7 @@ def main():
         # (mouse_info_df['recording'] == 1)
         ]
     valid_mice = mouse_info_df['mouse_id'].unique()
+    valid_mice = mouse_info_df['mouse_id'].unique()
 
     # ---------
     # LOAD DATA
@@ -1041,12 +1043,18 @@ def main():
     #roc_df = roc_df.merge(unit_table[['mouse_id', 'session_id', 'neuron_id', 'area_acronym_custom']],
     #                      on=['mouse_id', 'session_id', 'neuron_id'], how='right')
 
+    #roc_df['neuron_id'] = roc_df['neuron_id'].astype(int)
+    #unit_table['neuron_id'] = unit_table['neuron_id'].astype(int)
+    #roc_df = roc_df.merge(unit_table[['mouse_id', 'session_id', 'neuron_id', 'area_acronym_custom']],
+    #                      on=['mouse_id', 'session_id', 'neuron_id'], how='right')
+
     # Create unique unit identifier based on index
+    #roc_df['unit_id'] = roc_df.index.astype(int)
     #roc_df['unit_id'] = roc_df.index.astype(int)
 
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
-    print('ROC analysis types:', roc_df['analysis_type'].unique())
+    print('ROC roc_analysis types:', roc_df['analysis_type'].unique())
 
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
@@ -1059,6 +1067,7 @@ def main():
     N_MICE_PER_AREA_MIN = 5         # minimum mice per area
     N_UNITS_PER_MOUSE_MIN = 10       # minimum units per mouse per area
     KEEP_SHARED_AREAS = True        # keep only areas that are shared between reward groups
+
 
 
     # Remove excluded areas
@@ -1944,6 +1953,7 @@ def main():
 
 
 def run_permutation_test_increase_reward_group(roc_df):
+    print('Running permutation debug for reward group comparison...')
     print('Running permutation debug for reward group comparison...')
 
     # Column names for SI pre/post (change here to match your dataframe)

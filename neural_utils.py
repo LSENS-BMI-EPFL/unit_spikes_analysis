@@ -43,9 +43,21 @@ TRIAL_MAP = {
 }
 
 
-def process_single_nwb(nwb):
+def process_single_nwb(nwb, day_to_analyze = 0):
     try:
         beh_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb)
+        if day_to_analyze == 'learning' and day !=0:
+            return None
+        elif day_to_analyze == 'expert' and day == 0:
+            return None
+        elif day_to_analyze == 'all' and day <0:
+            return None
+
+        #if day_to_analyze != 'all':
+        #    if day_to_analyze == 0 and day !=0:
+        #        return None
+        #    elif day_to_analyze > 0 and day == 0:
+        #        return None
 
 
         unit_table = nwb_reader.get_unit_table(nwb)
@@ -53,17 +65,17 @@ def process_single_nwb(nwb):
             return None
 
         trial_table = nwb_reader.get_trial_table(nwb)
-        trial_table['trial_id'] = trial_table.index
 
         mouse_id = nwb_reader.get_mouse_id(nwb)
         session_id = nwb_reader.get_session_id(nwb)
-        sess_meta = nwb_reader.get_session_metadata(nwb)
-        reward_group = sess_meta.get('wh_reward')
+        sess_metadata = nwb_reader.get_session_metadata(nwb)
+        reward_group = sess_metadata['wh_reward']
 
         trial_table['mouse_id'] = mouse_id
         trial_table['session_id'] = session_id
-        trial_table['context'] = trial_table['context'].astype(str)
         trial_table['reward_group'] = reward_group
+        trial_table['context'] = trial_table['context'].astype(str)
+        trial_table['day'] = day
 
         if trial_table['context'].str.contains('nan').all():
             trial_table['context'] = 'active'
@@ -73,16 +85,10 @@ def process_single_nwb(nwb):
 
 
         unit_table['mouse_id'] = mouse_id
-        unit_table['session_id'] = mouse_id
+        unit_table['session_id'] = session_id
+        unit_table['reward_group'] = reward_group
         unit_table['day'] = day
-        unit_table['behaviour'] = beh_type
-
         print('Warning: number of root neurons :', mouse_id, len(unit_table[unit_table.ccf_acronym=='root']))
-        root_units = unit_table[unit_table.ccf_acronym=='root']
-        if not root_units.empty:
-            elec_groups = root_units['electrode_group'].unique()
-            elec_names = [e.name for e in elec_groups]
-            #print(f"Root units found in {mouse_id}: {len(root_units)} with electrode groups: {elec_names}")
 
         unit_table = convert_electrode_group_object_to_columns(unit_table)
 
@@ -96,7 +102,7 @@ def process_single_nwb(nwb):
         print(f"Error processing {nwb}: {e}")
         return None
 
-def combine_ephys_nwb(nwb_list, max_workers=24):
+def combine_ephys_nwb(nwb_list,day_to_analyze=0, max_workers=24):
     """
     Combine neural and behavioural data from multiple NWB files using multiprocessing and tqdm.
     :param nwb_list: list of NWB file paths.
@@ -108,7 +114,7 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
     unit_table_list = []
 
     with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(process_single_nwb, nwb): nwb for nwb in nwb_list}
+        futures = {executor.submit(process_single_nwb, nwb, day_to_analyze = day_to_analyze): nwb for nwb in nwb_list}
 
         for future in tqdm(as_completed(futures), total=len(futures), desc="Loading NWB files"):
             result = future.result()
@@ -125,9 +131,10 @@ def combine_ephys_nwb(nwb_list, max_workers=24):
     unit_table = pd.concat(unit_table_list, ignore_index=True) if unit_table_list else pd.DataFrame()
 
     if not unit_table.empty:
-        #unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen.get_excluded_areas())]
+        print('Removing excluded areas from unit table and creating global unit IDs...')
+        unit_table = unit_table[~unit_table['ccf_atlas_acronym'].isin(allen.get_excluded_areas())]
         unit_table = unit_table.reset_index(drop=True)
-        unit_table['unit_id'] = unit_table.index
+        unit_table['unit_id'] = unit_table.index            # global unit identifier
 
     return trial_table, unit_table, ephys_nwb_list
 
@@ -199,7 +206,27 @@ def convert_electrode_group_object_to_columns(data):
     :return:
     """
     elec_group_list = data['electrode_group'].values
-    data['electrode_group'] = [getattr(e, 'name', e) for e in elec_group_list]
+    elec_group_name = [e.name for e in elec_group_list]
+    #ata['electrode_group'] = elec_group_name
+    data["electrode_group"] = [getattr(e, "name", e) for e in elec_group_list]
+
+    elec_group_location = [e.location.replace('nan', 'None') for e in elec_group_list]
+    elec_group_location_dict = [eval(e) for e in elec_group_location]
+    data['location'] = elec_group_location_dict
+    data['target_region'] = [e.get('area') for e in elec_group_location_dict]
+
+    return data
+
+def convert_electrode_group_object_to_columns(data):
+    """
+    Convert electrode group object to dictionary.
+    Creates a new column in the dataframe.
+    :param data: pd.DataFrame containing the NWB electrode group field.
+    :return: 
+    """
+    elec_group_list = data['electrode_group'].values
+    elec_group_name = [e.name for e in elec_group_list]
+    data['electrode_group'] = elec_group_name
 
     elec_group_location = [getattr(e, 'location', e).replace('nan', 'None')
                            for e in elec_group_list]
@@ -1100,3 +1127,164 @@ def build_session_dynamics_table(trial_table, unit_table, params, proc_data_path
             json.dump(params, f)
 
     return sess_dyn_df
+
+
+
+
+def _extract_imec_id(df):
+    """
+    Return a copy of the dataframe with an integer imec_id column.
+
+    If imec_id already exists, it is converted to an integer.
+    Otherwise it is extracted from electrode_group strings such as:
+        imec0_shank0 -> 0
+        imec1        -> 1
+    """
+    df = df.copy()
+
+    if "imec_id" in df.columns:
+        df["imec_id"] = (
+            df["imec_id"]
+            .astype(str)
+            .str.extract(r"(\d+)", expand=False)
+            .astype(int)
+        )
+
+    elif "electrode_group" in df.columns:
+        df["imec_id"] = (
+            df["electrode_group"]
+            .astype(str)
+            .str.extract(r"imec(\d+)", expand=False)
+            .astype(int)
+        )
+
+    else:
+        raise ValueError(
+            "DataFrame contains neither 'imec_id' nor 'electrode_group'."
+        )
+
+    return df
+
+
+def merge_unit_quantifications(unit_table, *dfs, verbose=True):
+    """
+    Merge one or more unit-level dataframes onto unit_table.
+
+    Merge keys:
+        mouse_id
+        session_id
+        cluster_id
+        imec_id
+
+    imec_id is extracted from electrode_group when necessary.
+
+    Parameters
+    ----------
+    unit_table : pd.DataFrame
+        Primary dataframe.
+
+    *dfs : pd.DataFrame
+        Additional dataframes to merge.
+
+    verbose : bool
+        Print alignment diagnostics.
+
+    Returns
+    -------
+    pd.DataFrame
+    """
+
+    base = _extract_imec_id(unit_table)
+
+    keys = [
+        "mouse_id",
+        "session_id",
+        "imec_id",
+        "cluster_id",
+    ]
+
+    for i, df in enumerate(dfs):
+
+        other = _extract_imec_id(df)
+
+        # Ensure merge keys exist
+        missing = [k for k in keys if k not in other.columns]
+        if missing:
+            raise ValueError(
+                f"DataFrame {i} is missing merge keys: {missing}"
+            )
+
+        # Check duplicate merge keys
+        dup = other.duplicated(keys)
+        if dup.any():
+            print(
+                f"\nWARNING: DataFrame {i} contains "
+                f"{dup.sum()} duplicated merge keys."
+            )
+            print(
+                other.loc[dup, keys]
+                .sort_values(["mouse_id", "session_id"])
+            )
+
+        # Compare keys
+        compare = base[keys].merge(
+            other[keys],
+            how="outer",
+            indicator=True,
+        )
+
+        missing_in_other = compare["_merge"] == "left_only"
+        missing_in_base = compare["_merge"] == "right_only"
+
+        if verbose:
+
+            if missing_in_other.any():
+                print(
+                    f"\nDataFrame {i}: "
+                    f"{missing_in_other.sum()} unit(s) from unit_table "
+                    "were not found."
+                )
+
+                summary = (
+                    compare.loc[missing_in_other]
+                    .groupby(["mouse_id", "session_id"])
+                    .size()
+                    .rename("n_missing")
+                    .reset_index()
+                    .sort_values(["mouse_id", "session_id"])
+                )
+
+                print(summary.to_string(index=False))
+
+            if missing_in_base.any():
+                print(
+                    f"\nDataFrame {i}: "
+                    f"{missing_in_base.sum()} unit(s) are not present "
+                    "in unit_table."
+                )
+
+                summary = (
+                    compare.loc[missing_in_base]
+                    .groupby(["mouse_id", "session_id"])
+                    .size()
+                    .rename("n_extra")
+                    .reset_index()
+                    .sort_values(["mouse_id", "session_id"])
+                )
+
+                print(summary.to_string(index=False))
+
+        # Merge only new columns
+        cols_to_merge = [
+            c for c in other.columns
+            if c not in keys and c not in base.columns
+        ]
+
+        base = base.merge(
+            other[keys + cols_to_merge],
+            on=keys,
+            how="left",
+            validate="one_to_one",
+        )
+
+    return base

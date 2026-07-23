@@ -17,7 +17,10 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.utils.class_weight import compute_sample_weight
 import NWB_reader_functions as nwb_reader
+import neural_utils
 
+
+N_WORKERS = 100
 
 def process_nwb_tables(nwb_file):
     """
@@ -28,18 +31,19 @@ def process_nwb_tables(nwb_file):
     # Convert NWB units and trials tables into Pandas DataFrames
     units = nwb_file.units.to_dataframe()
     trials = nwb_file.trials.to_dataframe()
+    units['neuron_id'] = units.index # note before any filtering
 
     # Keep well-isolated units with a valid brain region label
     units = units[(units['bc_label'] == 'good')]
+    units = neural_utils.convert_electrode_group_object_to_columns(units)
 
     # Keep fewer columns only
-    columns_to_keep = ["cluster_id", "firing_rate", "ccf_acronym", "ccf_name", "ccf_parent_acronym", "ccf_parent_id", #TODO: update with new CCF fields
-                       "ccf_parent_name", "spike_times"]
+    ccf_cols = [c for c in units.columns if "ccf" in c]
+    columns_to_keep = ["cluster_id", "neuron_id", "spike_times", "firing_rate", "target_region"] + ccf_cols
     units = units[columns_to_keep]
 
     # Use index as new column named "neuron_id", then reset
-    units['neuron_id'] = units.index
-    units.reset_index(drop=True, inplace=True)
+    #units.reset_index(drop=True, inplace=True)
 
     # If context is only NaNs, set to 'active' for all trials
     if trials['context'].isnull().all():
@@ -154,8 +158,137 @@ def extract_event_times(nwb_file, event_type='whisker', context='passive', has_c
 
     return event_times
 
+_worker_combo_data = None  # set once per worker process, never re-pickled per task
+
+
+def _extract_worker_init(combo_data):
+    """Load combo data into each worker once at pool startup."""
+    global _worker_combo_data
+    _worker_combo_data = combo_data
+
+
+def _process_unit_extract(unit_row):
+    """
+    For a single unit (pd.Series), compute pre/post spike counts for every
+    (event_type, context) combo using vectorised numpy ops.
+    Returns a list of dicts, one per combo.
+    """
+    spike_times = np.asarray(unit_row['spike_times'])
+    rows = []
+
+    for (event_type, context, event_times_arr,
+         pre_start, pre_end, post_start, post_end,
+         bl_pre_start, bl_pre_end) in _worker_combo_data:
+
+        # Vectorised: one searchsorted call per window edge → no Python loop over events
+        pre_counts  = (np.searchsorted(spike_times, event_times_arr + pre_end,  side='right') -
+                       np.searchsorted(spike_times, event_times_arr + pre_start, side='left')).tolist()
+        post_counts = (np.searchsorted(spike_times, event_times_arr + post_end,  side='right') -
+                       np.searchsorted(spike_times, event_times_arr + post_start, side='left')).tolist()
+
+        # Extended baseline window (None for events not used in baseline analyses)
+        if bl_pre_start is not None:
+            bl_pre_counts = (np.searchsorted(spike_times, event_times_arr + bl_pre_end, side='right') -
+                             np.searchsorted(spike_times, event_times_arr + bl_pre_start, side='left')).tolist()
+        else:
+            bl_pre_counts = None
+
+        row = unit_row.to_dict()
+        row['event']      = event_type
+        row['context']    = context
+        row['pre_spikes'] = pre_counts
+        row['post_spikes'] = post_counts
+        row['baseline_pre_spikes'] = bl_pre_counts
+
+        rows.append(row)
+
+    return rows
 
 def extract_spike_data(nwb_file):
+    """
+    Process spike data from a NWB file.
+    :param nwb_file: path to NWB file
+    :return: processed unit table (pd.DataFrame)
+    """
+    nwb_file_path = pathlib.Path(nwb_file)
+    mouse_name = nwb_file_path.name[:5]
+    session_id = nwb_file_path.stem
+    nwb = nwb_reader.read_nwb_file(nwb_file_path)
+
+    unit_table, trial_table = process_nwb_tables(nwb)
+    unit_table['mouse_id']   = mouse_name
+    unit_table['session_id'] = session_id
+
+    contexts_available = trial_table['context'].unique()
+    has_context = 'active' in contexts_available and 'passive_pre' in contexts_available
+
+    event_types = ['whisker', 'auditory', 'spontaneous_licks',
+                   'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss']
+    baseline_events = {'whisker', 'auditory', 'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss', 'whisker', 'auditory'}
+
+    time_windows = {
+        'pre':               (-0.05,  -0.005),
+        'post':              ( 0.005,  0.05),
+        'spontaneous_licks': (-0.4,   -0.2,  0.0,  0.2),
+        'baseline_pre':      (-1.0, -0.005)
+    }
+
+
+    # ------------------------------------------------------------------
+    # Build combo list serially — extract_event_times touches the NWB
+    # object and must not be called from worker processes.
+    # Each entry: (event_type, context, event_times_arr, pre_s, pre_e, post_s, post_e)
+    # ------------------------------------------------------------------
+    combo_data = []
+    for event_type in event_types:
+        if event_type == 'spontaneous_licks':
+            contexts = ['']
+        elif event_type in ('lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss'):
+            contexts = ['active']
+        else:
+            contexts = ['active', 'passive_pre', 'passive_post'] if has_context else ['active']
+
+        for context in contexts:
+            event_times = extract_event_times(nwb, event_type, context, has_context)
+            event_times_arr = np.asarray(event_times)
+
+            if event_type == 'spontaneous_licks':
+                pre_start, pre_end, post_start, post_end = time_windows['spontaneous_licks']
+            else:
+                pre_start, pre_end  = time_windows['pre']
+                post_start, post_end = time_windows['post']
+
+            if event_type in baseline_events:
+                bl_pre_start, bl_pre_end = time_windows['baseline_pre']
+            else:
+                bl_pre_start, bl_pre_end = None, None
+
+            combo_data.append((event_type, context, event_times_arr,
+                               pre_start, pre_end, post_start, post_end,
+                               bl_pre_start, bl_pre_end))
+
+    # ------------------------------------------------------------------
+    # Parallelise over units; combo_data is loaded once per worker
+    # ------------------------------------------------------------------
+    unit_rows = [row for _, row in unit_table.iterrows()]
+    print(f'Extracting spike data: {len(unit_rows)} units × {len(combo_data)} combos')
+
+    with multiprocessing.Pool(
+        processes=N_WORKERS,
+        initializer=_extract_worker_init,
+        initargs=(combo_data,),
+    ) as pool:
+        nested = pool.map(
+            _process_unit_extract,
+            unit_rows,
+            chunksize=max(1, len(unit_rows) // (N_WORKERS * 4)),
+        )
+
+    # Flatten list-of-lists and build DataFrame
+    proc_unit_table = pd.DataFrame([row for rows in nested for row in rows])
+    return proc_unit_table
+
+def extract_spike_data_old(nwb_file):
     """
     Process spike data from a NWB file.
     :param nwb_file: path to NWB file
@@ -254,7 +387,7 @@ def calculate_roc(class_1_counts, class_2_counts, shuffle=False):
     return fpr, tpr, thresholds, roc_auc
 
 def  select_spike_counts(unit_data, analysis_type):
-    """ Select spike counts based on analysis type. """
+    """ Select spike counts based on roc_analysis type. """
 
     if analysis_type == 'whisker_passive_pre':
         spikes_1 = unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_pre')]['pre_spikes']
@@ -302,11 +435,25 @@ def  select_spike_counts(unit_data, analysis_type):
         spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['post_spikes']
         spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['post_spikes']
     elif analysis_type == 'baseline_choice':
-        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
-        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_1 = unit_data[(unit_data['event'] == 'lick_trial') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'no_lick_trial') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
     elif analysis_type == 'baseline_whisker_choice':
-        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['pre_spikes']
-        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['pre_spikes']
+        spikes_1 = unit_data[(unit_data['event'] == 'whisker_hit') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+        spikes_2 = unit_data[(unit_data['event'] == 'whisker_miss') & (unit_data['context'] == 'active')]['baseline_pre_spikes']
+    elif analysis_type == 'baseline_pre_vs_post_learning':
+        spikes_1 = pd.concat([
+            unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_pre')][
+                'baseline_pre_spikes'],
+            unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_pre')][
+                'baseline_pre_spikes'],
+        ])
+        spikes_2 = pd.concat([
+            unit_data[(unit_data['event'] == 'whisker') & (unit_data['context'] == 'passive_post')][
+                'baseline_pre_spikes'],
+            unit_data[(unit_data['event'] == 'auditory') & (unit_data['context'] == 'passive_post')][
+                'baseline_pre_spikes'],
+        ])
+
     else: #TODO: hit. vs false alarm (per modality?) but aligned at jaw onset
         raise ValueError(f"Analysis type {analysis_type} not recognized.")
 
@@ -323,20 +470,20 @@ def  select_spike_counts(unit_data, analysis_type):
 
 def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     """
-    Process a single unit for ROC analysis.
+    Process a single unit for ROC roc_analysis.
     :param neuron_id: unit ID
     :param proc_unit_table: processed unit table
-    :param analysis_type: type of analysis
+    :param analysis_type: type of roc_analysis
     :param results_path: path to save results
     :return:
     """
     unit_table = proc_unit_table[proc_unit_table['neuron_id'] == neuron_id]
     mouse_id = unit_table['mouse_id'].values[0]
-    area = unit_table['ccf_parent_acronym'].values[0]
+    area = unit_table['ccf_atlas_parent_acronym'].values[0]
 
     # Keep relevant columns for results
-    cols_to_keep = ['mouse_id', 'session_id', 'neuron_id', 'cluster_id', 'firing_rate', 'ccf_acronym', 'ccf_name',
-                    'ccf_parent_acronym', 'ccf_parent_id', 'ccf_parent_name']
+    ccf_cols = [c for c in unit_table.columns if 'ccf' in c]
+    cols_to_keep = ['mouse_id', 'session_id', 'neuron_id', 'cluster_id', 'firing_rate', 'target_region'] + ccf_cols
     res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
     res_dict.update({'analysis_type': analysis_type, 'neuron_id': neuron_id, 'mouse_id': mouse_id, 'area': area})
 
@@ -352,7 +499,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     res_dict.update({'thresholds': thresholds})
 
     # Perform class-label permutations to obtain a null distribution for significance
-    n_permutations = 100
+    n_permutations = 1000
     permuted_aucs = []
     for _ in range(n_permutations):
         _, _, _, roc_auc_permut = calculate_roc(spikes_1, spikes_2, shuffle=True)
@@ -360,10 +507,10 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     permuted_aucs = np.array(permuted_aucs)
 
     # Calculate p-values as proportion of permuted AUCs greater than or equal to the observed AUC
-    p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed test: AUC greater than chance
+    p_value_pos = np.sum(permuted_aucs >= roc_auc) / n_permutations  # one-tailed debug: AUC greater than chance
     p_value_neg = np.sum(permuted_aucs <= roc_auc) / n_permutations
 
-    # Determine significance and direction of signifiance based on p-values and analysis type
+    # Determine significance and direction of signifiance based on p-values and roc_analysis type
     if 'wh_vs_aud' in analysis_type:
         directions = ['auditory', 'whisker'] # auditory is spikes_2!
     else:
@@ -382,7 +529,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
     debug = False
     if debug and is_significant:
 
-        # Subplots: 1. ROC curve 2. Histogram of permutted AUCs
+        # Subplots: 1. ROC curve 2. Histogram of permuted AUCs
         fig, axs = plt.subplots(1, 2, figsize=(12, 6))
         for ax in axs:
             ax.spines['top'].set_visible(False)
@@ -417,14 +564,90 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
 
     return res_dict
 
+# Module-level worker state — set once per process via initializer, never re-pickled
+_worker_unit_table = None
+
+def _worker_init(unit_table):
+    """Store the unit table in each worker process once at pool creation."""
+    global _worker_unit_table
+    _worker_unit_table = unit_table
+
+
+def _process_unit_task(args):
+    """Unpack args and call process_unit using the pre-loaded worker-local table."""
+    neuron_id, analysis_type, results_path = args
+    return process_unit(
+        neuron_id,
+        proc_unit_table=_worker_unit_table,
+        analysis_type=analysis_type,
+        results_path=results_path,
+    )
+
 def roc_analysis(nwb_file, results_path):
     """
-    Perform ROC analysis on spike data from a NWB file.
+    Perform ROC roc_analysis on spike data from a NWB file.
+    :param nwb_file: path to NWB file
+    :param results_path: path to save results
+    """
+    print('Starting ROC roc_analysis for file:', nwb_file)
+
+    proc_unit_table = extract_spike_data(nwb_file)
+    mouse_id = proc_unit_table['mouse_id'].values[0]
+
+    if int(mouse_id[2:5]) < 115 and mouse_id[:2] == 'AB':
+        analyses_to_do = [
+            'whisker_active', 'auditory_active',
+            'wh_vs_aud_active', 'spontaneous_licks',
+            'choice', 'whisker_choice',
+            'baseline_choice', 'baseline_whisker_choice',
+        ]
+    else:
+        analyses_to_do = [
+            'whisker_passive_pre', 'whisker_passive_post',
+            'whisker_active', 'whisker_pre_vs_post_learning',
+            'auditory_passive_pre', 'auditory_passive_post',
+            'auditory_active', 'auditory_pre_vs_post_learning',
+            'wh_vs_aud_passive_pre', 'wh_vs_aud_passive_post',
+            'wh_vs_aud_active', 'wh_vs_aud_pre_vs_post_learning',
+            'spontaneous_licks', 'choice', 'whisker_choice',
+            'baseline_choice', 'baseline_whisker_choice',
+            'baseline_pre_vs_post_learning'
+        ]
+
+    neuron_ids = proc_unit_table['neuron_id'].unique()
+
+    # Build the full task list across ALL roc_analysis types and neurons at once
+    tasks = [
+        (neuron_id, analysis_type, results_path)
+        for analysis_type in analyses_to_do
+        for neuron_id in neuron_ids
+    ]
+    print(f'Dispatching {len(tasks)} tasks ({len(neuron_ids)} neurons × {len(analyses_to_do)} analyses) across {N_WORKERS} workers')
+
+    # Single pool: proc_unit_table is loaded once per worker via the initializer,
+    # never re-pickled across individual tasks
+    with multiprocessing.Pool(
+        processes=N_WORKERS,
+        initializer=_worker_init,
+        initargs=(proc_unit_table,),
+    ) as pool:
+        results = pool.map(_process_unit_task, tasks, chunksize=max(1, len(tasks) // (N_WORKERS * 4)))
+
+    os.makedirs(results_path, exist_ok=True)
+    results_table = pd.DataFrame(results)
+    mouse_name = results_table['mouse_id'].values[0]
+    out_path = f'{results_path}/{mouse_name}_roc_results_new.csv'
+    print('Saving results to:', out_path)
+    results_table.to_csv(out_path, index=False)
+
+def roc_analysis_old(nwb_file, results_path):
+    """
+    Perform ROC roc_analysis on spike data from a NWB file.
     :param nwb_file: path to NWB file
     :param results_path: path to save results
     :return:
     """
-    print('Starting ROC analysis for file:', nwb_file)
+    print('Starting ROC roc_analysis for file:', nwb_file)
 
     # Process spike data
     proc_unit_table = extract_spike_data(nwb_file)
@@ -460,11 +683,11 @@ def roc_analysis(nwb_file, results_path):
     results = []
 
     for analysis_type in analyses_to_do:
-        print(f'ROC analysis type: {analysis_type}')
+        print(f'ROC roc_analysis type: {analysis_type}')
         # Use multiprocessing to process each neuron_id in parallel
         neuron_ids = proc_unit_table['neuron_id'].unique()
 
-        with multiprocessing.Pool(os.cpu_count()-10) as pool:
+        with multiprocessing.Pool(N_WORKERS) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, neuron_ids)
             results.extend(analysis_results)

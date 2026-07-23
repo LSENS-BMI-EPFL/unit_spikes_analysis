@@ -385,7 +385,7 @@ def main(args):
     roc_df['neuron_id'] = roc_df.index.astype(int)
     print('Present mice:', roc_df['mouse_id'].unique(), 'Number of mice', roc_df['mouse_id'].nunique(), 'per reward group',
           roc_df.groupby('reward_group')['mouse_id'].nunique())
-    print('ROC analysis types:', roc_df['analysis_type'].unique())
+    print('ROC roc_analysis types:', roc_df['analysis_type'].unique())
     excluded_mice = []
     roc_df = roc_df[~roc_df['mouse_id'].isin(excluded_mice)]
     print("Done.")
@@ -410,7 +410,7 @@ def main(args):
     # Creating all the FI plots
     print("\nGenerating focality index figures for single analyses per reward group......")
     for analysis in single_analyses:
-        print(f"Processing analysis: {analysis}")
+        print(f"Processing roc_analysis: {analysis}")
         plot_focality_index_by_reward_group(roc_df, analysis, area_type, bootstrap_method, FIGURE_PATH)
     print("Done.")
 
@@ -418,7 +418,7 @@ def main(args):
     for r in reward_groups:
         print(f"Reward group: {r}")
         for pair in pair_analyses:
-            print(f"Processing analysis pair: {pair}")
+            print(f"Processing roc_analysis pair: {pair}")
             plot_focality_index_by_analysis(roc_df, pair, r, area_type, bootstrap_method, FIGURE_PATH)
     print("Done.")
 

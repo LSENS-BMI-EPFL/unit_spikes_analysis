@@ -67,7 +67,7 @@ class NeuronResult:
     """Results from single-neuron pseudosession analysis."""
     mouse_id: str
     session_id: str
-    unit_id: int
+    neuron_id: int
     area: str
     reward_group: int
     inflection_trial: int
@@ -283,14 +283,14 @@ def load_nwb_session(nwb_path: Path, config: AnalysisConfig) -> Dict[str, Any]:
                     break
 
             # Get unit ID
-            if 'unit_id' in unit_colnames:
-                unit_id = units_table['unit_id'][unit_idx]
+            if 'neuron_id' in unit_colnames:
+                neuron_id = units_table['neuron_id'][unit_idx]
             else:
-                unit_id = unit_idx
+                neuron_id = unit_idx
 
             units.append({
-                'unit_id': unit_id,
-                'unit_index': unit_idx,
+                'neuron_id': neuron_id,
+                'neuron_index': neuron_id,
                 'spike_times': np.array(spike_times),
                 'area': area,
                 'n_spikes': len(spike_times),
@@ -490,7 +490,7 @@ def compute_test_statistic(
     post_window: tuple
 ) -> float:
     """
-    Compute R² test statistic for a given inflection point.
+    Compute R² debug statistic for a given inflection point.
 
     R² measures how well neural response predicts trial type (pre vs post).
     """
@@ -561,7 +561,7 @@ def run_pseudosession_test(
     config: AnalysisConfig
 ) -> tuple[float, float, np.ndarray]:
     """
-    Run pseudosession test for a single neuron.
+    Run pseudosession debug for a single neuron.
 
     Returns
     -------
@@ -607,7 +607,7 @@ def analyze_single_unit(
     config: AnalysisConfig,
     mouse_id: str = '',
     session_id: str = '',
-    unit_id: int = 0,
+    neuron_id: int = 0,
     area: str = '',
     reward_group: int = 0
 ) -> tuple[NeuronResult, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -649,7 +649,7 @@ def analyze_single_unit(
     total_time = spike_times.max() - spike_times.min() if len(spike_times) > 1 else 1
     mean_fr = len(spike_times) / total_time
 
-    # Run pseudosession test
+    # Run pseudosession debug
     observed_r2, p_value, null_dist = run_pseudosession_test(
         responses, inflection_trial, config
     )
@@ -661,7 +661,7 @@ def analyze_single_unit(
     result = NeuronResult(
         mouse_id=mouse_id,
         session_id=session_id,
-        unit_id=unit_id,
+        neuron_id=neuron_id,
         area=area,
         reward_group=reward_group,
         inflection_trial=inflection_trial,
@@ -782,7 +782,7 @@ def plot_unit_analysis(
 
     ax1.set_xlabel('Time from whisker stimulus (s)')
     ax1.set_ylabel('Trial number')
-    ax1.set_title(f'Unit {result.unit_id} | {result.area}\nMean FR: {result.mean_firing_rate:.1f} spks/s')
+    ax1.set_title(f'Unit {result.neuron_id} | {result.area}\nMean FR: {result.mean_firing_rate:.1f} spks/s')
 
 
     # =========================================================================
@@ -914,7 +914,7 @@ def plot_unit_analysis(
              ha='center', va='top', fontsize=10, fontweight='bold',
              bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
-    ax5.set_xlabel('R² (test statistic)')
+    ax5.set_xlabel('R² (debug statistic)')
     ax5.set_ylabel('Density')
     ax5.set_title(f'Pseudosession Test (n={config.n_pseudosessions})')
     ax5.legend(loc='upper right', frameon=False)
@@ -928,7 +928,7 @@ def plot_unit_analysis(
     summary_text = f"""
     Mouse: {result.mouse_id}
     Session: {result.session_id}
-    Unit: {result.unit_id}
+    Unit: {result.neuron_id}
     Area: {result.area}
     Reward Group: {result.reward_group}
     
@@ -955,13 +955,13 @@ def plot_unit_analysis(
              bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
     # Main title
-    reward_group_txt = 'R+' if result.reward_group else 'R'
+    reward_group_txt = 'R+' if result.reward_group else 'R-'
     fig.suptitle(
-        f'Inflection analysis | {result.mouse_id}, {reward_group_txt} | Unit {result.unit_id} | {result.area}',
+        f'Inflection analysis | {result.mouse_id}, {reward_group_txt} | Unit {result.neuron_id} | {result.area}',
         fontsize=14, fontweight='normal'
     )
 
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    #plt.tight_layout(rect=[0, 0, 1, 0.96])
 
     if save_path:
         fig.savefig(save_path, dpi=150, bbox_inches='tight')
@@ -1406,7 +1406,7 @@ def create_synthetic_nwb_data(
 
         units.append({
             'neuron_id': i,
-            'unit_index': i,
+            'neuron_index': i,
             'spike_times': spike_times,
             'area': area,
             'n_spikes': len(spike_times)
@@ -1452,8 +1452,11 @@ if __name__ == "__main__":
     import glob
     import os
     nwb_file_list = glob.glob(os.path.join(r"M:\analysis\Axel_Bisi\NWBFull_bis", '*.nwb'))
-    print('Available files:', nwb_file_list)
-    for nwb_file in nwb_file_list[0:2]:
+    nwb_file_list = list(set(nwb_file_list))
+    nwb_file_list = [f for f in nwb_file_list if 'AB123' in f]
+    print(f'Available files ({len(nwb_file_list)}):', nwb_file_list)
+    for nwb_file in nwb_file_list:
+        print('Processing:', nwb_file)
         try:
             unit_table = NWB_reader_functions.get_unit_table(nwb_file)
             if unit_table is None:
@@ -1465,14 +1468,15 @@ if __name__ == "__main__":
         #nwb_file = Path(r"M:\analysis\Axel_Bisi\NWBFull_bis\AB087_20231017_141901.nwb")
         session_data = load_nwb_session(nwb_path=nwb_file, config=config)
 
-
         # Load HMM results
         mouse_id = NWB_reader_functions.get_mouse_id(nwb_file)
         reward_group = NWB_reader_functions.get_session_metadata(nwb_file)['wh_reward']
         curves_df = load_hmm_results.load_mouse_hmm_results([mouse_id])
         inflection_trial = curves_df['learning_trial'].unique()[0]
         if np.isnan(inflection_trial):
-            print(f'No inflection trial found for {mouse_id}')
+            print(f'No inflection trial found for {mouse_id}. SKipping.')
+            continue
+
         p_mean = curves_df['p_mean'].values[0]
         p_chance = curves_df['p_chance'].values[0]
         assert len(p_mean)==len(session_data['trials']['stim_time'])
