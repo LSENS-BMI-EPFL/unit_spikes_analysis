@@ -8,16 +8,17 @@
 
 
 # Imports
-import os
+import os, warnings
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-#import plotly.io as pio
-#pio.orca.config.use_xvfb = True
-#pio.orca.config.save()  # optional: save for future sessions
-#import plotly.graph_objects as go
+import plotly.io as pio
+pio.orca.config.use_xvfb = True
+pio.orca.config.save()  # optional: save for future sessions
+import plotly.graph_objects as go
 from itertools import combinations, combinations_with_replacement
+import matplotlib.colors as mcolors
 
 import neural_utils
 # Import custom modules
@@ -29,7 +30,127 @@ from matplotlib.font_manager import font_scalings
 import plotting_utils
 from plotting_utils import save_figure_with_options, adjust_lightness
 
-def unit_label_describe(unit_data, output_path):
+COLORS = {'good': 'mediumvioletred', 'mua': 'orchid', 'non-soma': 'slateblue', 'noise': 'dimgrey'}
+ORDER = ['good', 'mua', 'non-soma', 'noise']
+
+THRESHOLDS = {
+    "nSpikes": (300, None), "percentageSpikesMissing_gaussian": (None, 20),
+    "percentageSpikesMissing_symmetric": (None, 20), "fractionRPVs_estimatedTauR": (None, 0.1),
+    "presenceRatio": (0.7, None), "isolationDistance": (None, None), "Lratio": (None, None),
+    "coverageRatio": (None, None), "driftIndependence": (None, None),
+}
+# 'noise' = unit dropped entirely; 'mua' = good->mua downgrade, stays active
+ROUTE = {"nSpikes": "noise", "percentageSpikesMissing_gaussian": "noise",
+         "percentageSpikesMissing_symmetric": "noise", "fractionRPVs_estimatedTauR": "mua",
+         "presenceRatio": "mua", "isolationDistance": "mua", "Lratio": "mua",
+         "coverageRatio": "mua", "driftIndependence": "mua"}
+
+
+def _pct(n, total):
+    return 100 * n / total if total else 0.0
+
+
+def _rgba(name, a=0.45):
+    r, g, b = mcolors.to_rgb(name)
+    return f"rgba({int(r * 255)},{int(g * 255)},{int(b * 255)},{a})"
+
+
+def _sankey(levels, names, output_path, file_name, caption=None, formats=('png', 'pdf', 'eps')):
+    """levels: list of pd.Series (same index) = class label per unit per stage."""
+    n_tot = len(levels[0])
+    nid, nodes, colors = {}, [], []
+    for s, name in zip(levels, names):
+        counts = s.value_counts()
+        for cls in [c for c in ORDER if c in counts.index]:
+            nid[f"{name}::{cls}"] = len(nodes)
+            n = counts[cls]
+            nodes.append(f"{cls}<br>n={n} ({_pct(n, n_tot):.1f}%)")
+            colors.append(COLORS[cls])
+
+    src, tgt, val, lcol, llab = [], [], [], [], []
+    for s, t, sn, tn in zip(levels, levels[1:], names, names[1:]):
+        g = pd.DataFrame({'s': s, 't': t}).groupby(['s', 't']).size().reset_index(name='w')
+        stot = s.value_counts()
+        for _, r in g.iterrows():
+            src.append(nid[f"{sn}::{r.s}"]);
+            tgt.append(nid[f"{tn}::{r.t}"]);
+            val.append(int(r.w))
+            lcol.append(_rgba(COLORS[r.t]))
+            llab.append(f"n={r.w} ({_pct(r.w, stot[r.s]):.1f}% of {r.s})")
+
+    fig = go.Figure(go.Sankey(
+        arrangement="snap",
+        node=dict(pad=28, thickness=18, line=dict(color='black', width=0.7), label=nodes, color=colors),
+        link=dict(source=src, target=tgt, value=val, color=lcol, label=llab,
+                  hovertemplate='%{label}<extra></extra>')))
+
+    changed = int((levels[0].values != levels[-1].values).sum())
+    text = f"n={n_tot} total | {changed} changed label ({_pct(changed, n_tot):.1f}%)"
+    if caption:
+        text += f"<br>{caption}"
+    fig.add_annotation(text=text, showarrow=False, x=0.5, y=-0.14, xref='paper', yref='paper', font_size=12)
+    fig.update_layout(margin=dict(t=40, b=90, l=10, r=10), font_size=13)
+
+    save_dir = os.path.join(output_path, file_name)
+    os.makedirs(save_dir, exist_ok=True)
+    for fmt in formats:
+        fig.write_image(os.path.join(save_dir, f"{file_name}.{fmt}"), engine='orca', scale=5)
+    return fig
+
+
+def unit_label_describe(unit_data, output_path, file_name='unit_label_sankey_diagram'):
+    """Fig 1: ks_label -> bc_label (includes non-soma)."""
+    df = unit_data
+    print('Good after KS:', (df.ks_label == 'good').sum(), '| Good after BC:', (df.bc_label == 'good').sum())
+    return _sankey([df.ks_label, df.bc_label], ['KS', 'BC'], output_path, file_name)
+
+
+def unit_label_metric_sankey(unit_data, output_path, thresholds=THRESHOLDS, route=ROUTE,
+                             file_name='unit_label_metric_sankey_diagram'):
+    """Fig 2: metric-by-metric funnel from ks_label in {good,mua}, ordered by severity
+    (largest % of active pool reclassified goes first). No non-soma stage here."""
+    df = unit_data[unit_data.ks_label.isin(['good', 'mua'])]
+    cls = df.ks_label.copy()
+    active = pd.Series(True, index=df.index)
+    levels, names = [cls.copy()], ['KS']
+
+    remaining = {}
+    for m, (lo, hi) in thresholds.items():
+        if m not in df.columns:
+            warnings.warn(f"'{m}' not in unit_data - skipping");
+            continue
+        if lo is None and hi is None:
+            warnings.warn(f"'{m}' has no threshold - skipping");
+            continue
+        remaining[m] = (lo, hi)
+
+    def fail_mask(m):
+        lo, hi = remaining[m]
+        f = pd.Series(False, index=df.index)
+        if lo is not None: f |= df[m] < lo
+        if hi is not None: f |= df[m] > hi
+        return f & active
+
+    applied = []
+    while remaining:
+        n_active = active.sum()
+        best = max(remaining, key=lambda m: fail_mask(m).sum())
+        fail = fail_mask(best)
+        applied.append((best, _pct(fail.sum(), n_active), int(fail.sum())))
+        remaining.pop(best)
+        if route.get(best, 'mua') == 'noise':
+            cls[fail] = 'noise';
+            active[fail] = False
+        else:
+            cls[fail & (cls == 'good')] = 'mua'
+        levels.append(cls.copy());
+        names.append(best)
+
+    print("Order (severity):", [(m, round(p, 1)) for m, p, _ in applied])
+    caption = "Order: " + " &rarr; ".join(f"{m} ({p:.1f}%)" for m, p, _ in applied)
+    return _sankey(levels, names, output_path, file_name, caption=caption)
+
+def unit_label_describe_old(unit_data, output_path):
     """
     Describe unit labels conversion from Kilosort to Bombcell.
     :param unit_data: unit table
