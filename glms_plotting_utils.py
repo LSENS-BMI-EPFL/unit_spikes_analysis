@@ -120,8 +120,11 @@ def load_model_input_output(output_dir):
 
 def compute_kernel_consistency(df_model, kernel_pairs, consistency_threshold=0.75):
     """
-    For each neuron, compute which lags show consistent changes (increases or decreases)
-    from kernel_0 to kernel_1 across cross-validation folds.
+    For each neuron, compute whether the average kernel weight (across all bins) is
+    consistently increasing or decreasing from kernel_0 to kernel_1 across folds.
+
+    For each fold the mean weight across all bins is computed for each kernel, then
+    consistency is assessed on that single per-fold average rather than on individual bins.
 
     Parameters
     ----------
@@ -135,9 +138,9 @@ def compute_kernel_consistency(df_model, kernel_pairs, consistency_threshold=0.7
     Returns
     -------
     dict
-        {(mouse_id, neuron_id): {kernel_pair: {lag_idx: consistency_score}}}
+        {(mouse_id, neuron_id): {kernel_pair: {0: consistency_score}}}
         where consistency_score is positive for consistent increases and negative for
-        consistent decreases
+        consistent decreases in the across-bin average
     """
     import re
 
@@ -163,55 +166,44 @@ def compute_kernel_consistency(df_model, kernel_pairs, consistency_threshold=0.7
         neuron_consistency[(mouse_id, neuron_id)] = {}
 
         for kernel_0, kernel_1 in kernel_pairs:
-            kernel_0_weights_by_fold = []
-            kernel_1_weights_by_fold = []
+            # Per-fold average weight across all bins
+            avg_0_by_fold = []
+            avg_1_by_fold = []
 
             for _, row in grp.iterrows():
                 predictors = row["predictors"]
                 coefs = np.array(row["coef_array"])
 
-                idx_0, lags_0 = extract_sorted_kernel_indices(predictors, kernel_0)
+                idx_0, _ = extract_sorted_kernel_indices(predictors, kernel_0)
                 if idx_0:
-                    kernel_0_weights_by_fold.append(coefs[idx_0])
+                    avg_0_by_fold.append(np.mean(coefs[idx_0]))
 
-                idx_1, lags_1 = extract_sorted_kernel_indices(predictors, kernel_1)
+                idx_1, _ = extract_sorted_kernel_indices(predictors, kernel_1)
                 if idx_1:
-                    kernel_1_weights_by_fold.append(coefs[idx_1])
+                    avg_1_by_fold.append(np.mean(coefs[idx_1]))
 
-            if len(kernel_0_weights_by_fold) == 0 or len(kernel_1_weights_by_fold) == 0:
+            if len(avg_0_by_fold) == 0 or len(avg_1_by_fold) == 0:
                 continue
 
-            kernel_0_weights_by_fold = np.array(kernel_0_weights_by_fold)
-            kernel_1_weights_by_fold = np.array(kernel_1_weights_by_fold)
-
-            if kernel_0_weights_by_fold.shape != kernel_1_weights_by_fold.shape:
+            if len(avg_0_by_fold) != len(avg_1_by_fold):
                 continue
 
-            n_lags = kernel_0_weights_by_fold.shape[1]
-            lag_consistency = {}
+            avg_0 = np.array(avg_0_by_fold)
+            avg_1 = np.array(avg_1_by_fold)
 
-            # Store the actual lag times (use lags_1 as both should be the same)
-            lag_times = lags_1 if lags_1 else list(range(n_lags))
+            # Check if the across-bin average is consistently higher or lower
+            increase_score = np.mean(avg_1 > avg_0)
+            decrease_score = np.mean(avg_1 < avg_0)
 
-            for lag_idx in range(n_lags):
-                increases = kernel_1_weights_by_fold[:, lag_idx] > kernel_0_weights_by_fold[:, lag_idx]
-                decreases = kernel_1_weights_by_fold[:, lag_idx] < kernel_0_weights_by_fold[:, lag_idx]
-
-                increase_score = np.mean(increases)
-                decrease_score = np.mean(decreases)
-
-                # Check if either increases or decreases are consistent
-                # Store as dict with lag_idx, lag_time, and score
-                if increase_score >= consistency_threshold:
-                    lag_consistency[lag_idx] = {'score': increase_score, 'lag_time': lag_times[lag_idx]}
-                elif decrease_score >= consistency_threshold:
-                    lag_consistency[lag_idx] = {'score': -decrease_score, 'lag_time': lag_times[lag_idx]}  # Negative score indicates consistent decrease
-
-            if lag_consistency:
+            if increase_score >= consistency_threshold:
                 pair_name = f"{kernel_1}_vs_{kernel_0}"
-                neuron_consistency[(mouse_id, neuron_id)][pair_name] = lag_consistency
+                neuron_consistency[(mouse_id, neuron_id)][pair_name] = increase_score
+            elif decrease_score >= consistency_threshold:
+                pair_name = f"{kernel_1}_vs_{kernel_0}"
+                neuron_consistency[(mouse_id, neuron_id)][pair_name] = -decrease_score
 
     return neuron_consistency
+
 
 
 def plot_average_real_vs_predicted_per_trialtype_per_area(df_model, trial_table, area_groups, area_colors, output_folder):
@@ -331,7 +323,7 @@ def plot_average_real_vs_predicted_per_trialtype_per_area(df_model, trial_table,
     plt.tight_layout()
 
     fname = "avg_real_vs_pred_per_trialtype_per_area"
-    putils.save_figure_with_options(fig, file_formats=["png"],
+    putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                   filename=fname,
                                   output_dir=output_folder)
     plt.close(fig)
@@ -442,7 +434,7 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
 
         for neuron in merged_df['neuron_id'].unique():
             plot_neuron_kernels_avg_with_responses(
-                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'], trial_table, output_folder, lags = lags, git_handle=git_version)
+                neuron, merged_df[merged_df['model_name'] == 'full'], ['whisker_hits_stim_0', 'whisker_hits_stim_1', 'whisker_misses_stim0', 'whisker_misses_stim1', 'auditory_stim0', 'auditory_stim1', 'jaw_onset', 'piezo_reward'], trial_table, output_folder, lags = lags, git_handle=git_version)
 
     if 'average_predictions_per_trial_types' in plots :
         output_folder = os.path.join(output_path, 'average_predictions_per_trial_types')
@@ -454,9 +446,9 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
         # merged_df = merged_df[merged_df['neuron_id'].isin(first80_ids)]
         # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'last_rewards_whisker'], trial_table,type = 'previous_whisker',output_folder_base= output_folder)
         # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'jaw_onset_encoding'], trial_table,type = 'Normal',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2whisker_kernels'], trial_table,type = 'Normal',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2whisker_kernels'], trial_table,type = 'Normal',output_folder_base= output_folder)
 
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] != 'full'], trial_table,type = 'Normal',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] != 'full'], trial_table,type = 'Normal',output_folder_base= output_folder)
         #
         # decreased_neurons, _ = neurons_with_consistent_decrease(merged_df, reduced_name='last_rewards_whisker')
         # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
@@ -474,16 +466,17 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
         # print(f"{len(decreased_neurons)} neurons show consistent decrease across folds.")
         # merged_df_sig = merged_df[merged_df['neuron_id'].isin(decreased_neurons['neuron_id'])]
 
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '3whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '4whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '5whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '6whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '7whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '8whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '9whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '1whisker_kernel'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'full'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'random_split'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '4whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '5whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '6whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '7whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '8whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '9whisker_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
 
-        plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2_reward_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
+        # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == '2_reward_kernels'], trial_table,type = 'session_progression',output_folder_base= output_folder)
 
         # plot_predictions_with_reduced_models_parallel(merged_df[merged_df['model_name'] == 'full'], merged_df[merged_df['model_name'] == 'block_perf_type'], trial_table,type = 'session_progression',output_folder_base= output_folder)
 
@@ -570,6 +563,13 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
             os.makedirs(output_folder)
         for neuron_id in merged_df['neuron_id'].unique():
             plot_trial_grid_predictions(merged_df, trial_table, neuron_id, 0.1, output_folder)
+
+    if 'individual_trials_concat' in plots:
+        output_folder = os.path.join(output_path, 'indiv_trial_prediction_concat')
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder)
+        for neuron_id in merged_df['neuron_id'].unique():
+            plot_trial_concatenated_predictions(merged_df, trial_table, neuron_id, 0.1, output_folder)
     
 
 
@@ -589,7 +589,11 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
               .agg(test_corr=('test_corr','mean'))
               .reset_index()
         )
-
+        df_git_with_id = df_git.merge(
+            unit_table[['mouse_id', 'neuron_id', 'og_unit_table_id', 'area_acronym_custom', 'reward_group']],
+            on=['mouse_id', 'neuron_id'],
+            how='left'
+        )
         lrt = compute_lrt_from_model_results(merged_df,trial_table, alpha=0.05)
 
         lrt_long = (
@@ -650,19 +654,19 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
         # Compute consistency
         neuron_consistency = compute_kernel_consistency(df_model, kernel_pairs)
 
-        # Convert to dataframe format
+        # Convert to dataframe format with og_unit_table_id
+        neuron_to_og_id = df_model[['mouse_id', 'neuron_id', 'og_unit_table_id']].drop_duplicates().set_index(['mouse_id', 'neuron_id'])['og_unit_table_id'].to_dict()
+
         for (mouse_id, neuron_id), pairs_data in neuron_consistency.items():
-            for pair_name, lag_consistency in pairs_data.items():
-                # Store as JSON strings for each kernel pair
-                # lag_consistency is now {lag_idx: {'score': ..., 'lag_time': ...}}
+            og_unit_table_id = neuron_to_og_id.get((mouse_id, neuron_id))
+            for pair_name, consistency_score in pairs_data.items():
                 kernel_consistency_data.append({
                     'mouse_id': mouse_id,
-                    'neuron_id': neuron_id,
+                    'og_unit_table_id': og_unit_table_id,
                     'model_name': model_name,
                     'kernel_pair': pair_name,
-                    'consistent_lags': json.dumps({int(k): v for k, v in lag_consistency.items()}),
-                    'n_consistent_lags': len(lag_consistency),
-                    'max_consistency_score': max(v['score'] for v in lag_consistency.values()) if lag_consistency else 0
+                    'is_consistent': True,
+                    'consistency_score': float(consistency_score),
                 })
 
         # Create consistency dataframe
@@ -671,18 +675,16 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
             # Merge into summary
             summary_with_consistency = summary.merge(
                 consistency_df,
-                on=['mouse_id', 'neuron_id', 'model_name'],
+                on=['mouse_id', 'og_unit_table_id', 'model_name'],
                 how='left'
             )
         else:
             summary_with_consistency = summary.copy()
             summary_with_consistency['kernel_pair'] = None
-            summary_with_consistency['consistent_lags'] = None
-            summary_with_consistency['n_consistent_lags'] = None
-            summary_with_consistency['max_consistency_score'] = None
+            summary_with_consistency['is_consistent'] = False
+            summary_with_consistency['consistency_score'] = None
 
         summary = summary_with_consistency
-
 
 
         mask_nonfull = summary['model_name'] != 'full'
@@ -696,6 +698,45 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
             outdf.to_parquet(outpath)
             print(f"Saved summary for {mouse_id} → {outpath}")
 
+        # Save predictions summary: neuron_id, per-trial y_pred and y_test (n_trials x n_bins) for full model
+        full_df = df_git_with_id[df_git_with_id['model_name'] == 'full']
+        pred_summary_rows = []
+        # Build lookups from trial index → trial_type and lick_flag using trial_table
+        trial_type_lookup = trial_table['trial_type'].to_dict() if 'trial_type' in trial_table.columns else {}
+        lick_flag_lookup  = trial_table['lick_flag'].to_dict()  if 'lick_flag'  in trial_table.columns else {}
+        for (mouse_id, og_id), grp in full_df.groupby(['mouse_id', 'og_unit_table_id']):
+            n_bins = int(grp['n_bins'].iloc[0])
+            trial_preds = {}
+            trial_tests = {}
+            for _, row in grp.iterrows():
+                test_trial_ids = np.array(json.loads(row['test_trials']))
+                y_pred_fold = row['y_pred_array'].reshape(len(test_trial_ids), n_bins)
+                y_test_fold = row['y_test_array'].reshape(len(test_trial_ids), n_bins)
+                for i, trial_idx in enumerate(test_trial_ids):
+                    trial_preds[int(trial_idx)] = y_pred_fold[i]
+                    trial_tests[int(trial_idx)] = y_test_fold[i]
+            sorted_trial_ids = sorted(trial_preds.keys())
+            y_pred_matrix = np.stack([trial_preds[t] for t in sorted_trial_ids])
+            y_test_matrix = np.stack([trial_tests[t] for t in sorted_trial_ids])
+            sorted_trial_types = [trial_type_lookup.get(t, 'unknown') for t in sorted_trial_ids]
+            sorted_lick_flags  = [int(lick_flag_lookup.get(t, -1))   for t in sorted_trial_ids]
+            pred_summary_rows.append({
+                'mouse_id': mouse_id,
+                'neuron_id': og_id,
+                'area_acronym_custom': grp['area_acronym_custom'].iloc[0],
+                'reward_group': grp['reward_group'].iloc[0],
+                'trial_ids': json.dumps(sorted_trial_ids),
+                'trial_types': json.dumps(sorted_trial_types),
+                'lick_flags': json.dumps(sorted_lick_flags),
+                'y_pred': json.dumps(y_pred_matrix.tolist()),
+                'y_test': json.dumps(y_test_matrix.tolist()),
+            })
+        pred_summary_df = pd.DataFrame(pred_summary_rows)
+        for mouse_id in pred_summary_df['mouse_id'].unique():
+            outdf = pred_summary_df[pred_summary_df['mouse_id'] == mouse_id]
+            outpath = f"{output_path}/predictions_summary_{mouse_id}_unit_glm_{git_version}.parquet"
+            outdf.to_parquet(outpath, index=False)
+            print(f"Saved predictions summary for {mouse_id} → {outpath}")
 
 
 
@@ -854,11 +895,94 @@ def over_mouse_glm_results(nwb_list, plots,info_path, output_path, git_version, 
 
 
 
+def _discover_kernels(dfs):
+    """Scan predictor names across all dataframes and return discovered kernel groups.
+
+    Returns
+    -------
+    all_kernels : dict[str, list[str]]
+        Kernel bases grouped by type, e.g. {'whisker_stim': ['whisker_stim_0', 'whisker_stim_1'], ...}
+    whisker_kernels : list[str]
+        Flat sorted list of all discovered kernel bases (union of all_kernels values).
+    """
+    _PREFIX_TO_TYPE = [
+        ('whisker_hits',    'whisker_hits'),
+        ('whisker_misses',  'whisker_misses'),
+        ('whisker_stim',    'whisker_stim'),
+        ('whisker',         'whisker_other'),
+        ('auditory_stim',   'auditory_stim'),
+        ('piezo_reward', 'piezo_reward'),
+        ('piezo_reward_au', 'piezo_reward_au')
+    ]
+
+    all_kernels = {}  # {kernel_type: set of kernel_base names}
+
+    for df in dfs.values():
+        if df.empty:
+            continue
+        for idx in range(min(10, len(df))):
+            for pred in df.iloc[idx]['predictors_full']:
+                if '_t' not in pred:
+                    continue
+                kernel_base = pred.split('_t')[0]
+
+                kernel_type = None
+                for prefix, ktype in _PREFIX_TO_TYPE:
+                    if kernel_base.startswith(prefix):
+                        kernel_type = ktype
+                        break
+                if kernel_type is None:
+                    continue
+
+                all_kernels.setdefault(kernel_type, set()).add(kernel_base)
+
+    # Convert sets to sorted lists and build flat kernel list
+    all_kernels = {kt: sorted(bases) for kt, bases in all_kernels.items()}
+    whisker_kernels = [base for kt in sorted(all_kernels) for base in all_kernels[kt]]
+
+    return all_kernels, whisker_kernels
+
+
+def _discover_models(merged_df):
+    """Map known model_name values in *merged_df* to (key, label) pairs.
+
+    Returns
+    -------
+    dfs : dict[str, DataFrame]
+        Filtered dataframes keyed by short model key (e.g. "2k", "2k_random").
+    model_labels : dict[str, str]
+        Human-readable labels keyed the same way.
+    """
+    dfs = {}
+    model_labels = {}
+
+    for model_name in merged_df['model_name'].unique():
+        if model_name == 'full':
+            key, label = '2k', '2 whisker kernel'
+        elif model_name == 'random_split':
+            key, label = '2k_random', '2 whisker kernel (random)'
+        elif model_name == 'optimal_split':
+            key, label = '2k_optimal', '2 whisker kernel (optimal split)'
+        elif 'whisker_kernel' in model_name:
+            match = re.search(r'(\d+)whisker_kernel', model_name)
+            if not match:
+                continue
+            n = int(match.group(1))
+            key, label = f'{n}k', f'{n} whisker kernels'
+        else:
+            continue
+
+        dfs[key] = merged_df[merged_df['model_name'] == model_name]
+        model_labels[key] = label
+
+    return dfs, model_labels
+
+
 def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_version, day_to_analyze = 0):
 
     dfs = []
     for mouse in subject_ids:
-        mouse_results_path = os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version)
+        mouse_results_path = os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version) #, 'test'
         fpath = os.path.join(mouse_results_path, f"summary_{mouse}_unit_glm_{git_version}.parquet")
         if not os.path.exists(fpath):
             print(f"[WARNING] Summary not found: {fpath}")
@@ -867,11 +991,17 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
         dfs.append(df)
     merged_df = pd.concat(dfs, ignore_index=True)
 
-    output_path = os.path.join(output_path, 'unit_glm', git_version)
+    output_path = os.path.join(output_path, 'unit_glm', git_version, 'test2')
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     area_groups = allen.get_custom_area_groups()
     area_colors = allen.get_custom_area_groups_colors()
+
+    area_group_from_name = allen.get_custom_area_groups_from_name()
+    merged_df_grouped = merged_df.copy()
+    merged_df_grouped['area_acronym_custom'] = merged_df_grouped['area_acronym_custom'].map(area_group_from_name)
+    merged_df_grouped = merged_df_grouped[merged_df_grouped['area_acronym_custom'].notna()]
+    area_groups_flat = {g: [g] for g in area_groups.keys()}
 
     # trial_table, unit_table, ephys_nwb_list = combine_ephys_nwb(nwb_list, day_to_analyze=day_to_analyze, max_workers=20, git_version =git_version)
     # merged_df = pd.merge(merged_df, unit_table, how='inner', on=["mouse_id", "neuron_id", "area_acronym_custom"])
@@ -884,7 +1014,7 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
         compare_full_vs_reduced_models(merged_df, output_folder)
         # plot_kde_full_vs_reduced(merged_df, output_folder)
         # plot_test_corr_vs_firing_rate(merged_df[merged_df['model_name'] == 'full'], output_folder)
-        plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
+        # plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
         for reward_group in [1,0]:
 
             merged_df_reward = merged_df[merged_df['reward_group'] == reward_group]
@@ -907,21 +1037,26 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
                 if model_name == 'full':
                     continue
                 print(model_name)
-                plot_full_vs_reduced_per_area(merged_df_reward, model_name, area_groups, area_colors, output_folder, threshold = 0.1)
-                plot_full_vs_reduced_per_area(merged_df_reward, model_name, area_groups, area_colors, output_folder, threshold = None)
+                # plot_full_vs_reduced_per_area(merged_df_reward, model_name, area_groups, area_colors, output_folder, threshold = 0.1)
+                # plot_full_vs_reduced_per_area(merged_df_reward, model_name, area_groups, area_colors, output_folder, threshold = None)
+                # plot_full_vs_reduced_barplot(merged_df_reward, model_name, output_folder)
 
             # plot_kde_full_vs_reduced(merged_df_reward, output_folder)
             # plot_test_corr_vs_firing_rate(merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder)
-            plot_testcorr_per_mouse_reward( merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder)
+            # plot_testcorr_per_mouse_reward( merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder)
             merged_df_reward_lrt = merged_df_reward[merged_df_reward['model_name'] != 'full']
-            plot_lrt_significance_overlap(merged_df_reward_lrt, output_folder)
-            print(merged_df_reward_lrt.keys())
-            plot_lrt_significance_per_area_per_model(
-                merged_df_reward_lrt,
-                area_groups=area_groups,
-                area_colors=area_colors,
-                output_folder=output_folder
-            )
+            merged_df_reward_lrt = allen.merge_liu_avg_ipsi(merged_df_reward_lrt)
+            merged_df_reward_lrt = allen.merge_harris_hierarchy(merged_df_reward_lrt)
+            # plot_lrt_significance_overlap(merged_df_reward_lrt, output_folder)
+            # print(merged_df_reward_lrt.keys())
+            # plot_lrt_significance_per_area_per_model(
+            #     merged_df_reward_lrt,
+            #     area_groups=area_groups,
+            #     area_colors=area_colors,
+            #     output_folder=output_folder
+            # )
+            plot_lrt_ipsi_correlation(merged_df_reward_lrt, output_folder)
+            plot_lrt_harris_correlation(merged_df_reward_lrt, output_folder)
             plot_lrt_significance_heatmap(merged_df_reward_lrt, area_groups, area_colors,
                                   output_folder, annotate=False)
             
@@ -936,6 +1071,8 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
                 area_colors=area_colors,
                 output_folder=output_folder_sub
             )
+            plot_lrt_ipsi_correlation(lrt_subset, output_folder_sub)
+            plot_lrt_harris_correlation(lrt_subset, output_folder_sub)
             plot_lrt_significance_heatmap(lrt_subset, area_groups, area_colors,
                                   output_folder_sub, annotate=False)
             output_folder_sub = os.path.join(output_folder_sub, 'per_area')
@@ -962,31 +1099,33 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
         # plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'],
         #     lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
-        for reward_group in [1,0]:
+        for reward_group in [0,1]:
 
             merged_df_reward = merged_df[merged_df['reward_group'] == reward_group]
-            
+            # print(merged_df_reward['predictors_full'].iloc[0])
             output_folder_reward_group = os.path.join(output_folder, str(reward_group))
             if not os.path.exists(output_folder_reward_group):
                 os.makedirs(output_folder_reward_group)
-            plot_average_kernels_by_region_new(  merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder_reward_group, ['whisker_hits_stim_0','whisker_hits_stim_1', 'whisker_misses_stim0','whisker_misses_stim1', 'auditory_stim0','auditory_stim1', 'jaw_onset', 'piezo_reward'],
+            plot_average_kernels_by_region_new(  merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder_reward_group, ['whisker_hits_stim_0','whisker_hits_stim_1', 'auditory_stim_0','auditory_stim_1','whisker_misses_stim_0','whisker_misses_stim_1','jaw_onset', 'piezo_reward_0','piezo_reward_1','piezo_reward_au_0','piezo_reward_au_1'],
                 lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
-            
-            # plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'],
-            #     lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
+            plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder_reward_group, ['whisker_stim','auditory_stim','jaw_onset','piezo_reward'],
+                lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
+            # plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_hits_stim_0','whisker_hits_stim_1','auditory_stim_0','auditory_stim_1','whisker_misses_stim_0','whisker_misses_stim_1','jaw_onset','piezo_reward_0','piezo_reward_1','piezo_reward_au_0','piezo_reward_au_1'],
+            #     lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
+
             plot_all_kernels_by_region(
                 df= merged_df_reward[merged_df_reward['model_name'] == 'full'],
                 output_folder=output_folder_reward_group,
-                kernels_to_plot= ['whisker_hits_stim_0','whisker_hits_stim_1', 'whisker_misses_stim0','whisker_misses_stim1', 'auditory_stim0','auditory_stim1'],
+                kernels_to_plot= ['whisker_hits_stim_0','whisker_hits_stim_1', 'whisker_misses_stim_0','whisker_misses_stim_1', 'auditory_stim_0','auditory_stim_1'],
                 area_groups=area_groups,
                 area_colors=area_colors,
                 kernel_colors={
                     'whisker_hits_stim_0': 'lightgreen',
                     'whisker_hits_stim_1': 'green',
-                    'whisker_misses_stim0': 'salmon',
-                    'whisker_misses_stim1': 'red',
-                    'auditory_stim0': 'lightblue',
-                    'auditory_stim1': 'blue',
+                    'whisker_misses_stim_0': 'salmon',
+                    'whisker_misses_stim_1': 'red',
+                    'auditory_stim_0': 'lightblue',
+                    'auditory_stim_1': 'blue',
                 },
                 n_cols=3,
                 threshold=None
@@ -994,801 +1133,161 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
 
     if 'kernel_consistency' in plots:
         output_folder = os.path.join(output_path, 'kernel_consistency')
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+        os.makedirs(output_folder, exist_ok=True)
 
-        # Filter to models with consistency data
-        merged_df_with_consistency = merged_df[merged_df['n_consistent_lags'].notna()].copy()
+        # Kernel pairs to compare – add / remove entries to taste.
+        kernel_pairs_to_compare = [
+            ('whisker_hits_stim_0',   'whisker_hits_stim_1'),
+            ('whisker_misses_stim0', 'whisker_misses_stim1'),
+            ('whisker_misses_stim_0', 'whisker_misses_stim_1'),
+            ('auditory_stim_0',       'auditory_stim_1'),
+            ('auditory_stim0',       'auditory_stim1'),
+            ('piezo_reward_0', 'piezo_reward_1'),
+            ('piezo_reward_au_0', 'piezo_reward_au_1')
+        ]
 
-        if len(merged_df_with_consistency) > 0:
-            # Get ordered regions
-            ordered_regions = []
-            for group_name, areas in area_groups.items():
-                for area in areas:
-                    if area in merged_df['area_acronym_custom'].values:
-                        ordered_regions.append(area)
+        # Use the full-model rows only to check which kernels are present
+        df_full = merged_df[merged_df['model_name'] == 'full']
 
-            ordered_regions = sorted(set(ordered_regions))
+        for k0, k1 in kernel_pairs_to_compare:
+            # Check that both kernels are present in this dataset
+            sample_preds = df_full.iloc[0]['predictors_full'] if len(df_full) > 0 else []
+            has_k0 = any(p.startswith(k0 + '_t') for p in sample_preds)
+            has_k1 = any(p.startswith(k1 + '_t') for p in sample_preds)
+            if not has_k0 or not has_k1:
+                print(f"[kernel_consistency] Skipping {k0} vs {k1}: not found in predictors.")
+                continue
 
-            # For each kernel pair, create plots
-            for kernel_pair in merged_df_with_consistency['kernel_pair'].unique():
-                if pd.isna(kernel_pair):
-                    continue
+            pair_folder = os.path.join(output_folder, f"{k1}_vs_{k0}")
+            # Pass the full merged_df (all model_names) so that the LRT encoding
+            # profile can access lrt_significant from the reduced-model rows.
+            # _build_neuron_change_table filters to model_name=='full' internally.
+            plot_kernel_consistency_by_area(
+                df=merged_df,
+                kernel_0=k0,
+                kernel_1=k1,
+                area_groups=area_groups,
+                area_colors=area_colors,
+                output_folder=pair_folder,
+                reward_groups=[1, 0],
+                thresholds=[1, 5, 10],
+                n_cols=3,
+                performance_csv=r'M:\analysis\Myriam_Hamon\combined_results\whisker_session_rates\whisker_session_rates.csv',
+            )
 
-                df_pair = merged_df_with_consistency[merged_df_with_consistency['kernel_pair'] == kernel_pair]
+            # Grouped-by-area-group version
+            pair_folder_grouped = os.path.join(pair_folder, 'by_area_group')
+            plot_kernel_consistency_by_area(
+                df=merged_df_grouped,
+                kernel_0=k0,
+                kernel_1=k1,
+                area_groups=area_groups_flat,
+                area_colors=area_colors,
+                output_folder=pair_folder_grouped,
+                reward_groups=[1, 0],
+                thresholds=[1, 5, 10],
+                n_cols=3,
+                performance_csv=r'M:\analysis\Myriam_Hamon\combined_results\whisker_session_rates\whisker_session_rates.csv',
+            )
 
-                # Extract actual lag times from predictors for this kernel pair
-                # Get the kernel names from the pair
-                import re
-                kernel_1_name = kernel_pair.split('_vs_')[0]
-                kernel_0_name = kernel_pair.split('_vs_')[1] if '_vs_' in kernel_pair else None
-
-                # Extract lag times from a sample row's predictors
-                actual_lag_times = {}
-                sample_row = df_pair[df_pair['predictors_full'].notna()].iloc[0] if len(df_pair[df_pair['predictors_full'].notna()]) > 0 else None
-                if sample_row is not None:
-                    predictors = sample_row['predictors_full']
-                    pattern = re.compile(fr"^{kernel_1_name}_t([+-]?\d+\.\d+)s$")
-                    lag_matches = []
-                    for pred in predictors:
-                        m = pattern.match(pred)
-                        if m:
-                            lag_time = float(m.group(1))
-                            lag_matches.append(lag_time)
-                    lag_matches_sorted = sorted(lag_matches)
-                    for idx, lag_time in enumerate(lag_matches_sorted):
-                        actual_lag_times[idx] = lag_time
-
-                # Parse consistent_lags JSON to determine increase vs decrease
-                def classify_consistency(row):
-                    if pd.isna(row['consistent_lags']) or row['n_consistent_lags'] == 0:
-                        return None
-
-                    lags_dict = json.loads(row['consistent_lags'])
-                    # Positive scores = increase, negative = decrease
-                    # Handle both old format (float) and new format (dict)
-                    scores = []
-                    for v in lags_dict.values():
-                        if isinstance(v, dict):
-                            scores.append(v['score'])
-                        else:
-                            scores.append(v)
-
-                    avg_score = np.mean(scores)
-
-                    if avg_score > 0:
-                        return 'increase'
-                    else:
-                        return 'decrease'
-
-                # Get all unique lags across all neurons for this kernel pair
-                # Also extract lag times
-                all_lags = {}  # {lag_idx: lag_time}
-                for _, row in df_pair.iterrows():
-                    if pd.notna(row['consistent_lags']):
-                        lags_dict = json.loads(row['consistent_lags'])
-                        for lag_idx_str, lag_data in lags_dict.items():
-                            lag_idx = int(lag_idx_str)
-                            if lag_idx not in all_lags:
-                                # Handle both old format (float) and new format (dict)
-                                if isinstance(lag_data, dict):
-                                    all_lags[lag_idx] = lag_data['lag_time']
-                                else:
-                                    # Old format: use extracted lag times from predictors
-                                    if lag_idx in actual_lag_times:
-                                        all_lags[lag_idx] = actual_lag_times[lag_idx]
-                                    else:
-                                        all_lags[lag_idx] = lag_idx * 0.1 - 0.2  # Fallback
-
-                if not all_lags:
-                    continue
-
-                all_lags_sorted = sorted(all_lags.items())  # [(lag_idx, lag_time), ...]
-
-                # Calculate percentages per area, reward group, and lag
-                for lag_idx, lag_time in all_lags_sorted:
-                    results = []
-
-                    for area in ordered_regions:
-                        df_area = df_pair[df_pair['area_acronym_custom'] == area]
-
-                        for reward_group in [0, 1]:
-                            df_reward = df_area[df_area['reward_group'] == reward_group]
-
-                            n_total = len(df_reward)
-                            if n_total == 0:
-                                continue
-
-                            # Count neurons with this specific lag
-                            n_increase = 0
-                            n_decrease = 0
-
-                            for _, row in df_reward.iterrows():
-                                if pd.notna(row['consistent_lags']):
-                                    lags_dict = json.loads(row['consistent_lags'])
-                                    if str(lag_idx) in lags_dict:
-                                        lag_data = lags_dict[str(lag_idx)]
-                                        # Handle both old format (float) and new format (dict)
-                                        if isinstance(lag_data, dict):
-                                            score = lag_data['score']
-                                        else:
-                                            score = lag_data  # Old format
-
-                                        if score > 0:
-                                            n_increase += 1
-                                        else:
-                                            n_decrease += 1
-
-                            pct_increase = (n_increase / n_total) * 100
-                            pct_decrease = (n_decrease / n_total) * 100
-
-                            reward_label = 'R+' if reward_group == 1 else 'R-'
-
-                            results.append({
-                                'area': area,
-                                'reward_group': reward_label,
-                                'pct_increase': pct_increase,
-                                'pct_decrease': pct_decrease,
-                                'n_increase': n_increase,
-                                'n_decrease': n_decrease,
-                                'n_total': n_total
-                            })
-
-                    if not results:
+            # Repeat for whisker-encoding-only and auditory-encoding-only neurons
+            if 'lrt_significant' in merged_df.columns:
+                for encoding_model, encoding_label in [
+                    ('whisker_encoding', 'wsk'),
+                    ('auditory_encoding', 'aud'),
+                ]:
+                    sig_ids = merged_df[
+                        (merged_df['model_name'] == encoding_model) &
+                        (merged_df['lrt_significant'] == True)
+                    ][['mouse_id', 'neuron_id']].drop_duplicates()
+                    if sig_ids.empty:
+                        print(f"[kernel_consistency] No {encoding_model} neurons found, skipping {encoding_label}.")
                         continue
+                    merged_df_encoding = merged_df.merge(sig_ids, on=['mouse_id', 'neuron_id'])
+                    pair_folder_encoding = os.path.join(pair_folder, encoding_label)
+                    plot_kernel_consistency_by_area(
+                        df=merged_df_encoding,
+                        kernel_0=k0,
+                        kernel_1=k1,
+                        area_groups=area_groups,
+                        area_colors=area_colors,
+                        output_folder=pair_folder_encoding,
+                        reward_groups=[1, 0],
+                        thresholds=[1, 5, 10],
+                        n_cols=3,
+                    )
 
-                    results_df = pd.DataFrame(results)
+                    # Grouped-by-area-group version for encoding subsets
+                    merged_df_grouped_encoding = merged_df_grouped.merge(sig_ids, on=['mouse_id', 'neuron_id'])
+                    if not merged_df_grouped_encoding.empty:
+                        pair_folder_encoding_grouped = os.path.join(pair_folder_grouped, encoding_label)
+                        plot_kernel_consistency_by_area(
+                            df=merged_df_grouped_encoding,
+                            kernel_0=k0,
+                            kernel_1=k1,
+                            area_groups=area_groups_flat,
+                            area_colors=area_colors,
+                            output_folder=pair_folder_encoding_grouped,
+                            reward_groups=[1, 0],
+                            thresholds=[1, 5, 10],
+                            n_cols=3,
+                        )
 
-                    # Filter to only regions with any consistent neurons
-                    active_regions = []
-                    for area in ordered_regions:
-                        area_data = results_df[results_df['area'] == area]
-                        if len(area_data) > 0 and area_data[['pct_increase', 'pct_decrease']].sum().sum() > 0:
-                            active_regions.append(area)
 
-                    if not active_regions:
-                        continue
-
-                    # Create single plot with all groups
-                    fig, ax = plt.subplots(1, 1, figsize=(14, max(6, len(active_regions) * 0.6)))
-
-                    # Prepare data for grouped bars
-                    x = np.arange(len(active_regions))
-                    height = 0.18  # Height of each bar
-
-                    # Get data for each combination
-                    r_plus_inc = []
-                    r_plus_dec = []
-                    r_minus_inc = []
-                    r_minus_dec = []
-                    n_totals_r_plus = []
-                    n_totals_r_minus = []
-
-                    for area in active_regions:
-                        # R+ increase
-                        row = results_df[(results_df['area'] == area) & (results_df['reward_group'] == 'R+')]
-                        r_plus_inc.append(row['pct_increase'].values[0] if len(row) > 0 else 0)
-                        r_plus_dec.append(-row['pct_decrease'].values[0] if len(row) > 0 else 0)
-                        n_totals_r_plus.append(row['n_total'].values[0] if len(row) > 0 else 0)
-
-                        # R- increase
-                        row = results_df[(results_df['area'] == area) & (results_df['reward_group'] == 'R-')]
-                        r_minus_inc.append(row['pct_increase'].values[0] if len(row) > 0 else 0)
-                        r_minus_dec.append(-row['pct_decrease'].values[0] if len(row) > 0 else 0)
-                        n_totals_r_minus.append(row['n_total'].values[0] if len(row) > 0 else 0)
-
-                    # Plot bars with offset positions using green for R+ and red for R-
-                    ax.barh(x - 1.5*height, r_plus_inc, height, label='R+ Increase',
-                           color='forestgreen', alpha=0.9, edgecolor='black', linewidth=0.5)
-                    ax.barh(x - 0.5*height, r_plus_dec, height, label='R+ Decrease',
-                           color='forestgreen', alpha=0.9, edgecolor='black', linewidth=0.5)
-                    ax.barh(x + 0.5*height, r_minus_inc, height, label='R- Increase',
-                           color='crimson', alpha=0.9, edgecolor='gray', linewidth=0.5)
-                    ax.barh(x + 1.5*height, r_minus_dec, height, label='R- Decrease',
-                           color='crimson', alpha=0.9, edgecolor='gray', linewidth=0.5)
-
-                    # Add center line
-                    ax.axvline(0, color='black', linewidth=2, linestyle='-', zorder=10)
-
-                    # Labels and formatting
-                    y_labels = [f"{area}\n(R+:{n_totals_r_plus[i]}, R-:{n_totals_r_minus[i]})"
-                               for i, area in enumerate(active_regions)]
-                    ax.set_yticks(x)
-                    ax.set_yticklabels(y_labels, fontsize=9)
-                    ax.set_xlabel('← Decrease (% of neurons)    |    Increase (% of neurons) →',
-                                 fontsize=12, fontweight='bold')
-                    ax.set_ylabel('Brain Region (n neurons)', fontsize=12, fontweight='bold')
-                    ax.set_title(f'Kernel Consistency Analysis - Lag {lag_time*1000:.0f} ms (index {lag_idx})\n{kernel_pair}',
-                               fontsize=14, fontweight='bold', pad=20)
-                    ax.legend(fontsize=10, loc='upper right', ncol=2, framealpha=0.9,
-                             edgecolor='black', title='Direction')
-                    ax.spines["top"].set_visible(False)
-                    ax.spines["right"].set_visible(False)
-                    ax.spines["left"].set_linewidth(1.5)
-                    ax.spines["bottom"].set_linewidth(1.5)
-                    ax.grid(axis='x', alpha=0.4, linestyle='--', linewidth=0.8)
-
-                    # Set symmetric x-axis limits
-                    all_vals = r_plus_inc + r_plus_dec + r_minus_inc + r_minus_dec
-                    max_val = max(abs(v) for v in all_vals if v != 0) if all_vals else 10
-                    ax.set_xlim(-max_val * 1.15, max_val * 1.15)
-
-                    # Add percentage labels on bars (only for larger values)
-                    for i in range(len(active_regions)):
-                        if r_plus_inc[i] > 2:
-                            ax.text(r_plus_inc[i] + max_val*0.01, i - 1.5*height, f'{r_plus_inc[i]:.1f}%',
-                                   va='center', ha='left', fontsize=7, color='darkgreen')
-                        if r_plus_dec[i] < -2:
-                            ax.text(r_plus_dec[i] - max_val*0.01, i - 0.5*height, f'{abs(r_plus_dec[i]):.1f}%',
-                                   va='center', ha='right', fontsize=7, color='darkgreen')
-                        if r_minus_inc[i] > 2:
-                            ax.text(r_minus_inc[i] + max_val*0.01, i + 0.5*height, f'{r_minus_inc[i]:.1f}%',
-                                   va='center', ha='left', fontsize=7, color='darkred')
-                        if r_minus_dec[i] < -2:
-                            ax.text(r_minus_dec[i] - max_val*0.01, i + 1.5*height, f'{abs(r_minus_dec[i]):.1f}%',
-                                   va='center', ha='right', fontsize=7, color='darkred')
-
-                    plt.tight_layout()
-
-                    # Clean kernel pair name for filename
-                    kernel_pair_clean = kernel_pair.replace('/', '_').replace(' ', '_')
-                    fname = f"consistency_by_area_reward_lag{lag_idx}_{kernel_pair_clean}"
-                    putils.save_figure_with_options(fig, file_formats=["png"],
-                                                  filename=fname,
-                                                  output_dir=output_folder)
-                    plt.close(fig)
-
-                    # Print summary
-                    print(f"\nConsistency summary for {kernel_pair} at lag {lag_idx}:")
-                    print(results_df.to_string(index=False))
-
-                    # Now plot average kernels for neurons with significant increase or decrease
-                    # We need to go back to the full dataframe with kernel data
-                    print(f"\nPlotting average kernels for consistent neurons at lag {lag_idx}...")
-
-                    # # Create figure with subplots per area (2 columns per area: R+ and R-)
-                    # n_areas = len(active_regions)
-                    # n_cols = 2  # R+ and R- side by side
-                    # n_rows = n_areas
-
-                    # fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 4*n_rows))
-                    # if n_areas == 1:
-                    #     axes = axes.reshape(1, -1)
-
-                    # for area_idx, area in enumerate(active_regions):
-                    #     df_area = df_pair[df_pair['area_acronym_custom'] == area]
-
-                    #     # For each reward group, get neurons with increase/decrease at this lag
-                    #     for reward_group in [0, 1]:
-                    #         ax = axes[area_idx, reward_group]
-                    #         df_reward = df_area[df_area['reward_group'] == reward_group]
-                    #         reward_label = 'R+' if reward_group == 1 else 'R-'
-                    #         base_color = 'forestgreen' if reward_group == 1 else 'crimson'
-
-                    #         # Separate by increase/decrease and collect both kernels
-                    #         increase_neurons_k0 = []
-                    #         increase_neurons_k1 = []
-                    #         decrease_neurons_k0 = []
-                    #         decrease_neurons_k1 = []
-
-                    #         for _, row in df_reward.iterrows():
-                    #             if pd.notna(row['consistent_lags']):
-                    #                 lags_dict = json.loads(row['consistent_lags'])
-                    #                 if str(lag_idx) in lags_dict:
-                    #                     lag_data = lags_dict[str(lag_idx)]
-                    #                     if isinstance(lag_data, dict):
-                    #                         score = lag_data['score']
-                    #                     else:
-                    #                         score = lag_data
-
-                    #                     # Extract kernel weights for both kernel_0 and kernel_1
-                    #                     coefs = np.array(row['coef_full_mean'])
-                    #                     predictors = row['predictors_full']
-
-                    #                     # Extract kernel_0 indices
-                    #                     pattern_0 = re.compile(fr"^{kernel_0_name}_t([+-]?\d+\.\d+)s$")
-                    #                     kernel_0_indices = []
-                    #                     kernel_0_lags = []
-                    #                     for i, pred in enumerate(predictors):
-                    #                         m = pattern_0.match(pred)
-                    #                         if m:
-                    #                             kernel_0_lags.append(float(m.group(1)))
-                    #                             kernel_0_indices.append(i)
-
-                    #                     # Extract kernel_1 indices
-                    #                     pattern_1 = re.compile(fr"^{kernel_1_name}_t([+-]?\d+\.\d+)s$")
-                    #                     kernel_1_indices = []
-                    #                     kernel_1_lags = []
-                    #                     for i, pred in enumerate(predictors):
-                    #                         m = pattern_1.match(pred)
-                    #                         if m:
-                    #                             kernel_1_lags.append(float(m.group(1)))
-                    #                             kernel_1_indices.append(i)
-
-                    #                     if kernel_0_indices and kernel_1_indices:
-                    #                         kernel_0_weights = coefs[kernel_0_indices]
-                    #                         kernel_1_weights = coefs[kernel_1_indices]
-
-                    #                         if score > 0:
-                    #                             increase_neurons_k0.append((kernel_0_lags, kernel_0_weights))
-                    #                             increase_neurons_k1.append((kernel_1_lags, kernel_1_weights))
-                    #                         else:
-                    #                             decrease_neurons_k0.append((kernel_0_lags, kernel_0_weights))
-                    #                             decrease_neurons_k1.append((kernel_1_lags, kernel_1_weights))
-
-                    #         # Calculate total neurons in this reward cohort for this area
-                    #         n_total_cohort = len(df_reward)
-
-                    #         # Plot average kernels for increase neurons
-                    #         if increase_neurons_k0:
-                    #             # Kernel 0
-                    #             all_weights = np.array([w for _, w in increase_neurons_k0])
-                    #             mean_weights = np.mean(all_weights, axis=0)
-                    #             sem_weights = np.std(all_weights, axis=0) / np.sqrt(len(all_weights))
-                    #             lags = increase_neurons_k0[0][0]
-                    #             pct_inc = (len(increase_neurons_k0) / n_total_cohort) * 100 if n_total_cohort > 0 else 0
-                    #             ax.plot(lags, mean_weights, color='gray', linewidth=2, alpha=0.6,
-                    #                    label=f'Inc K0 ({pct_inc:.1f}%)', linestyle='-')
-                    #             ax.fill_between(lags, mean_weights - sem_weights, mean_weights + sem_weights,
-                    #                           color='gray', alpha=0.2)
-
-                    #             # Kernel 1
-                    #             all_weights = np.array([w for _, w in increase_neurons_k1])
-                    #             mean_weights = np.mean(all_weights, axis=0)
-                    #             sem_weights = np.std(all_weights, axis=0) / np.sqrt(len(all_weights))
-                    #             lags = increase_neurons_k1[0][0]
-                    #             ax.plot(lags, mean_weights, color=base_color, linewidth=2.5,
-                    #                    label=f'Inc K1 ({pct_inc:.1f}%)', linestyle='-')
-                    #             ax.fill_between(lags, mean_weights - sem_weights, mean_weights + sem_weights,
-                    #                           color=base_color, alpha=0.3)
-
-                    #         # Plot average kernels for decrease neurons
-                    #         if decrease_neurons_k0:
-                    #             # Kernel 0
-                    #             all_weights = np.array([w for _, w in decrease_neurons_k0])
-                    #             mean_weights = np.mean(all_weights, axis=0)
-                    #             sem_weights = np.std(all_weights, axis=0) / np.sqrt(len(all_weights))
-                    #             lags = decrease_neurons_k0[0][0]
-                    #             pct_dec = (len(decrease_neurons_k0) / n_total_cohort) * 100 if n_total_cohort > 0 else 0
-                    #             ax.plot(lags, mean_weights, color='gray', linewidth=2, alpha=0.6,
-                    #                    label=f'Dec K0 ({pct_dec:.1f}%)', linestyle='--')
-                    #             ax.fill_between(lags, mean_weights - sem_weights, mean_weights + sem_weights,
-                    #                           color='gray', alpha=0.2)
-
-                    #             # Kernel 1
-                    #             all_weights = np.array([w for _, w in decrease_neurons_k1])
-                    #             mean_weights = np.mean(all_weights, axis=0)
-                    #             sem_weights = np.std(all_weights, axis=0) / np.sqrt(len(all_weights))
-                    #             lags = decrease_neurons_k1[0][0]
-                    #             ax.plot(lags, mean_weights, color=base_color, linewidth=2.5,
-                    #                    label=f'Dec K1 ({pct_dec:.1f}%)', linestyle='--')
-                    #             ax.fill_between(lags, mean_weights - sem_weights, mean_weights + sem_weights,
-                    #                           color=base_color, alpha=0.3)
-
-                    #         ax.axhline(0, color='black', linestyle='-', linewidth=0.5)
-                    #         ax.axvline(lag_time, color='red', linestyle=':', linewidth=2, alpha=0.7,
-                    #                   label=f'Lag {lag_time*1000:.0f}ms')
-                    #         ax.set_xlabel('Time (s)', fontsize=10)
-                    #         ax.set_ylabel('Kernel Weight', fontsize=10)
-                    #         ax.set_title(f'{area} - {reward_label}', fontsize=11, fontweight='bold')
-                    #         ax.legend(fontsize=8, loc='best')
-                    #         ax.spines["top"].set_visible(False)
-                    #         ax.spines["right"].set_visible(False)
-                    #         ax.grid(alpha=0.3)
-
-                    # fig.suptitle(f'Average Kernels for Consistent Neurons\n{kernel_pair} at Lag {lag_time*1000:.0f} ms',
-                    #             fontsize=14, fontweight='bold')
-                    # plt.tight_layout()
-
-                    # fname_kernels = f"avg_kernels_consistent_lag{lag_idx}_{kernel_pair_clean}"
-                    # putils.save_figure_with_options(fig, file_formats=["png"],
-                    #                               filename=fname_kernels,
-                    #                               output_dir=output_folder)
-                    # plt.close(fig)
-
-                # Now create a summary plot across all lags
-                print(f"\nPlotting consistency summary across all lags for {kernel_pair}...")
-
-                # Collect data across all lags for each area and reward group
-                summary_data = []
-                for area in active_regions:
-                    df_area = df_pair[df_pair['area_acronym_custom'] == area]
-
-                    for reward_group in [0, 1]:
-                        df_reward = df_area[df_area['reward_group'] == reward_group]
-                        reward_label = 'R+' if reward_group == 1 else 'R-'
-                        n_total = len(df_reward)
-
-                        if n_total == 0:
-                            continue
-
-                        # Count neurons based on average kernel change across all lags
-                        n_any_increase = 0
-                        n_any_decrease = 0
-
-                        for _, row in df_reward.iterrows():
-                            if row['coef_full_mean'] is not None and row['predictors_full'] is not None:
-                                coefs = np.array(row['coef_full_mean'])
-                                predictors = row['predictors_full']
-
-                                # Extract kernel_0 and kernel_1 weights
-                                pattern_0 = re.compile(fr"^{kernel_0_name}_t([+-]?\d+\.\d+)s$")
-                                pattern_1 = re.compile(fr"^{kernel_1_name}_t([+-]?\d+\.\d+)s$")
-
-                                kernel_0_weights = []
-                                kernel_1_weights = []
-
-                                for i, pred in enumerate(predictors):
-                                    m0 = pattern_0.match(pred)
-                                    m1 = pattern_1.match(pred)
-                                    if m0:
-                                        kernel_0_weights.append(coefs[i])
-                                    if m1:
-                                        kernel_1_weights.append(coefs[i])
-
-                                if len(kernel_0_weights) > 0 and len(kernel_1_weights) > 0:
-                                    # Compute average across all lags
-                                    avg_kernel_0 = np.mean(kernel_0_weights)
-                                    avg_kernel_1 = np.mean(kernel_1_weights)
-
-                                    # Determine if average increased or decreased
-                                    if avg_kernel_1 > avg_kernel_0:
-                                        n_any_increase += 1
-                                    elif avg_kernel_1 < avg_kernel_0:
-                                        n_any_decrease += 1
-
-                        pct_increase = (n_any_increase / n_total) * 100 if n_total > 0 else 0
-                        pct_decrease = (n_any_decrease / n_total) * 100 if n_total > 0 else 0
-
-                        summary_data.append({
-                            'area': area,
-                            'reward_group': reward_label,
-                            'pct_increase': pct_increase,
-                            'pct_decrease': pct_decrease,
-                            'n_increase': n_any_increase,
-                            'n_decrease': n_any_decrease,
-                            'n_total': n_total
-                        })
-
-                if summary_data:
-                    summary_df = pd.DataFrame(summary_data)
-
-                    # Create bar plot
-                    fig, ax = plt.subplots(1, 1, figsize=(14, max(6, len(active_regions) * 0.6)))
-
-                    x = np.arange(len(active_regions))
-                    height = 0.18
-
-                    # Get data for each combination
-                    r_plus_inc = []
-                    r_plus_dec = []
-                    r_minus_inc = []
-                    r_minus_dec = []
-                    n_totals_r_plus = []
-                    n_totals_r_minus = []
-
-                    for area in active_regions:
-                        # R+ increase
-                        row = summary_df[(summary_df['area'] == area) & (summary_df['reward_group'] == 'R+')]
-                        r_plus_inc.append(row['pct_increase'].values[0] if len(row) > 0 else 0)
-                        r_plus_dec.append(-row['pct_decrease'].values[0] if len(row) > 0 else 0)
-                        n_totals_r_plus.append(row['n_total'].values[0] if len(row) > 0 else 0)
-
-                        # R- increase
-                        row = summary_df[(summary_df['area'] == area) & (summary_df['reward_group'] == 'R-')]
-                        r_minus_inc.append(row['pct_increase'].values[0] if len(row) > 0 else 0)
-                        r_minus_dec.append(-row['pct_decrease'].values[0] if len(row) > 0 else 0)
-                        n_totals_r_minus.append(row['n_total'].values[0] if len(row) > 0 else 0)
-
-                    # Plot bars
-                    ax.barh(x - 1.5*height, r_plus_inc, height, label='R+ Increase',
-                           color='forestgreen', alpha=0.9, edgecolor='black', linewidth=0.5)
-                    ax.barh(x - 0.5*height, r_plus_dec, height, label='R+ Decrease',
-                           color='forestgreen', alpha=0.9, edgecolor='black', linewidth=0.5)
-                    ax.barh(x + 0.5*height, r_minus_inc, height, label='R- Increase',
-                           color='crimson', alpha=0.9, edgecolor='gray', linewidth=0.5)
-                    ax.barh(x + 1.5*height, r_minus_dec, height, label='R- Decrease',
-                           color='crimson', alpha=0.9, edgecolor='gray', linewidth=0.5)
-
-                    # Add center line
-                    ax.axvline(0, color='black', linewidth=2, linestyle='-', zorder=10)
-
-                    # Labels and formatting
-                    y_labels = [f"{area}\n(R+:{n_totals_r_plus[i]}, R-:{n_totals_r_minus[i]})"
-                               for i, area in enumerate(active_regions)]
-                    ax.set_yticks(x)
-                    ax.set_yticklabels(y_labels, fontsize=9)
-                    ax.set_xlabel('← Decrease (% of neurons)    |    Increase (% of neurons) →',
-                                 fontsize=12, fontweight='bold')
-                    ax.set_ylabel('Brain Region (n neurons)', fontsize=12, fontweight='bold')
-                    ax.set_title(f'Kernel Consistency Summary - Any Lag\n{kernel_pair}',
-                               fontsize=14, fontweight='bold', pad=20)
-                    ax.legend(fontsize=10, loc='upper right', ncol=2, framealpha=0.9,
-                             edgecolor='black', title='Direction')
-                    ax.spines["top"].set_visible(False)
-                    ax.spines["right"].set_visible(False)
-                    ax.spines["left"].set_linewidth(1.5)
-                    ax.spines["bottom"].set_linewidth(1.5)
-                    ax.grid(axis='x', alpha=0.4, linestyle='--', linewidth=0.8)
-
-                    # Set symmetric x-axis limits
-                    all_vals = r_plus_inc + r_plus_dec + r_minus_inc + r_minus_dec
-                    max_val = max(abs(v) for v in all_vals if v != 0) if all_vals else 10
-                    ax.set_xlim(-max_val * 1.15, max_val * 1.15)
-
-                    # Add percentage labels on bars (only for larger values)
-                    for i in range(len(active_regions)):
-                        if r_plus_inc[i] > 2:
-                            ax.text(r_plus_inc[i] + max_val*0.01, i - 1.5*height, f'{r_plus_inc[i]:.1f}%',
-                                   va='center', ha='left', fontsize=7, color='darkgreen')
-                        if r_plus_dec[i] < -2:
-                            ax.text(r_plus_dec[i] - max_val*0.01, i - 0.5*height, f'{abs(r_plus_dec[i]):.1f}%',
-                                   va='center', ha='right', fontsize=7, color='darkgreen')
-                        if r_minus_inc[i] > 2:
-                            ax.text(r_minus_inc[i] + max_val*0.01, i + 0.5*height, f'{r_minus_inc[i]:.1f}%',
-                                   va='center', ha='left', fontsize=7, color='darkred')
-                        if r_minus_dec[i] < -2:
-                            ax.text(r_minus_dec[i] - max_val*0.01, i + 1.5*height, f'{abs(r_minus_dec[i]):.1f}%',
-                                   va='center', ha='right', fontsize=7, color='darkred')
-
-                    plt.tight_layout()
-
-                    fname_summary = f"consistency_summary_all_lags_{kernel_pair_clean}"
-                    putils.save_figure_with_options(fig, file_formats=["png"],
-                                                  filename=fname_summary,
-                                                  output_dir=output_folder)
-                    plt.close(fig)
-
+                
     if 'compare_kernels' in plots:
         output_folder = os.path.join(output_path, 'compare_kernels_claude')
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
+        os.makedirs(output_folder, exist_ok=True)
 
-        dfs = {}
-        model_labels = {}
-        model_name = 'full'
-        key = "2k"
-        label = "2 whisker kernel"
-        dfs[key] = merged_df[merged_df['model_name'] == model_name]
-        model_labels[key] = label
 
-        all_kernels = {}  # dict: {kernel_type: [kernel_names]}
-
-        for df in dfs.values():
-            if not df.empty:
-                # Look at multiple rows to catch all kernel types
-                sample_size = min(10, len(df))
-                for idx in range(sample_size):
-                    sample_predictors = df.iloc[idx]['predictors_full']
-
-                    # Find all kernel-related predictors
-                    for pred in sample_predictors:
-                        # Match patterns like 'whisker_hits_t+0.1s', 'whisker_misses_0_t+0.1s', etc.
-                        # Extract base kernel name (before '_t')
-                        if '_t' in pred:
-                            kernel_base = pred.split('_t')[0]
-
-                            # Categorize by kernel type
-                            if kernel_base.startswith('whisker_hits'):
-                                kernel_type = 'whisker_hits'
-                            elif kernel_base.startswith('whisker_misses'):
-                                kernel_type = 'whisker_misses'
-                            elif kernel_base.startswith('whisker_stim'):
-                                kernel_type = 'whisker_stim'
-                            elif kernel_base.startswith('whisker'):
-                                # Catch any other whisker-related kernels
-                                kernel_type = 'whisker_other'
-                            elif kernel_base.startswith('auditory_stim'):
-                                kernel_type = 'auditory_stim'
-
-                            else:
-                                continue
-
-                            if kernel_type not in all_kernels:
-                                all_kernels[kernel_type] = set()
-                            all_kernels[kernel_type].add(kernel_base)
-
-        # Convert sets to sorted lists
-        for kernel_type in all_kernels:
-            all_kernels[kernel_type] = sorted(list(all_kernels[kernel_type]))
-                    # For backward compatibility, create whisker_kernels as a combined list
-        whisker_kernels = []
-        for kernel_type in sorted(all_kernels.keys()):
-            whisker_kernels.extend(all_kernels[kernel_type])
-
+        # dfs, model_labels = _discover_models(merged_df)
         # analyze_kernel_amplitude_differences_2(
-        # dfs=dfs,
-        # model_labels=model_labels,
-        # output_folder=output_folder,
-        # whisker_kernels=whisker_kernels,
-        # area_groups=area_groups,
-        # area_colors=area_colors,
-        # n_cols=3
-        #     )
-                
-        dfs = {}
-        model_labels = {}
-        model_name = 'random_split'
-        key = "2kr"
-        label = "2 whisker kernel random"
-        dfs[key] = merged_df[merged_df['model_name'] == model_name]
-        model_labels[key] = label
+        #     dfs=dfs,
+        #     model_labels=model_labels,
+        #     output_folder=output_folder_random,
+        #     whisker_kernels=whisker_kernels_random,
+        #     area_groups=area_groups,
+        #     area_colors=area_colors,
+        #     n_cols=3
+        # )
+        
 
-        all_kernels = {}  # dict: {kernel_type: [kernel_names]}
-
-        for df in dfs.values():
-            if not df.empty:
-                # Look at multiple rows to catch all kernel types
-                sample_size = min(10, len(df))
-                for idx in range(sample_size):
-                    sample_predictors = df.iloc[idx]['predictors_full']
-
-                    # Find all kernel-related predictors
-                    for pred in sample_predictors:
-                        # Match patterns like 'whisker_hits_t+0.1s', 'whisker_misses_0_t+0.1s', etc.
-                        # Extract base kernel name (before '_t')
-                        if '_t' in pred:
-                            kernel_base = pred.split('_t')[0]
-
-                            # Categorize by kernel type
-                            if kernel_base.startswith('whisker_hits'):
-                                kernel_type = 'whisker_hits'
-                            elif kernel_base.startswith('whisker_misses'):
-                                kernel_type = 'whisker_misses'
-                            elif kernel_base.startswith('whisker_stim'):
-                                kernel_type = 'whisker_stim'
-                            elif kernel_base.startswith('whisker'):
-                                # Catch any other whisker-related kernels
-                                kernel_type = 'whisker_other'
-                            elif kernel_base.startswith('auditory_stim'):
-                                kernel_type = 'auditory_stim'
-
-                            else:
-                                continue
-
-                            if kernel_type not in all_kernels:
-                                all_kernels[kernel_type] = set()
-                            all_kernels[kernel_type].add(kernel_base)
-
-        # Convert sets to sorted lists
-        for kernel_type in all_kernels:
-            all_kernels[kernel_type] = sorted(list(all_kernels[kernel_type]))
-                    # For backward compatibility, create whisker_kernels as a combined list
-        whisker_kernels = []
-        for kernel_type in sorted(all_kernels.keys()):
-            whisker_kernels.extend(all_kernels[kernel_type])
-
-        # analyze_kernel_amplitude_differences_2(
-        # dfs=dfs,
-        # model_labels=model_labels,
-        # output_folder=output_folder + 'random',
-        # whisker_kernels=whisker_kernels,
-        # area_groups=area_groups,
-        # area_colors=area_colors,
-        # n_cols=3
-        #     )
-
-        for reward_group in [1,0]:
-
+        # Per-reward-group analyses
+        for reward_group in [1, 0]:
             merged_df_reward = merged_df[merged_df['reward_group'] == reward_group]
 
-            output_folder_reward_group = os.path.join(output_folder, str(reward_group))
-            if not os.path.exists(output_folder_reward_group):
-                os.makedirs(output_folder_reward_group)
+            output_folder_reward = os.path.join(output_folder, str(reward_group))
+            os.makedirs(output_folder_reward, exist_ok=True)
 
-            # Automatically discover models with whisker kernels
-            # Pattern matching for model names like 'full', '2whisker_kernels', '3whisker_kernels', etc.
-            dfs = {}
-            model_labels = {}
-
-            # Get unique model names in this reward group
-            reward_models = merged_df_reward['model_name'].unique()
-
-            for model_name in reward_models:
-                # Check if this is a whisker kernel model
-                if model_name == 'full':
-                    # 'full' model has 1 whisker kernel
-                    key = "2k"
-                    label = "2 whisker kernel"
-                    dfs[key] = merged_df_reward[merged_df_reward['model_name'] == model_name]
-                    model_labels[key] = label
-                if model_name == 'random_split':
-                    key = "2krandom"
-                    label = "2 whisker kernelr"
-                    dfs[key] = merged_df_reward[merged_df_reward['model_name'] == model_name]
-                    model_labels[key] = label
-                elif 'whisker_kernel' in model_name:
-                    # Extract number from model name (e.g., '2whisker_kernels' -> 2)
-                    import re as re
-
-                    match = re.search(r'(\d+)whisker_kernel', model_name)
-                    if match:
-                        n_kernels = int(match.group(1))
-                        key = f"{n_kernels}k"
-                        label = f"{n_kernels} whisker kernels"
-                        dfs[key] = merged_df_reward[merged_df_reward['model_name'] == model_name]
-                        model_labels[key] = label
-
-            # Skip if no whisker kernel models found
+            dfs, model_labels = _discover_models(merged_df_reward)
             if not dfs:
                 print(f"[WARNING] No whisker kernel models found for reward_group {reward_group}")
                 continue
 
             print(f"[INFO] Found {len(dfs)} whisker kernel models for reward_group {reward_group}: {list(model_labels.values())}")
 
-            # Automatically discover all kernel types and names from the data
-            # This handles whisker_hits, whisker_misses, whisker_stim, etc.
-            all_kernels = {}  # dict: {kernel_type: [kernel_names]}
-
-            for df in dfs.values():
-                if not df.empty:
-                    # Look at multiple rows to catch all kernel types
-                    sample_size = min(10, len(df))
-                    for idx in range(sample_size):
-                        sample_predictors = df.iloc[idx]['predictors_full']
-
-                        # Find all kernel-related predictors
-                        for pred in sample_predictors:
-                            # Match patterns like 'whisker_hits_t+0.1s', 'whisker_misses_0_t+0.1s', etc.
-                            # Extract base kernel name (before '_t')
-                            if '_t' in pred:
-                                kernel_base = pred.split('_t')[0]
-
-                                # Categorize by kernel type
-                                if kernel_base.startswith('whisker_hits'):
-                                    kernel_type = 'whisker_hits'
-                                elif kernel_base.startswith('whisker_misses'):
-                                    kernel_type = 'whisker_misses'
-                                elif kernel_base.startswith('whisker_stim'):
-                                    kernel_type = 'whisker_stim'
-                                elif kernel_base.startswith('whisker'):
-                                    # Catch any other whisker-related kernels
-                                    kernel_type = 'whisker_other'
-                                elif kernel_base.startswith('auditory_stim'):
-                                    kernel_type = 'auditory_stim'
-
-                                else:
-                                    continue
-
-                                if kernel_type not in all_kernels:
-                                    all_kernels[kernel_type] = set()
-                                all_kernels[kernel_type].add(kernel_base)
-
-            # Convert sets to sorted lists
-            for kernel_type in all_kernels:
-                all_kernels[kernel_type] = sorted(list(all_kernels[kernel_type]))
-
-            # For backward compatibility, create whisker_kernels as a combined list
-            whisker_kernels = []
-            for kernel_type in sorted(all_kernels.keys()):
-                whisker_kernels.extend(all_kernels[kernel_type])
-
+            all_kernels, whisker_kernels = _discover_kernels(dfs)
             print(f"[INFO] Discovered kernel types and counts:")
             for kernel_type, kernels in sorted(all_kernels.items()):
                 print(f"  - {kernel_type}: {len(kernels)} kernels {kernels}")
             print(f"[INFO] Total whisker kernels: {len(whisker_kernels)}")
 
+            # 1. Model fit comparison
+            # output_folder_fit = os.path.join(output_folder_reward, 'model_fit_comparison')
+            # os.makedirs(output_folder_fit, exist_ok=True)
+            # compare_model_fit_metrics(
+            #     dfs=dfs,
+            #     model_labels=model_labels,
+            #     output_folder=output_folder_fit,
+            #     area_groups=area_groups,
+            #     area_colors=area_colors,
+            #     metrics=['test_corr'],
+            #     n_cols=3
+            # )
 
-            # 1. Model fit comparison (test_corr, test_ll)
-            output_folder_fit = os.path.join(output_folder_reward_group, 'model_fit_comparison')
-            if not os.path.exists(output_folder_fit):
-                os.makedirs(output_folder_fit)
-
-            compare_model_fit_metrics(
-                dfs=dfs,
-                model_labels=model_labels,
-                output_folder=output_folder_fit,
-                area_groups=area_groups,
-                area_colors=area_colors,
-                metrics=['test_corr'],
-                n_cols=3
-            )
-
-            # 3. Kernel amplitude evolution
-            output_folder_amplitude = os.path.join(output_folder_reward_group, 'kernel_amplitude_evolution')
-            if not os.path.exists(output_folder_amplitude):
-                os.makedirs(output_folder_amplitude)
-
+            # 2. Kernel amplitude evolution
+            output_folder_amplitude = os.path.join(output_folder_reward, 'kernel_amplitude_evolution')
+            os.makedirs(output_folder_amplitude, exist_ok=True)
             compare_kernel_amplitude_evolution(
                 dfs=dfs,
                 model_labels=model_labels,
@@ -1798,33 +1297,30 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
                 area_colors=area_colors
             )
 
-            # 3. First weight amplitude evolution
-            output_folder_amplitude = os.path.join(output_folder_reward_group, 'first_weight_amplitude_evolution')
-            if not os.path.exists(output_folder_amplitude):
-                os.makedirs(output_folder_amplitude)
-
-            compare_kernel_amplitude_evolution_2(
-                dfs=dfs,
-                model_labels=model_labels,
-                output_folder=output_folder_amplitude,
-                whisker_kernels=whisker_kernels,
-                area_groups=area_groups,
-                area_colors=area_colors
-            )
+            # 3. First-weight amplitude evolution + per-kernel amplitude differences
+            output_folder_first_weight = os.path.join(output_folder_reward, 'first_weight_amplitude_evolution')
+            os.makedirs(output_folder_first_weight, exist_ok=True)
+            # compare_kernel_amplitude_evolution_2(
+            #     dfs=dfs,
+            #     model_labels=model_labels,
+            #     output_folder=output_folder_first_weight,
+            #     whisker_kernels=whisker_kernels,
+            #     area_groups=area_groups,
+            #     area_colors=area_colors
+            # )
             analyze_kernel_amplitude_differences_2(
                 dfs=dfs,
                 model_labels=model_labels,
-                output_folder=output_folder_amplitude,
+                output_folder=output_folder_first_weight,
                 whisker_kernels=whisker_kernels,
                 area_groups=area_groups,
                 area_colors=area_colors,
                 n_cols=3
             )
-            # 4. Kernel consistency analysis (are all kernels changing the same way?)
-            output_folder_consistency = os.path.join(output_folder_reward_group, 'kernel_consistency')
-            if not os.path.exists(output_folder_consistency):
-                os.makedirs(output_folder_consistency)
 
+            # 4. Kernel consistency analysis
+            output_folder_consistency = os.path.join(output_folder_reward, 'kernel_consistency')
+            os.makedirs(output_folder_consistency, exist_ok=True)
             analyze_kernel_consistency(
                 dfs=dfs,
                 model_labels=model_labels,
@@ -1834,22 +1330,397 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
                 area_colors=area_colors
             )
 
-            # 5. Identify neurons with most kernel changes (across and within models)
-            output_folder_top_neurons = os.path.join(output_folder_reward_group, 'top_changing_neurons')
-            if not os.path.exists(output_folder_top_neurons):
-                os.makedirs(output_folder_top_neurons)
+            # 5. Top-changing neurons (across and within models)
+            # output_folder_top_neurons = os.path.join(output_folder_reward, 'top_changing_neurons')
+            # os.makedirs(output_folder_top_neurons, exist_ok=True)
+            # identify_neurons_with_kernel_changes(
+            #     dfs=dfs,
+            #     model_labels=model_labels,
+            #     output_folder=output_folder_top_neurons,
+            #     whisker_kernels=whisker_kernels,
+            #     area_groups=area_groups,
+            #     area_colors=area_colors,
+            #     top_n=20
+            # )
 
-            identify_neurons_with_kernel_changes(
+            # 6. Paired kernel comparison per area (stim_0 vs stim_1 with per-bin test)
+            output_folder_paired = os.path.join(output_folder_reward, 'paired_kernel_comparison')
+            os.makedirs(output_folder_paired, exist_ok=True)
+            plot_paired_kernel_comparison_per_area(
                 dfs=dfs,
                 model_labels=model_labels,
-                output_folder=output_folder_top_neurons,
-                whisker_kernels=whisker_kernels,
+                output_folder=output_folder_paired,
                 area_groups=area_groups,
                 area_colors=area_colors,
-                top_n=20
+                n_cols=3,
+                alpha=0.05
             )
 
+            # 7. Full vs optimal_split kernel comparison per area
+            if '2k' in dfs and '2k_optimal' in dfs:
+                output_folder_optimal = os.path.join(output_folder_reward, 'full_vs_optimal_split')
+                os.makedirs(output_folder_optimal, exist_ok=True)
+                plot_kernels_full_vs_optimal_split_per_area(
+                    df_full=dfs['2k'],
+                    df_optimal=dfs['2k_optimal'],
+                    output_folder=output_folder_optimal,
+                    area_groups=area_groups,
+                    area_colors=area_colors,
+                    n_cols=3,
+                    alpha=0.05
+                )
 
+                # 8. split_idx distribution
+                output_folder_split = os.path.join(output_folder_reward, 'split_idx_distribution')
+                os.makedirs(output_folder_split, exist_ok=True)
+                plot_split_idx_distribution(
+                    df_optimal=dfs['2k_optimal'],
+                    output_folder=output_folder_split,
+                    area_groups=area_groups,
+                    area_colors=area_colors,
+                    n_cols=3
+                )
+
+            # 9. Encoding-specific neuron subsets (whisker-only, auditory-only)
+            if 'lrt_significant' in merged_df_reward.columns:
+                for encoding_model, encoding_label in [
+                    ('whisker_encoding', 'wsk'),
+                    ('auditory_encoding', 'aud'),
+                ]:
+                    sig_ids = merged_df_reward[
+                        (merged_df_reward['model_name'] == encoding_model) &
+                        (merged_df_reward['lrt_significant'] == True)
+                    ][['mouse_id', 'neuron_id']].drop_duplicates()
+                    if sig_ids.empty:
+                        print(f"[compare_kernels] No {encoding_model} neurons found for reward_group {reward_group}, skipping.")
+                        continue
+                    merged_df_encoding = merged_df_reward.merge(sig_ids, on=['mouse_id', 'neuron_id'])
+                    dfs_enc, model_labels_enc = _discover_models(merged_df_encoding)
+                    if not dfs_enc:
+                        print(f"[compare_kernels] No models after filtering for {encoding_label}, reward_group {reward_group}, skipping.")
+                        continue
+                    all_kernels_enc, whisker_kernels_enc = _discover_kernels(dfs_enc)
+
+                    output_folder_enc = os.path.join(output_folder_reward, encoding_label)
+                    os.makedirs(output_folder_enc, exist_ok=True)
+
+                    output_folder_enc_amplitude = os.path.join(output_folder_enc, 'kernel_amplitude_evolution')
+                    os.makedirs(output_folder_enc_amplitude, exist_ok=True)
+                    compare_kernel_amplitude_evolution(
+                        dfs=dfs_enc,
+                        model_labels=model_labels_enc,
+                        output_folder=output_folder_enc_amplitude,
+                        whisker_kernels=whisker_kernels_enc,
+                        area_groups=area_groups,
+                        area_colors=area_colors,
+                    )
+
+                    output_folder_enc_consistency = os.path.join(output_folder_enc, 'kernel_consistency')
+                    os.makedirs(output_folder_enc_consistency, exist_ok=True)
+                    analyze_kernel_consistency(
+                        dfs=dfs_enc,
+                        model_labels=model_labels_enc,
+                        output_folder=output_folder_enc_consistency,
+                        whisker_kernels=whisker_kernels_enc,
+                        area_groups=area_groups,
+                        area_colors=area_colors,
+                    )
+
+        # Identical plots grouped by area_group
+        for reward_group in [1, 0]:
+            merged_df_reward_grouped = merged_df_grouped[merged_df_grouped['reward_group'] == reward_group]
+
+            output_folder_reward_grouped = os.path.join(output_folder, str(reward_group), 'by_area_group')
+            os.makedirs(output_folder_reward_grouped, exist_ok=True)
+
+            dfs_grp, model_labels_grp = _discover_models(merged_df_reward_grouped)
+            if not dfs_grp:
+                print(f"[WARNING] No whisker kernel models found for reward_group {reward_group} (grouped)")
+                continue
+
+            all_kernels_grp, whisker_kernels_grp = _discover_kernels(dfs_grp)
+
+            output_folder_amplitude_grp = os.path.join(output_folder_reward_grouped, 'kernel_amplitude_evolution')
+            os.makedirs(output_folder_amplitude_grp, exist_ok=True)
+            compare_kernel_amplitude_evolution(
+                dfs=dfs_grp,
+                model_labels=model_labels_grp,
+                output_folder=output_folder_amplitude_grp,
+                whisker_kernels=whisker_kernels_grp,
+                area_groups=area_groups_flat,
+                area_colors=area_colors
+            )
+
+            output_folder_first_weight_grp = os.path.join(output_folder_reward_grouped, 'evolution_weights')
+            os.makedirs(output_folder_first_weight_grp, exist_ok=True)
+            analyze_kernel_amplitude_differences_2(
+                dfs=dfs_grp,
+                model_labels=model_labels_grp,
+                output_folder=output_folder_first_weight_grp,
+                whisker_kernels=whisker_kernels_grp,
+                area_groups=area_groups_flat,
+                area_colors=area_colors,
+                n_cols=3
+            )
+
+            output_folder_consistency_grp = os.path.join(output_folder_reward_grouped, 'kernel_consistency')
+            os.makedirs(output_folder_consistency_grp, exist_ok=True)
+            analyze_kernel_consistency(
+                dfs=dfs_grp,
+                model_labels=model_labels_grp,
+                output_folder=output_folder_consistency_grp,
+                whisker_kernels=whisker_kernels_grp,
+                area_groups=area_groups_flat,
+                area_colors=area_colors
+            )
+
+            output_folder_paired_grp = os.path.join(output_folder_reward_grouped, 'paired_kernel_comparison')
+            os.makedirs(output_folder_paired_grp, exist_ok=True)
+            plot_paired_kernel_comparison_per_area(
+                dfs=dfs_grp,
+                model_labels=model_labels_grp,
+                output_folder=output_folder_paired_grp,
+                area_groups=area_groups_flat,
+                area_colors=area_colors,
+                n_cols=3,
+                alpha=0.05
+            )
+
+            if '2k' in dfs_grp and '2k_optimal' in dfs_grp:
+                output_folder_optimal_grp = os.path.join(output_folder_reward_grouped, 'full_vs_optimal_split')
+                os.makedirs(output_folder_optimal_grp, exist_ok=True)
+                plot_kernels_full_vs_optimal_split_per_area(
+                    df_full=dfs_grp['2k'],
+                    df_optimal=dfs_grp['2k_optimal'],
+                    output_folder=output_folder_optimal_grp,
+                    area_groups=area_groups_flat,
+                    area_colors=area_colors,
+                    n_cols=3,
+                    alpha=0.05
+                )
+
+                output_folder_split_grp = os.path.join(output_folder_reward_grouped, 'split_idx_distribution')
+                os.makedirs(output_folder_split_grp, exist_ok=True)
+                plot_split_idx_distribution(
+                    df_optimal=dfs_grp['2k_optimal'],
+                    output_folder=output_folder_split_grp,
+                    area_groups=area_groups_flat,
+                    area_colors=area_colors,
+                    n_cols=3
+                )
+
+            merged_df_reward_ungrouped = merged_df[merged_df['reward_group'] == reward_group]
+            if 'lrt_significant' in merged_df_reward_ungrouped.columns:
+                for encoding_model, encoding_label in [
+                    ('whisker_encoding', 'wsk'),
+                    ('auditory_encoding', 'aud'),
+                ]:
+                    sig_ids = merged_df_reward_ungrouped[
+                        (merged_df_reward_ungrouped['model_name'] == encoding_model) &
+                        (merged_df_reward_ungrouped['lrt_significant'] == True)
+                    ][['mouse_id', 'neuron_id']].drop_duplicates()
+                    if sig_ids.empty:
+                        print(f"[compare_kernels grouped] No {encoding_model} neurons found for reward_group {reward_group}, skipping.")
+                        continue
+                    merged_df_grouped_encoding = merged_df_reward_grouped.merge(sig_ids, on=['mouse_id', 'neuron_id'])
+                    dfs_enc_grp, model_labels_enc_grp = _discover_models(merged_df_grouped_encoding)
+                    if not dfs_enc_grp:
+                        print(f"[compare_kernels grouped] No models after filtering for {encoding_label}, reward_group {reward_group}, skipping.")
+                        continue
+                    all_kernels_enc_grp, whisker_kernels_enc_grp = _discover_kernels(dfs_enc_grp)
+
+                    output_folder_enc_grp = os.path.join(output_folder_reward_grouped, encoding_label)
+                    os.makedirs(output_folder_enc_grp, exist_ok=True)
+
+                    output_folder_enc_amplitude_grp = os.path.join(output_folder_enc_grp, 'kernel_amplitude_evolution')
+                    os.makedirs(output_folder_enc_amplitude_grp, exist_ok=True)
+                    compare_kernel_amplitude_evolution(
+                        dfs=dfs_enc_grp,
+                        model_labels=model_labels_enc_grp,
+                        output_folder=output_folder_enc_amplitude_grp,
+                        whisker_kernels=whisker_kernels_enc_grp,
+                        area_groups=area_groups_flat,
+                        area_colors=area_colors,
+                    )
+
+                    output_folder_enc_consistency_grp = os.path.join(output_folder_enc_grp, 'kernel_consistency')
+                    os.makedirs(output_folder_enc_consistency_grp, exist_ok=True)
+                    analyze_kernel_consistency(
+                        dfs=dfs_enc_grp,
+                        model_labels=model_labels_enc_grp,
+                        output_folder=output_folder_enc_consistency_grp,
+                        whisker_kernels=whisker_kernels_enc_grp,
+                        area_groups=area_groups_flat,
+                        area_colors=area_colors,
+                    )
+
+    if 'average_activity_predictions' in plots:
+        output_folder_pred = os.path.join(output_path, 'average_activity_predictions')
+        os.makedirs(output_folder_pred, exist_ok=True)
+
+        pred_dfs = []
+        # output_path was reassigned to {base}/unit_glm/{git_version}; go up two levels
+        base_output_path = os.path.dirname(os.path.dirname(os.path.dirname(output_path)))
+        for mouse in subject_ids:
+            mouse_results_path = os.path.join(
+                base_output_path, mouse, 'whisker_0', 'unit_glm', git_version, 'test'
+            )
+            pred_fpath = os.path.join(mouse_results_path,
+                                      f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet")
+            if not os.path.exists(pred_fpath):
+                print(f"[WARNING] Predictions summary not found: {pred_fpath}")
+                continue
+            pred_df = pd.read_parquet(pred_fpath)
+            pred_dfs.append(pred_df)
+
+        if pred_dfs:
+            merged_pred_df = pd.concat(pred_dfs, ignore_index=True)
+
+            # Attach reward_group from the main merged_df if not already in the file
+            if 'reward_group' not in merged_pred_df.columns:
+                mouse_reward = merged_df[['mouse_id', 'reward_group']].drop_duplicates()
+                merged_pred_df = merged_pred_df.merge(mouse_reward, on='mouse_id', how='left')
+
+            missing = [c for c in ('trial_types', 'lick_flags') if c not in merged_pred_df.columns]
+            if missing:
+                print(f"[WARNING] Columns {missing} missing from predictions_summary. "
+                      "Re-run mouse_glm_results with 'create_summary' to regenerate the files.")
+            else:
+                def _run_pred_plots(df_pred_subset, folder):
+                    os.makedirs(folder, exist_ok=True)
+                    plot_psth_predictions_per_trialtype_per_area(
+                        df_pred=df_pred_subset,
+                        area_groups=area_groups,
+                        area_colors=area_colors,
+                        output_folder=folder,
+                    )
+                    if 'trial_ids' in df_pred_subset.columns:
+                        plot_psth_whisker_session_halves_per_area(
+                            df_pred=df_pred_subset,
+                            area_groups=area_groups,
+                            area_colors=area_colors,
+                            output_folder=folder,
+                        )
+
+                # ── All neurons ───────────────────────────────────────────────
+                _run_pred_plots(merged_pred_df, output_folder_pred)
+
+                # ── Per LRT-significant group ─────────────────────────────────
+                # Build a lookup: (mouse_id, neuron_id, model_name) → lrt_significant
+                lrt_cols = ['mouse_id', 'neuron_id', 'model_name', 'lrt_significant']
+                if all(c in merged_df.columns for c in lrt_cols):
+                    lrt_lookup = (
+                        merged_df[merged_df['model_name'] != 'full'][lrt_cols]
+                        .dropna(subset=['lrt_significant'])
+                        .groupby(['mouse_id', 'neuron_id', 'model_name'])['lrt_significant']
+                        .first()
+                        .reset_index()
+                    )
+
+                    for model_name in sorted(lrt_lookup['model_name'].unique()):
+                        model_lrt = lrt_lookup[lrt_lookup['model_name'] == model_name]
+                        model_folder = os.path.join(
+                            output_folder_pred, 'lrt_groups',
+                            model_name.replace(' ', '_'))
+
+                        sig_ids = model_lrt.loc[
+                            model_lrt['lrt_significant'] == True,
+                            ['mouse_id', 'neuron_id']]
+                        not_sig_ids = model_lrt.loc[
+                            model_lrt['lrt_significant'] == False,
+                            ['mouse_id', 'neuron_id']]
+
+                        for label, id_df in [('lrt_significant', sig_ids),
+                                             ('lrt_not_significant', not_sig_ids)]:
+                            if id_df.empty:
+                                continue
+                            subset = merged_pred_df.merge(
+                                id_df, on=['mouse_id', 'neuron_id'], how='inner')
+                            if subset.empty:
+                                continue
+                            folder = os.path.join(model_folder, label)
+                            print(f"[average_activity_predictions] {model_name} / {label}: "
+                                  f"{len(subset)} neurons")
+                            _run_pred_plots(subset, folder)
+                else:
+                    print("[WARNING] 'lrt_significant' not found in merged_df – "
+                          "skipping per-LRT-group prediction plots.")
+
+                # ── Per kernel-pair consistency group ─────────────────────────
+                cons_cols = ['mouse_id', 'neuron_id', 'kernel_pair',
+                             'is_consistent', 'consistency_score']
+                if all(c in merged_df.columns for c in cons_cols):
+                    df_full_cons = (
+                        merged_df[merged_df['model_name'] == 'full'][cons_cols]
+                        .dropna(subset=['kernel_pair'])
+                        .groupby(['mouse_id', 'neuron_id', 'kernel_pair'])
+                        .first()
+                        .reset_index()
+                    )
+
+                    for pair_name in sorted(df_full_cons['kernel_pair'].dropna().unique()):
+                        pair_df = df_full_cons[df_full_cons['kernel_pair'] == pair_name]
+                        pair_folder = os.path.join(
+                            output_folder_pred, 'consistency_groups',
+                            pair_name.replace(' ', '_'))
+
+                        is_cons = pair_df['is_consistent'].fillna(False).astype(bool)
+                        score   = pair_df['consistency_score'].fillna(0)
+
+                        up_ids   = pair_df.loc[is_cons & (score > 0), ['mouse_id', 'neuron_id']]
+                        down_ids = pair_df.loc[is_cons & (score < 0), ['mouse_id', 'neuron_id']]
+                        non_ids  = pair_df.loc[~is_cons,               ['mouse_id', 'neuron_id']]
+
+                        for label, id_df in [('consistent_up',   up_ids),
+                                             ('consistent_down', down_ids),
+                                             ('non_consistent',  non_ids)]:
+                            if id_df.empty:
+                                continue
+                            subset = merged_pred_df.merge(
+                                id_df, on=['mouse_id', 'neuron_id'], how='inner')
+                            if subset.empty:
+                                continue
+                            folder = os.path.join(pair_folder, label)
+                            print(f"[average_activity_predictions] {pair_name} / {label}: "
+                                  f"{len(subset)} neurons")
+                            _run_pred_plots(subset, folder)
+                else:
+                    print("[WARNING] Consistency columns not found in merged_df – "
+                          "skipping per-consistency-group prediction plots.")
+        else:
+            print("[WARNING] No predictions summary files found for any mouse.")
+
+    if 'activity_correlation_matrices' in plots:
+        output_folder_corr = os.path.join(output_path, 'activity_correlation_matrices')
+        os.makedirs(output_folder_corr, exist_ok=True)
+
+        pred_dfs = []
+        base_output_path = os.path.dirname(os.path.dirname(output_path))
+        for mouse in subject_ids:
+            mouse_results_path = os.path.join(
+                base_output_path, mouse, 'whisker_0', 'unit_glm', git_version)
+            pred_fpath = os.path.join(mouse_results_path,
+                                      f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet")
+            if not os.path.exists(pred_fpath):
+                print(f"[WARNING] Predictions summary not found: {pred_fpath}")
+                continue
+            pred_dfs.append(pd.read_parquet(pred_fpath))
+
+        if pred_dfs:
+            merged_pred_df = pd.concat(pred_dfs, ignore_index=True)
+            if 'reward_group' not in merged_pred_df.columns:
+                mouse_reward = merged_df[['mouse_id', 'reward_group']].drop_duplicates()
+                merged_pred_df = merged_pred_df.merge(mouse_reward, on='mouse_id', how='left')
+
+            plot_activity_trial_correlation_matrices(
+                merged_pred_df=merged_pred_df,
+                merged_df=merged_df,
+                output_folder=output_folder_corr,
+                area_groups=area_groups,
+                area_colors=area_colors,
+            )
+        else:
+            print("[WARNING] No predictions summary files found for any mouse.")
 
 
 def over_mouse_compare_git_results_new(subject_ids, plots,info_path, output_path, git_versions, day_to_analyze = 0):
@@ -2352,13 +2223,11 @@ def compare_full_vs_reduced_models(df_models, output_folder):
 
         # Merge neuron-by-neuron
         df_compare = pd.merge(
-            df_full[['mouse_id','neuron_id','test_corr']].rename(
-                columns={'test_corr': 'test_corr_full'
-                        }
+            df_full[['mouse_id','neuron_id','test_corr','reward_group']].rename(
+                columns={'test_corr': 'test_corr_full'}
             ),
             df_red[['mouse_id','neuron_id','test_corr']].rename(
-                columns={'test_corr': f'test_corr_{red_model}'
-                }
+                columns={'test_corr': f'test_corr_{red_model}'}
             ),
             on=['mouse_id','neuron_id']
         )
@@ -2401,6 +2270,17 @@ def compare_full_vs_reduced_models(df_models, output_folder):
         ax.legend()
         ax.grid(linestyle="--", alpha=0.3)
 
+        # Zoom inset around the main data cluster
+        axins = ax.inset_axes([0.48, 0.05, 0.50, 0.50])
+        axins.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none')
+        _zoom = [0, min(0.20, float(np.percentile(np.concatenate([x, y]), 75)))]
+        axins.plot(_zoom, _zoom, 'r--', linewidth=0.8)
+        axins.set_xlim(_zoom)
+        axins.set_ylim(_zoom)
+        axins.tick_params(labelsize=7)
+        axins.grid(linestyle='--', alpha=0.3)
+        ax.indicate_inset_zoom(axins, edgecolor='gray', linewidth=0.8)
+
         plt.tight_layout()
         putils.save_figure_with_options(
             fig,
@@ -2409,6 +2289,86 @@ def compare_full_vs_reduced_models(df_models, output_folder):
             output_dir=output_folder,
             dark_background=True
         )
+
+        # ======================
+        #  Delta distribution
+        # ======================
+        from scipy.stats import wilcoxon as _wilcoxon
+        delta = df_compare["delta_corr"].dropna().values
+        delta = delta[np.isfinite(delta)]
+        if len(delta) >= 10:
+            fig_d, ax_d = plt.subplots(figsize=(7, 5))
+
+            _RCOLORS = {1: 'forestgreen', 0: 'crimson'}
+            _RLABELS = {1: 'R+', 0: 'R−'}
+            bins = np.linspace(delta.min(), delta.max(), 61)
+            _annot_lines = []
+            for rg in [1, 0]:
+                mask_rg = df_compare['reward_group'].values[np.isfinite(df_compare['delta_corr'].values)] == rg
+                d_rg = delta[mask_rg]
+                if len(d_rg) < 5:
+                    continue
+                ax_d.hist(d_rg, bins=bins, histtype='step',
+                          edgecolor=_RCOLORS[rg], linewidth=2.2,
+                          label=f'{_RLABELS[rg]} (n={len(d_rg)})')
+                _, p_rg = _wilcoxon(d_rg)
+                pct_rg = 100 * np.mean(d_rg > 0)
+                p_str = f'p = {p_rg:.2e}'
+                _annot_lines.append(f'{_RLABELS[rg]}: {p_str},  {pct_rg:.0f}% improved')
+
+            ax_d.axvline(0, color='black', linewidth=2, linestyle='--')
+            ax_d.set_xlabel('Δ test correlation  (full − reduced)', fontsize=16)
+            ax_d.set_ylabel('Neuron count', fontsize=16)
+            ax_d.set_title(f'Full vs {red_model}', fontsize=17, fontweight='bold')
+            ax_d.tick_params(axis='both', labelsize=14)
+            ax_d.legend(fontsize=13, frameon=False)
+            ax_d.text(0.97, 0.97, '\n'.join(_annot_lines),
+                      transform=ax_d.transAxes, fontsize=12,
+                      va='top', ha='right',
+                      bbox=dict(boxstyle='round', facecolor='white', edgecolor='black', alpha=0.9))
+            ax_d.spines['top'].set_visible(False)
+            ax_d.spines['right'].set_visible(False)
+            ax_d.spines['left'].set_linewidth(1.5)
+            ax_d.spines['bottom'].set_linewidth(1.5)
+            plt.tight_layout()
+            putils.save_figure_with_options(
+                fig_d,
+                file_formats=["png", "pdf"],
+                filename=f"delta_test_corr_full_vs_{red_model}",
+                output_dir=output_folder,
+            )
+            plt.close(fig_d)
+
+            # CDF of delta
+            fig_c, ax_c = plt.subplots(figsize=(7, 5))
+            for rg in [1, 0]:
+                mask_rg = df_compare['reward_group'].values[np.isfinite(df_compare['delta_corr'].values)] == rg
+                d_rg = delta[mask_rg]
+                if len(d_rg) < 5:
+                    continue
+                sorted_d = np.sort(d_rg)
+                cdf = np.arange(1, len(sorted_d) + 1) / len(sorted_d)
+                ax_c.plot(sorted_d, cdf, color=_RCOLORS[rg], linewidth=2.2,
+                          label=f'{_RLABELS[rg]} (n={len(d_rg)})')
+            ax_c.axvline(0, color='black', linewidth=2, linestyle='--')
+            ax_c.axhline(0.5, color='gray', linewidth=1, linestyle=':', alpha=0.6)
+            ax_c.set_xlabel('Δ test correlation  (full − reduced)', fontsize=16)
+            ax_c.set_ylabel('Cumulative fraction', fontsize=16)
+            ax_c.set_title(f'Full vs {red_model}', fontsize=17, fontweight='bold')
+            ax_c.tick_params(axis='both', labelsize=14)
+            ax_c.legend(fontsize=13, frameon=False)
+            ax_c.spines['top'].set_visible(False)
+            ax_c.spines['right'].set_visible(False)
+            ax_c.spines['left'].set_linewidth(1.5)
+            ax_c.spines['bottom'].set_linewidth(1.5)
+            plt.tight_layout()
+            putils.save_figure_with_options(
+                fig_c,
+                file_formats=["png", "pdf"],
+                filename=f"delta_test_corr_cdf_full_vs_{red_model}",
+                output_dir=output_folder,
+            )
+            plt.close(fig_c)
 
  # Merge neuron-by-neuron
         df_compare = pd.merge(
@@ -2443,24 +2403,33 @@ def compare_full_vs_reduced_models(df_models, output_folder):
         # ======================
         #  Density scatter plot
         # ======================
-        fig = plt.figure(figsize=(6,6))
-        sc = plt.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none')
+        fig, ax2 = plt.subplots(figsize=(6, 6))
+        sc = ax2.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none')
 
         # Add colorbar
-        cbar = plt.colorbar(sc)
+        cbar = fig.colorbar(sc, ax=ax2)
         cbar.set_label("Density", rotation=90)
-        lims = [
-            min(x.min(), y.min()),
-            max(x.max(), y.max())
-        ]
-        plt.plot(lims, lims, 'r--', label="unity line")
-        plt.xlim(-0.2,0.5)
-        plt.ylim(-0.2,0.5)
-        plt.xlabel("Full model: explained variance")
-        plt.ylabel(f"{red_model}: explained variance")
-        plt.title(f"Density scatter: FULL vs {red_model}")
-        plt.legend()
-        plt.grid(linestyle="--", alpha=0.3)
+        lims = [min(x.min(), y.min()), max(x.max(), y.max())]
+        ax2.plot(lims, lims, 'r--', label="unity line")
+        ax2.set_xlim(-0.2, 0.5)
+        ax2.set_ylim(-0.2, 0.5)
+        ax2.set_xlabel("Full model: explained variance")
+        ax2.set_ylabel(f"{red_model}: explained variance")
+        ax2.set_title(f"Density scatter: FULL vs {red_model}")
+        ax2.legend()
+        ax2.grid(linestyle="--", alpha=0.3)
+
+        # Zoom inset
+        axins2 = ax2.inset_axes([0.55, 0.05, 0.42, 0.42])
+        axins2.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none')
+        _zoom2 = [0, min(0.35, float(np.percentile(np.concatenate([x, y]), 95)))]
+        axins2.plot(_zoom2, _zoom2, 'r--', linewidth=0.8)
+        axins2.set_xlim(_zoom2)
+        axins2.set_ylim(_zoom2)
+        axins2.tick_params(labelsize=7)
+        axins2.grid(linestyle='--', alpha=0.3)
+        ax2.indicate_inset_zoom(axins2, edgecolor='gray', linewidth=0.8)
+
         plt.tight_layout()
         putils.save_figure_with_options(
         fig,
@@ -2530,7 +2499,7 @@ def plot_box_full_vs_reduced(df, output_folder, alpha=0.05):
     # --- Save ---
     putils.save_figure_with_options(
         fig,
-        file_formats=["png"],
+        file_formats=["png", 'pdf'],
         filename="Box_full_vs_reduced_significance",
         output_dir=output_folder,
         dark_background=True
@@ -2567,7 +2536,7 @@ def plot_kde_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
 
     putils.save_figure_with_options(
         fig,
-        file_formats=['png'],
+        file_formats=['png', 'pdf'],
         filename='Kde_per_trial_type_full_model',
         output_dir=output_folder,
         dark_background= True
@@ -2607,7 +2576,7 @@ def plot_box_per_trial_type(merged, trial_table, output_folder, time_stim=0.0):
         median.set_color('black')
     putils.save_figure_with_options(
         fig,
-        file_formats=["png"],
+        file_formats=["png", 'pdf'],
         filename="Box_per_trial_type_full_model",
         output_dir=output_folder,
         dark_background=True
@@ -3021,30 +2990,40 @@ def plot_by_session_quartiles(
     reduced_model="whisker_encoding", bin_size=0.1, zscore=False
 ):
     """
-    Compare model fits across session quartiles (early → late trials).
-    Rows: quartiles (1st–4th)
+    Compare model fits across session halves (early vs. late trials).
+    Rows: halves (1st, 2nd)
     Columns: trial types (e.g., whisker, no-stim, etc.)
     """
 
     import numpy as np
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
     from scipy.stats import zscore as zscore_f
     import ast, os
 
     os.makedirs(output_folder, exist_ok=True)
 
     # ------------------------------
-    # Assign quartiles
+    # Assign session halves
     # ------------------------------
     df = trials_df.copy().reset_index(drop=True)
     n_trials = len(df)
-    df["quartile"] = pd.qcut(np.arange(n_trials), 4, labels=["Q1", "Q2", "Q3", "Q4"])
+    df["quartile"] = pd.qcut(np.arange(n_trials), 2, labels=["H1", "H2"])
 
-    quartiles = ["Q1", "Q2", "Q3", "Q4"]
+    halves = ["H1", "H2"]
+    half_labels = {"H1": "First half", "H2": "Second half"}
     trial_types = sorted(df["behav_type"].unique())
 
+    # Get area acronym for the primary neuron
+    neuron_row = df_full[df_full["neuron_id"] == neuron_ids[0]]
+    area_acronym = (
+        neuron_row["area_acronym_custom"].iloc[0]
+        if len(neuron_row) > 0 and "area_acronym_custom" in neuron_row.columns
+        else ""
+    )
+
     # ------------------------------
-    # Compute per-trial-type & quartile correlations
+    # Compute per-trial-type & half correlations
     # ------------------------------
     trialtype_q_corrs_full = compute_trialtype_quartile_correlations(
         df_full[df_full["neuron_id"].isin(neuron_ids)], df
@@ -3053,7 +3032,7 @@ def plot_by_session_quartiles(
         df_reduced[df_reduced["neuron_id"].isin(neuron_ids)], df
     )
 
-    # Aggregate per quartile × trial type
+    # Aggregate per half x trial type
     corr_full = (
         trialtype_q_corrs_full.groupby(["quartile", "trial_type"])["test_corr"]
         .mean().to_dict()
@@ -3064,9 +3043,9 @@ def plot_by_session_quartiles(
     )
 
     # Storage
-    all_y_test = {q: {tt: [] for tt in trial_types} for q in quartiles}
-    all_y_pred_full = {q: {tt: [] for tt in trial_types} for q in quartiles}
-    all_y_pred_reduced = {q: {tt: [] for tt in trial_types} for q in quartiles}
+    all_y_test = {h: {tt: [] for tt in trial_types} for h in halves}
+    all_y_pred_full = {h: {tt: [] for tt in trial_types} for h in halves}
+    all_y_pred_reduced = {h: {tt: [] for tt in trial_types} for h in halves}
 
     # ------------------------------
     # Gather model data
@@ -3089,10 +3068,10 @@ def plot_by_session_quartiles(
             y_test, y_pred = y_test[order], y_pred[order]
             trials_test_df = df.iloc[test_trial_ids[order]]
 
-            for q in quartiles:
+            for h in halves:
                 for tt in trial_types:
                     idx = np.where(
-                        (trials_test_df["quartile"] == q) &
+                        (trials_test_df["quartile"] == h) &
                         (trials_test_df["behav_type"] == tt)
                     )[0]
                     if len(idx) == 0:
@@ -3102,8 +3081,8 @@ def plot_by_session_quartiles(
                     if zscore:
                         test_mean = zscore_f(test_mean)
                         pred_mean = zscore_f(pred_mean)
-                    all_y_test[q][tt].append(test_mean)
-                    all_y_pred_full[q][tt].append(pred_mean)
+                    all_y_test[h][tt].append(test_mean)
+                    all_y_pred_full[h][tt].append(pred_mean)
 
         for res in reduced_rows.itertuples(index=False):
             y_pred = res.y_pred_array
@@ -3116,10 +3095,10 @@ def plot_by_session_quartiles(
             y_pred = y_pred[order]
             trials_test_df = df.iloc[test_trial_ids[order]]
 
-            for q in quartiles:
+            for h in halves:
                 for tt in trial_types:
                     idx = np.where(
-                        (trials_test_df["quartile"] == q) &
+                        (trials_test_df["quartile"] == h) &
                         (trials_test_df["behav_type"] == tt)
                     )[0]
                     if len(idx) == 0:
@@ -3127,57 +3106,125 @@ def plot_by_session_quartiles(
                     pred_mean = y_pred[idx].mean(axis=0)
                     if zscore:
                         pred_mean = zscore_f(pred_mean)
-                    all_y_pred_reduced[q][tt].append(pred_mean)
+                    all_y_pred_reduced[h][tt].append(pred_mean)
 
     # ------------------------------
-    # Plotting
+    # Publication-quality plotting
     # ------------------------------
     plt.ioff()
-    n_rows, n_cols = len(quartiles), len(trial_types)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.5 * n_rows), sharey=True)
-    time = np.linspace(-1 + bin_size/2, 2 - bin_size/2, n_bins)
-    colors = {"full": "green", "reduced": "red", "data": "black"}
 
-    for r, q in enumerate(quartiles):
+    FONT_SIZE_LABEL    = 9
+    FONT_SIZE_TICK     = 8
+    FONT_SIZE_TITLE    = 9
+    FONT_SIZE_SUPTITLE = 10
+    LW         = 1.2
+    ALPHA_FILL = 0.25
+
+    colors = {
+        "data":    "#2c2c2c",
+        "full":    "#2166ac",
+        "reduced": "#d6604d",
+    }
+    line_labels = {
+        "data":    "Data",
+        "full":    "Full model",
+        "reduced": reduced_model.replace("_", " ").title(),
+    }
+
+    n_rows, n_cols = len(halves), len(trial_types)
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(2.8 * n_cols, 2.4 * n_rows),
+        sharey=True, sharex=True,
+        squeeze=False,
+    )
+    time = np.linspace(-1 + bin_size / 2, 2 - bin_size / 2, n_bins)
+
+    for r, h in enumerate(halves):
         for c, tt in enumerate(trial_types):
-            ax = axes[r, c] if n_rows > 1 else axes[c]
-            corr_f = corr_full.get((q, tt), np.nan)
-            corr_r = corr_reduced.get((q, tt), np.nan)
-            ax.set_title(f"{tt}\nfull={corr_f:.2f}, red={corr_r:.2f}")
-            y_data = all_y_test[q][tt]
-            y_full = all_y_pred_full[q][tt]
-            y_red = all_y_pred_reduced[q][tt]
+            ax = axes[r, c]
+            corr_f = corr_full.get((h, tt), np.nan)
+            corr_r = corr_reduced.get((h, tt), np.nan)
+            y_data = all_y_test[h][tt]
+            y_full = all_y_pred_full[h][tt]
+            y_red  = all_y_pred_reduced[h][tt]
 
             if len(y_data) == 0:
-                ax.text(0.5, 0.5, "No trials", ha="center", va="center")
-                continue
+                ax.text(0.5, 0.5, "No trials", ha="center", va="center",
+                        fontsize=FONT_SIZE_TICK, transform=ax.transAxes)
+            else:
+                y_data = np.stack(y_data)
+                y_full = np.stack(y_full)
+                y_red  = np.stack(y_red)
 
-            y_data = np.stack(y_data)
-            y_full = np.stack(y_full)
-            y_red = np.stack(y_red)
+                def _plot(y, key):
+                    m = y.mean(axis=0)
+                    s = y.std(axis=0, ddof=1) / np.sqrt(y.shape[0])
+                    ax.plot(time, m, color=colors[key], lw=LW, label=line_labels[key])
+                    ax.fill_between(time, m - s, m + s, color=colors[key], alpha=ALPHA_FILL, lw=0)
 
-            def plot_with_error(y, color, label):
-                m = y.mean(axis=0)
-                s = y.std(axis=0, ddof=1) / np.sqrt(y.shape[0])
-                ax.plot(time, m, color=color, label=label)
-                ax.fill_between(time, m - s, m + s, color=color, alpha=0.3)
+                _plot(y_data, "data")
+                _plot(y_full, "full")
+                _plot(y_red,  "reduced")
 
-            plot_with_error(y_data, colors["data"], "data")
-            plot_with_error(y_full, colors["full"], "full")
-            plot_with_error(y_red, colors["reduced"], "reduced")
+            # Reference lines
+            ax.axvline(0, color="#888888", linestyle="--", lw=0.8, zorder=0)
+            ax.axhline(0, color="#cccccc", linestyle="-",  lw=0.5, zorder=0)
 
-            ax.axvline(0, color="gray", linestyle="--")
+            # Column header — top row only
+            if r == 0:
+                ax.set_title(
+                    tt.replace("_", " "),
+                    fontsize=FONT_SIZE_TITLE, fontweight="bold", pad=4,
+                )
+
+            # Correlation annotation
+            if not (np.isnan(corr_f) and np.isnan(corr_r)):
+                ax.text(
+                    0.03, 0.97,
+                    f"r\u2099={corr_f:.2f}  r\u1d63={corr_r:.2f}",
+                    transform=ax.transAxes, fontsize=6.5,
+                    va="top", ha="left", color="#444444",
+                )
+
+            # Row label — left column only
             if c == 0:
-                ax.set_ylabel(f"{q}\n(25% of session)")
-            if r == n_rows - 1:
-                ax.set_xlabel("Time (s)")
+                y_unit = "z-score" if zscore else "spikes / bin"
+                ax.set_ylabel(f"{half_labels[h]}\n{y_unit}", fontsize=FONT_SIZE_LABEL)
 
+            # x-axis label — bottom row only
+            if r == n_rows - 1:
+                ax.set_xlabel("Time from stimulus (s)", fontsize=FONT_SIZE_LABEL)
+
+            # Clean spines
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            ax.tick_params(labelsize=FONT_SIZE_TICK, length=3)
+            ax.xaxis.set_major_locator(mticker.MultipleLocator(1))
+            ax.xaxis.set_minor_locator(mticker.MultipleLocator(0.5))
+
+    # Shared legend at the bottom
+    handles, labels_leg = axes[0, 0].get_legend_handles_labels()
+    if handles:
+        fig.legend(
+            handles, labels_leg,
+            loc="lower center",
+            ncol=3,
+            fontsize=FONT_SIZE_TICK,
+            frameon=False,
+            bbox_to_anchor=(0.5, -0.02),
+        )
+
+    area_str = f" [{area_acronym}]" if area_acronym else ""
     fig.suptitle(
-        f"Reduced model {reduced_model}, neuron {neuron_ids[0]}\n"
-        f"full fit={df_full['test_corr'].mean():.3f}, reduced fit={df_reduced['test_corr'].mean():.3f}"
+        f"Neuron {neuron_ids[0]}{area_str}  \u00b7  {reduced_model.replace('_', ' ')} model\n"
+        f"Full r={df_full['test_corr'].mean():.3f}  |  Reduced r={df_reduced['test_corr'].mean():.3f}",
+        fontsize=FONT_SIZE_SUPTITLE,
+        y=1.01,
     )
-    plt.tight_layout()
-    plt.savefig(f"{output_folder}/{name}_by_session_quartiles.png", dpi=300)
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    plt.savefig(f"{output_folder}/{name}_by_session_halves.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -3342,7 +3389,7 @@ def plot_by_recent_whisker_history(
 def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors, output_folder, threshold=None):
     """
     Plot mean ± SEM test correlations per area for full and one reduced model,
-    including significance stars (paired t-test) between models per area.
+    including significance stars (paired t-test across neurons) between models per area.
 
     :param df: pd.DataFrame with columns ['model_type','model_name','test_corr','area_acronym_custom','mouse_id','neuron_id']
     :param selected_reduced: str, reduced model name
@@ -3351,6 +3398,8 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
     :param output_folder: str path
     :param threshold: float or None, minimum test_corr_mean for neurons to be included
     """
+    from scipy.stats import ttest_rel
+
     key = 'test_corr'
 
     # Filter data
@@ -3366,9 +3415,8 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
                 ordered_areas.append(area)
                 area_to_color[area] = area_colors[group_name]
 
-
     # Initialize lists
-    means_full, sems_full, means_reduced, sems_reduced, bar_colors = [], [], [], [], []
+    means_full, sems_full, means_reduced, sems_reduced, bar_colors, pvals = [], [], [], [], [], []
 
     # Plot preparation
     fig, ax = plt.subplots(figsize=(max(12, len(ordered_areas) * 0.5), 6), dpi=300)
@@ -3390,13 +3438,12 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
         else:
             neurons_to_keep = fold_means_full
 
-        # Keep only neurons passing threshold for full & reduced
-        full_values = fold_means_full.merge(
+        # Keep only neurons passing threshold
+        fold_means_full = fold_means_full.merge(
             neurons_to_keep[['mouse_id', 'neuron_id']],
             on=['mouse_id', 'neuron_id'],
             how='inner'
-        )[key].to_numpy()
-        full_values = full_values[~np.isnan(full_values)]  # REMOVE NaNs
+        )
 
         # --- Reduced model ---
         reduced_grp = df_reduced[df_reduced['area_acronym_custom'] == area]
@@ -3404,13 +3451,22 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
             reduced_grp.groupby(['mouse_id', 'neuron_id'], as_index=False)[key]
             .mean()
         )
-
-        reduced_values = fold_means_reduced.merge(
+        fold_means_reduced = fold_means_reduced.merge(
             neurons_to_keep[['mouse_id', 'neuron_id']],
             on=['mouse_id', 'neuron_id'],
             how='inner'
-        )[key].to_numpy()
-        reduced_values = reduced_values[~np.isnan(reduced_values)]  # REMOVE NaNs
+        )
+
+        # --- Paired merge at neuron level ---
+        paired = pd.merge(
+            fold_means_full[['mouse_id', 'neuron_id', key]].rename(columns={key: 'full'}),
+            fold_means_reduced[['mouse_id', 'neuron_id', key]].rename(columns={key: 'reduced'}),
+            on=['mouse_id', 'neuron_id'],
+            how='inner'
+        ).dropna(subset=['full', 'reduced'])
+
+        full_values = paired['full'].values
+        reduced_values = paired['reduced'].values
 
         # Compute means & SEMs
         means_full.append(full_values.mean() if len(full_values) > 0 else np.nan)
@@ -3421,27 +3477,38 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
 
         bar_colors.append(area_to_color.get(area, 'gray'))
 
-        # # --- Significance test and star annotation ---
-        # if len(full_values) > 1 and len(reduced_values) > 1:
-        #     stat, pval = ttest_rel(full_values, reduced_values)
-        # else:
-        #     pval = np.nan
-
-
-        # if pval < 0.05:
-        #     star = '*'
-        # else:
-        #     star = ''
-
-        # # Annotate above bars
-        # if star:
-        #     y = max(means_full[-1] + sems_full[-1], means_reduced[-1] + sems_reduced[-1])
-        #     ax.text(x[i], y + 0.01, star, ha='center', va='bottom', fontsize=12, color='red')
+        # --- Paired t-test across neurons ---
+        if len(full_values) >= 5:
+            try:
+                _, pval = ttest_rel(full_values, reduced_values)
+            except Exception:
+                pval = np.nan
+        else:
+            pval = np.nan
+        pvals.append(pval)
 
     # --- Plot bars ---
     ax.bar(x - width / 2, means_full, width, yerr=sems_full, label='Full', color='black', capsize=4)
     ax.bar(x + width / 2, means_reduced, width, yerr=sems_reduced, label=f'Reduced: {selected_reduced}',
            color=bar_colors, capsize=4)
+
+    # --- Significance annotations ---
+    for i, pval in enumerate(pvals):
+        if np.isnan(pval):
+            continue
+        if pval < 0.001:
+            star = '***'
+        elif pval < 0.01:
+            star = '**'
+        elif pval < 0.05:
+            star = '*'
+        else:
+            continue
+        y_top = max(
+            (means_full[i] or 0) + (sems_full[i] or 0),
+            (means_reduced[i] or 0) + (sems_reduced[i] or 0)
+        )
+        ax.text(x[i], y_top + 0.005, star, ha='center', va='bottom', fontsize=11, color='red')
 
     ax.set_xticks(x)
     ax.set_xticklabels(ordered_areas, rotation=45, ha='right')
@@ -3456,9 +3523,80 @@ def plot_full_vs_reduced_per_area(df, selected_reduced, area_groups, area_colors
     if threshold is not None:
         name += f' threshold {threshold}'
     name += f' {key}'
-    putils.save_figure_with_options(fig, file_formats=['png'], filename=name, output_dir=output_folder)
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=name, output_dir=output_folder)
     plt.close(fig)
     return
+
+
+def plot_full_vs_reduced_barplot(df, selected_reduced, output_folder):
+    """Bar plot: full model (left) vs reduced model (right) test_corr pooled across all neurons.
+    Wilcoxon signed-rank paired test across neurons."""
+    from scipy.stats import wilcoxon
+
+    key = 'test_corr'
+
+    df_full = df[df['model_name'] == 'full']
+    df_reduced = df[df['model_name'] == selected_reduced]
+
+    full_means = (
+        df_full.groupby(['mouse_id', 'neuron_id'])[key].mean()
+        .reset_index().rename(columns={key: 'full'})
+    )
+    reduced_means = (
+        df_reduced.groupby(['mouse_id', 'neuron_id'])[key].mean()
+        .reset_index().rename(columns={key: 'reduced'})
+    )
+
+    paired = pd.merge(full_means, reduced_means, on=['mouse_id', 'neuron_id']).dropna()
+    if paired.empty:
+        return
+
+    full_vals = paired['full'].values
+    reduced_vals = paired['reduced'].values
+    n = len(full_vals)
+
+    means = [full_vals.mean(), reduced_vals.mean()]
+    sems = [full_vals.std(ddof=1) / np.sqrt(n), reduced_vals.std(ddof=1) / np.sqrt(n)]
+
+    pval = np.nan
+    if n >= 10:
+        try:
+            _, pval = wilcoxon(full_vals, reduced_vals)
+        except Exception:
+            pass
+
+    fig, ax = plt.subplots(figsize=(3, 5), dpi=300)
+    ax.bar([0, 1], means, yerr=sems, color=['black', 'steelblue'], capsize=5, width=0.5)
+    ax.set_xticks([0, 1])
+    ax.set_xticklabels(['Full', selected_reduced], rotation=20, ha='right', fontsize=9)
+    ax.set_ylabel('Test correlation (mean ± SEM)')
+    ax.set_title(f'Full vs {selected_reduced}\nn={n} neurons')
+
+    if not np.isnan(pval):
+        if pval < 0.001:
+            star = '***'
+        elif pval < 0.01:
+            star = '**'
+        elif pval < 0.05:
+            star = '*'
+        else:
+            star = 'ns'
+        y_top = max(m + s for m, s in zip(means, sems))
+        y_line = y_top * 1.05
+        ax.plot([0, 1], [y_line, y_line], 'k-', linewidth=1)
+        ax.text(0.5, y_line * 1.01, star, ha='center', va='bottom', fontsize=12)
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    fig.tight_layout()
+
+    os.makedirs(output_folder, exist_ok=True)
+    safe_name = selected_reduced.replace(' ', '_')
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                    filename=f'barplot_full_vs_{safe_name}',
+                                    output_dir=output_folder)
+    plt.close(fig)
+
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -3529,6 +3667,124 @@ def plot_lrt_significance_per_area_per_model(df, area_groups, area_colors, outpu
         filename = f"LRT_significance_per_area_{reduced_model}"
         putils.save_figure_with_options(fig, file_formats=['png', 'pdf', 'svg'],dark_background=True, filename=filename, output_dir=output_folder)
         plt.close(fig)
+
+
+def plot_lrt_connectivity_correlation(df, metric_col, metric_label, filename_prefix,
+                                      output_folder, log_scale=False, invert_x=False,
+                                      area_collapse=None):
+    """
+    For each reduced model, scatter-plot avg % significant neurons per area (averaged over
+    mice) vs an area-level connectivity / hierarchy metric.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must have 'area_acronym_custom', 'mouse_id', 'model_name', 'lrt_significant'
+        and the column named by metric_col.
+    metric_col : str
+        Column in df with the per-row metric value (same value for all rows of an area).
+    metric_label : str
+        X-axis label.
+    filename_prefix : str
+        Prefix for saved filenames (model name appended).
+    output_folder : str
+        Directory where plots will be saved.
+    log_scale : bool
+        Whether to use a log x-axis (and fit regression in log space).
+    invert_x : bool
+        Whether to invert the x-axis.
+    area_collapse : dict or None
+        Optional mapping {area -> canonical_area} to collapse sub-regions into one point
+        (e.g. {'DLS': 'CP', 'DMS': 'CP', ...}).
+    """
+    from scipy.stats import pearsonr, spearmanr
+
+    if area_collapse is None:
+        area_collapse = {}
+
+    df = df.copy()
+    df['plot_area'] = df['area_acronym_custom'].map(lambda a: area_collapse.get(a, a))
+
+    per_area = (
+        df.groupby(['model_name', 'plot_area'])
+        .agg(mean_prop_sig=('lrt_significant', 'mean'), metric=(metric_col, 'first'))
+        .reset_index()
+        .rename(columns={'plot_area': 'area_acronym_custom'})
+        .dropna(subset=['metric'])
+    )
+
+    for model_name, subdf in per_area.groupby('model_name'):
+        subdf = subdf.copy()
+        subdf['metric'] = pd.to_numeric(subdf['metric'], errors='coerce')
+        subdf['mean_prop_sig'] = pd.to_numeric(subdf['mean_prop_sig'], errors='coerce')
+        subdf = subdf.dropna(subset=['metric', 'mean_prop_sig'])
+
+        x = subdf['metric'].values.astype(float)
+        y = subdf['mean_prop_sig'].values.astype(float)
+        areas = subdf['area_acronym_custom'].values
+
+        if len(x) < 3:
+            continue
+
+        r, p = pearsonr(x, y)
+        rho, p_sp = spearmanr(x, y)
+
+        fig, ax = plt.subplots(figsize=(6, 5), dpi=300)
+        ax.scatter(x, y, color='steelblue', edgecolor='black', linewidth=0.5, s=60, zorder=3)
+
+        for xi, yi, area in zip(x, y, areas):
+            ax.text(xi, yi, area, fontsize=7, ha='left', va='bottom')
+
+        if log_scale:
+            log_x = np.log10(x)
+            m, b = np.polyfit(log_x, y, 1)
+            x_line = np.logspace(np.log10(x.min()), np.log10(x.max()), 100)
+            ax.plot(x_line, m * np.log10(x_line) + b, color='firebrick', linewidth=1.2, zorder=2)
+            ax.set_xscale('log')
+        else:
+            m, b = np.polyfit(x, y, 1)
+            x_line = np.linspace(x.min(), x.max(), 100)
+            ax.plot(x_line, m * x_line + b, color='firebrick', linewidth=1.2, zorder=2)
+
+        if invert_x:
+            ax.invert_xaxis()
+
+        ax.set_xlabel(metric_label)
+        ax.set_ylabel('Avg % significant neurons')
+        ax.set_title(f'{model_name}\nr={r:.2f}, p={p:.3f}  |  ρ={rho:.2f}, p={p_sp:.3f}')
+        ax.grid(linestyle='--', alpha=0.4)
+        plt.tight_layout()
+
+        filename = f"{filename_prefix}_{model_name}"
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf', 'svg'], dark_background=True,
+                                        filename=filename, output_dir=output_folder)
+        plt.close(fig)
+
+
+def plot_lrt_ipsi_correlation(df, output_folder):
+    _collapse = {
+        'DLS': 'CP', 'DMS': 'CP', 'TS': 'CP', 'VS': 'CP',
+        'MO-tjM1': 'MO', 'MO-ALM': 'MO', 'MO-wM1': 'MO', 'MO-wM2': 'MO',
+    }
+    plot_lrt_connectivity_correlation(
+        df, metric_col='avg_ipsi_corr',
+        metric_label='Avg ipsi connectivity (Liu et al., log scale)',
+        filename_prefix='LRT_ipsi_correlation',
+        output_folder=output_folder,
+        log_scale=True, invert_x=True,
+        area_collapse=_collapse,
+    )
+
+
+def plot_lrt_harris_correlation(df, output_folder):
+    plot_lrt_connectivity_correlation(
+        df, metric_col='harris_hierarchy',
+        metric_label='Hierarchy score (Harris et al. 2019)',
+        filename_prefix='LRT_harris_correlation',
+        output_folder=output_folder,
+        log_scale=False, invert_x=False,
+    )
+
 
 def plot_lrt_significance_per_model_per_area(df, area_groups, area_colors, output_folder):
     """
@@ -3712,7 +3968,7 @@ def plot_lrt_significance_heatmap(df, area_groups, area_colors,
 
     # Save figure
     filename = "LRT_significance_heatmap"
-    putils.save_figure_with_options(fig, file_formats=['png'], filename=filename, output_dir=output_folder)
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=filename, output_dir=output_folder)
 
     plt.close(fig)
 
@@ -3764,7 +4020,7 @@ def plot_lrt_significance_overlap_per_area(df, output_folder):
         plt.tight_layout()
 
         filename = f"LRT_overlap_{area}"
-        putils.save_figure_with_options(plt.gcf(), file_formats=['png'], filename=filename, output_dir=output_folder)
+        putils.save_figure_with_options(plt.gcf(), file_formats=['png', 'pdf'], filename=filename, output_dir=output_folder)
         plt.close()
 
     return True
@@ -3809,7 +4065,7 @@ def plot_lrt_significance_overlap(lrt_df, output_folder):
     plt.tight_layout()
 
     name = 'LRT_significance_overlap'
-    putils.save_figure_with_options(plt.gcf(), file_formats=['png'], filename=name, output_dir=output_folder)
+    putils.save_figure_with_options(plt.gcf(), file_formats=['png', 'pdf'], filename=name, output_dir=output_folder)
     plt.close()
     return overlap_df
 
@@ -3908,7 +4164,7 @@ def plot_two_reduced_per_area(df, reduced1, reduced2, area_groups, area_colors, 
     name = f'{reduced1} vs {reduced2} per area'
     if threshold is not None:
         name += f' threshold {threshold}'
-    putils.save_figure_with_options(fig, file_formats=['png'], filename=name, output_dir=output_folder)
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=name, output_dir=output_folder)
     plt.close(fig)
 
 
@@ -4984,7 +5240,7 @@ def plot_model_comparison(
     axes[min(2, len(trial_types)-1)].legend(fontsize=8)
     plt.tight_layout()
     # plt.savefig(os.path.join(output_folder, f"{name}.png"))
-    putils.save_figure_with_options(fig, file_formats=['png','svg', 'pdf'],
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
                                         filename=name,
                                         output_dir=output_folder, dark_background=True)
     plt.close(fig)
@@ -5285,17 +5541,17 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
             ax_k.plot(lags, mean_kernel, color="blue")
             ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
         else:
-            if predictor =='whisker_stim' or predictor == 'auditory_stim':
+            if predictor in ['whisker_stim','auditory_stim', 'whisker_hits_stim_0', 'whisker_hits_stim_1', 'whisker_misses_stim0', 'whisker_misses_stim1', 'auditory_stim0', 'auditory_stim1']:
 
-                lags = [-0.1, 0, 0.1, 0.2, 0.3]
+                lags = [-0.1, -0.05, 0, 0.05, 0.1,0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45]
                 ax_k.plot(lags, mean_kernel, color="blue")
                 ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
             if predictor == 'piezo_reward':
-                lags = [ 0, 0.1, 0.2, 0.3, 0.4,0.5]
+                lags = np.arange(0,1,0.05)
                 ax_k.plot(lags, mean_kernel, color="blue")
                 ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
             if predictor == 'jaw_onset':
-                lags = [-0.5, -0.4, -0.3, -0.2, -0.1]
+                lags = [-0.5,-0.45, -0.4,-0.35, -0.3,-0.25, -0.2,-0.15, -0.1, -0.05]
                 ax_k.plot(lags, mean_kernel, color="blue")
                 ax_k.fill_between(lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color="blue", alpha=0.3)
         ax_k.set_title(f"{predictor} kernel")
@@ -5335,7 +5591,7 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
                            window_bounds_sec[1] - bin_size/2,
                            n_bins)
         # Plot depending on predictor
-        if predictor == "whisker_stim":
+        if predictor in [ "whisker_stim", 'whisker_hits_stim_0', 'whisker_hits_stim_1', 'whisker_misses_stim0', 'whisker_misses_stim1' ]:
             for t, col in zip(["whisker_hit", "whisker_miss"], ["green", "orange"]):
                 if t not in fold_means_test: continue
                 test_stack = np.stack(fold_means_test[t])
@@ -5352,7 +5608,7 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
 
             ax_r.set_title("Whisker hits vs misses")
 
-        elif predictor == "auditory_stim":
+        elif predictor in ["auditory_stim",'auditory_stim0', 'auditory_stim1' ]:
             t = "auditory_hit"
             if t in fold_means_test:
                 test_stack = np.stack(fold_means_test[t])
@@ -5369,7 +5625,7 @@ def plot_neuron_kernels_avg_with_responses(neuron_id, glm_full_df, kernels, tria
 
             ax_r.set_title("Auditory hits")
 
-        elif predictor == "dlc_lick":
+        elif predictor == "jaw_onset":
             t = "catch"
             if t in fold_means_test:
                 test_stack = np.stack(fold_means_test[t])
@@ -5537,7 +5793,7 @@ def plot_average_kernels_by_region(df, output_folder, kernels_to_plot,
         name = f'average_kernel_{kernel}'
         if threshold:
             name += f'_threshold_{threshold}'
-        putils.save_figure_with_options(fig, file_formats=['png'],
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
                                         filename=name,
                                         output_dir=output_folder)
         plt.close(fig)
@@ -5627,29 +5883,18 @@ def plot_average_kernels_by_region_new(df, output_folder, kernels_to_plot,
     for kernel in kernels_to_plot:
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True)
         axes = np.array(axes).reshape(-1)
-        # Auto-detect kernel lags from the first available predictor list
-        kernel_lags = None
+        # Auto-detect kernel lags – search one row per mouse until the kernel is found,
+        # because different sessions may have different predictor sets.
         if lags is None:
-            # Get the first row to extract lag structure
-            first_row = df.iloc[0]
-            predictors = first_row['predictors_full']
-
-            # Debug: print matching predictors
-            import re
-            pattern = re.compile(rf"^{re.escape(kernel)}_t([+-])(\d+\.\d+)s$")
-            matching = [p for p in predictors if pattern.match(p)]
-            print(f"Kernel: {kernel}")
-            print(f"Pattern: {pattern.pattern}")
-            print(f"Matching predictors: {matching[:5] if len(matching) > 5 else matching}")
-
-            kernel_lags = extract_lags_from_predictors(predictors, kernel)
-
+            kernel_lags = None
+            for _, probe_row in df.drop_duplicates(subset=['mouse_id']).iterrows():
+                kernel_lags = extract_lags_from_predictors(probe_row['predictors_full'], kernel)
+                if kernel_lags is not None:
+                    break
             if kernel_lags is None:
-                # Fallback to default lags
-                print(f"Warning: No lags found for kernel {kernel}, using default")
-                kernel_lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
-            else:
-                print(f"Extracted lags: {kernel_lags}")
+                print(f"[plot_average_kernels_by_region_new] Skipping '{kernel}': not present in any session.")
+                plt.close(fig)
+                continue
         else:
             kernel_lags = lags
         for ax, region in zip(axes, ordered_regions):
@@ -5727,7 +5972,7 @@ def plot_average_kernels_by_region_new(df, output_folder, kernels_to_plot,
         name = f'average_kernel_{kernel}'
         if threshold:
             name += f'_threshold_{threshold}'
-        putils.save_figure_with_options(fig, file_formats=['png'],
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
                                         filename=name,
                                         output_dir=output_folder)
         plt.close(fig)
@@ -5897,7 +6142,7 @@ def plot_all_kernels_by_region(df, output_folder, kernels_to_plot,
     name = 'all_kernels_by_region'
     if threshold:
         name += f'_threshold_{threshold}'
-    putils.save_figure_with_options(fig, file_formats=['png'],
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
                                     filename=name,
                                     output_dir=output_folder)
     plt.close(fig)
@@ -6297,8 +6542,7 @@ def process_single_nwb(nwb, day_to_analyze = 0, git_version = None):
 
         trial_table = trial_table[(trial_table['context'] != 'passif') & (trial_table['perf'] != 6)].copy()
 
-        if git_version in ['4227ca6', 'b394470', '74987e2', '15127ae',  '935b6e1', '4802e47', 'a784830', 'c2eb670', 'f849441', '64beadc', '4465999', '55a7b9a']:
-            print('heere')
+        if git_version in ['4227ca6', 'b394470', '74987e2', '15127ae',  '935b6e1', '4802e47', 'a784830', 'c2eb670', 'f849441', '64beadc', '4465999', '55a7b9a', 'acbce87', '1b14083']:
             trial_table = load_perf_blocks(trial_table,mouse_id)
             trial_table = trial_table.reset_index(drop=True)
         # passive trials were not modeled so we drop them
@@ -6413,6 +6657,112 @@ def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size, ou
                                     output_dir=output_folder, dark_background=True)
     plt.close('all')
     return
+
+
+def plot_trial_concatenated_predictions(results_df, trial_table, neuron_id, bin_size, output_folder,
+                                        trials_per_page=50, window_bounds_sec=(-1, 2)):
+    """
+    Plot all test trials concatenated on a single time axis per page.
+    Vertical lines at each stimulus onset are colored by trial type; thin grey dashed lines
+    mark trial boundaries. Observed spikes (black step) and GLM prediction (red line) are
+    overlaid on the same axis. Splits across multiple figures when there are more trials than
+    trials_per_page.
+    """
+    TRIAL_COLORS = {
+        'whisker_trial': 'darkorange',
+        'auditory_trial': 'mediumblue',
+        'no_stim_trial': 'dimgray',
+    }
+    trial_duration = window_bounds_sec[1] - window_bounds_sec[0]
+    stim_offset_bins = int(round(-window_bounds_sec[0] / bin_size))  # bins from trial start to t=0
+
+    results_df_sub = results_df[results_df['neuron_id'] == neuron_id]
+    y_test = np.array(ast.literal_eval(results_df_sub['y_test'].values[0]))
+    y_pred = np.array(ast.literal_eval(results_df_sub['y_pred'].values[0]))
+    n_bins = results_df_sub['n_bins'].values[0]
+
+    n_trials = y_pred.shape[0] // n_bins
+    y_test = y_test.reshape(n_trials, n_bins)
+    y_pred = y_pred.reshape(n_trials, n_bins)
+
+    test_trial_ids = np.array(ast.literal_eval(results_df_sub['test_trials'].values[0]))
+    order = np.argsort(test_trial_ids)
+    y_test = y_test[order]
+    y_pred = y_pred[order]
+
+    trials_test_df = trial_table[trial_table['trial_id'].isin(test_trial_ids)]
+    trials_test_df = trials_test_df.sort_values('trial_id').reset_index(drop=True)
+
+    neuron_label = (f'unit {neuron_id}, {results_df_sub["area_acronym_custom"].iloc[0]}, '
+                    f'$R$= {results_df_sub["test_corr"].values[0]:.2f}')
+
+    n_pages = math.ceil(n_trials / trials_per_page)
+
+    for page in range(n_pages):
+        sl = slice(page * trials_per_page, (page + 1) * trials_per_page)
+        page_trials = trials_test_df.iloc[sl]
+        yt_page = y_test[sl]
+        yp_page = y_pred[sl]
+        n_page = len(page_trials)
+
+        # Build concatenated traces
+        concat_test = yt_page.ravel()
+        concat_pred = yp_page.ravel()
+        total_bins = n_page * n_bins
+
+        # x-axis in seconds from the start of the first trial on this page
+        time_concat = (np.arange(total_bins) + 0.5) * bin_size
+
+        fig, ax = plt.subplots(figsize=(max(12, n_page * 0.4), 4))
+        putils.remove_top_right_frame(ax)
+
+        ax.step(time_concat, concat_test, where='mid', color='black', alpha=0.85, linewidth=0.5, label='Observed')
+        ax.plot(time_concat, concat_pred, color='forestgreen', linewidth=0.8, label='Predicted')
+
+        legend_handles = {}
+        for i, (_, row) in enumerate(page_trials.iterrows()):
+            t_start = i * n_bins * bin_size
+            t_boundary = t_start
+            t_stim = t_start + stim_offset_bins * bin_size
+
+            # Grey dashed line at trial boundary (skip first — it's the axis edge)
+            if i > 0:
+                ax.axvline(t_boundary, color='lightgray', linewidth=0.6, linestyle='--', zorder=0)
+
+            # Colored line at stimulus onset
+            trial_type = row.get('trial_type', 'no_stim_trial')
+            color = TRIAL_COLORS.get(trial_type, 'dimgray')
+            ax.axvline(t_stim, color=color, linewidth=1.0, linestyle='-', alpha=0.7, zorder=1)
+
+            if trial_type not in legend_handles:
+                legend_handles[trial_type] = plt.Line2D([], [], color=color, linewidth=1.5,
+                                                        label=trial_type.replace('_trial', ''))
+
+        # x-ticks every 10 trials
+        tick_trials = np.arange(0, n_page, max(1, n_page // 10))
+        ax.set_xticks(tick_trials * n_bins * bin_size + stim_offset_bins * bin_size)
+        ax.set_xticklabels([str(page_trials.iloc[i]['trial_id']) for i in tick_trials
+                            if i < len(page_trials)], fontsize=7, rotation=45)
+        ax.set_xlabel('Trial ID', fontsize=10)
+        ax.set_ylabel('Spikes / bin', fontsize=10)
+        ax.set_xlim(0, total_bins * bin_size)
+
+        trace_handles = [
+            plt.Line2D([], [], color='black', linewidth=1.0, label='Observed'),
+            plt.Line2D([], [], color='forestgreen', linewidth=1.0, label='Predicted'),
+        ]
+        all_handles = trace_handles + list(legend_handles.values())
+        ax.legend(handles=all_handles, fontsize=8, loc='upper right', framealpha=0.7)
+
+        page_suffix = f' (page {page + 1}/{n_pages})' if n_pages > 1 else ''
+        ax.set_title(f'GLM predictions — {neuron_label}{page_suffix}', fontsize=11)
+
+        fig.tight_layout()
+        name = f'Neuron_{neuron_id}_concat' if n_pages == 1 else f'Neuron_{neuron_id}_concat_p{page + 1}'
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf', 'svg'],
+                                        filename=name,
+                                        output_dir=output_folder, dark_background=True)
+        plt.close('all')
 
 
 def plot_trial_with_design_matrix_and_weights_predictions(results_df, trial_table, neuron_id, bin_size, output_folder):
@@ -7169,7 +7519,7 @@ def compare_whisker_kernel_models(
         plt.tight_layout(rect=[0, 0, 1, 0.95])
 
         name = f"compare_models_{kernel}"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                         filename=name,
                                         output_dir=output_folder)
         plt.close(fig)
@@ -7301,7 +7651,7 @@ def compare_kernels_within_model(
         plt.tight_layout(rect=[0, 0, 1, 0.95])
 
         name = f"compare_kernels_within_model_{model_key}"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                         filename=name,
                                         output_dir=output_folder)
         plt.close(fig)
@@ -7508,7 +7858,7 @@ def compare_model_fit_metrics(
             plt.tight_layout()
 
             fname = f"model_fit_comparison_{metric}_overall"
-            putils.save_figure_with_options(fig, file_formats=["png"],
+            putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                           filename=fname,
                                           output_dir=output_folder)
             plt.close(fig)
@@ -7552,7 +7902,7 @@ def compare_model_fit_metrics(
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         fname = f"model_fit_comparison_{metric}_per_area"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                       filename=fname,
                                       output_dir=output_folder)
         plt.close(fig)
@@ -7605,7 +7955,7 @@ def compare_model_fit_metrics(
             plt.tight_layout()
 
             fname = f"model_fit_comparison_{metric}_mean_per_region"
-            putils.save_figure_with_options(fig, file_formats=["png"],
+            putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                           filename=fname,
                                           output_dir=output_folder)
             plt.close(fig)
@@ -7715,128 +8065,223 @@ def compare_kernel_shape_evolution(
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         fname = f"kernel_shape_evolution_{kernel}"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                       filename=fname,
                                       output_dir=output_folder)
         plt.close(fig)
 
 
 def compare_kernel_amplitude_evolution(
-        dfs,                     # dict: {"1k": df1, "2k": df2, "3k": df3, "4k": df4}
-        model_labels,            # dict: {"1k": "1 whisker kernel", ...}
+        dfs,
+        model_labels,
         output_folder,
-        whisker_kernels,         # ["whisker_stim", "whisker_stim_0", "whisker_stim_1", ...]
+        whisker_kernels,
         area_groups,
         area_colors,
         n_cols=3):
     """
     Within each multi-kernel model, compare the amplitudes of different whisker kernels.
-    This shows if kernel_0, kernel_1, kernel_2, etc. have different amplitudes within the same model.
     """
+    from scipy.stats import ttest_rel, ttest_1samp, spearmanr
+
+    PLANNED_PAIRS = [
+        ('auditory_stim0',       'auditory_stim1'),
+        ('whisker_hits_stim_0',   'whisker_hits_stim_1'),
+        ('whisker_misses_stim0', 'whisker_misses_stim1'),
+        ('piezo_reward_0',        'piezo_reward_1'),
+        ('piezo_reward_au_0',     'piezo_reward_au_1'),
+    ]
 
     os.makedirs(output_folder, exist_ok=True)
 
-    def extract_sorted_kernel_indices(predictors, kernel_name):
+    def extract_peak_amplitude(predictors, coefs, kernel_name):
+        """Return peak |coef| for a given kernel, or None."""
         pattern = re.compile(fr"^{kernel_name}_t([+-]\d+\.\d+)s$")
-        matches = []
-        for i, p in enumerate(predictors):
-            m = pattern.match(p)
-            if m:
-                lag = float(m.group(1))
-                matches.append((lag, i))
-        matches_sorted = sorted(matches, key=lambda x: x[0])
-        idx_sorted = [i for (_, i) in matches_sorted]
-        lags_sorted = [lag for (lag, _) in matches_sorted]
-        return idx_sorted, lags_sorted
+        matches = sorted(
+            [(float(m.group(1)), i) for i, p in enumerate(predictors) if (m := pattern.match(p))]
+        )
+        if not matches:
+            return None
+        idx = [i for _, i in matches]
+        kernel_coefs = coefs[idx]
+        peak = np.nanmax(np.abs(kernel_coefs))
+        return None if np.isnan(peak) else peak
 
-    # Get ordered regions
-    ordered_regions = []
-    for group_name, areas in area_groups.items():
-        for area in areas:
-            for df in dfs.values():
-                if area in df["area_acronym_custom"].values:
-                    ordered_regions.append(area)
-                    break
+    def build_neuron_map(region_df, kernel_name):
+        """Return {(mouse_id, neuron_id): peak_amp} for neurons that have the kernel."""
+        nmap = {}
+        for (mouse_id, neuron_id), grp in region_df.groupby(["mouse_id", "neuron_id"]):
+            peaks = [
+                p for _, row in grp.iterrows()
+                if (p := extract_peak_amplitude(row["predictors_full"], row["coef_full_mean"], kernel_name)) is not None
+            ]
+            if peaks:
+                nmap[(mouse_id, neuron_id)] = np.nanmax(peaks)
+        return nmap
 
-    # For each model (except 1k), compare kernel amplitudes within that model
+    def draw_planned_brackets(ax, kernel_order, nmap_per_kernel, y_max, bracket_step,
+                              lw=1, fontsize=9, min_n=10):
+        """Draw paired t-test significance brackets for the planned pairs."""
+        current_y = y_max + bracket_step
+        for ka, kb in PLANNED_PAIRS:
+            if ka not in nmap_per_kernel or kb not in nmap_per_kernel:
+                print(f"  [brackets] DROP {ka} vs {kb}: not in nmap_per_kernel "
+                      f"(ka_present={ka in nmap_per_kernel}, kb_present={kb in nmap_per_kernel})")
+                continue
+            if ka not in kernel_order or kb not in kernel_order:
+                print(f"  [brackets] DROP {ka} vs {kb}: not in kernel_order "
+                      f"(ka_present={ka in kernel_order}, kb_present={kb in kernel_order})")
+                continue
+            i, j = kernel_order.index(ka), kernel_order.index(kb)
+            shared = set(nmap_per_kernel[ka]) & set(nmap_per_kernel[kb])
+            if len(shared) < min_n:
+                print(f"  [brackets] DROP {ka} vs {kb}: shared={len(shared)} < min_n={min_n}")
+                continue
+            print(f"  [brackets] TEST {ka} vs {kb}: shared={len(shared)} neurons")
+            v_a = np.array([nmap_per_kernel[ka][n] for n in shared])
+            v_b = np.array([nmap_per_kernel[kb][n] for n in shared])
+            _, p = ttest_rel(v_a, v_b)
+            stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
+            ax.plot([i, i], [current_y - bracket_step * 0.4, current_y], color='k', linewidth=lw)
+            ax.plot([j, j], [current_y - bracket_step * 0.4, current_y], color='k', linewidth=lw)
+            ax.plot([i, j], [current_y, current_y], color='k', linewidth=lw)
+            ax.text((i + j) / 2, current_y + bracket_step * 0.1, stars,
+                    ha='center', va='bottom', fontsize=fontsize, fontweight='bold')
+            current_y += bracket_step
+
+    def nmap_to_mouse_map(nmap):
+        """Collapse {(mouse_id, neuron_id): amp} → {mouse_id: mean_amp across neurons}."""
+        from collections import defaultdict
+        by_mouse = defaultdict(list)
+        for (mouse_id, _neuron_id), amp in nmap.items():
+            by_mouse[mouse_id].append(amp)
+        return {mouse_id: np.mean(amps) for mouse_id, amps in by_mouse.items()}
+
+    def compute_trend_label(nmap_per_kernel, kernel_order):
+        """
+        Per-neuron Spearman ρ across kernels; one-sample Wilcoxon vs 0 to test
+        whether the amplitude trend is consistent across the population.
+        """
+        neuron_trends = []
+        all_neurons = set.union(*(set(nmap_per_kernel[k]) for k in kernel_order))
+        for neuron in all_neurons:
+            k_idx = [i for i, k in enumerate(kernel_order) if neuron in nmap_per_kernel[k]]
+            k_amp = [nmap_per_kernel[kernel_order[i]][neuron] for i in k_idx]
+            if len(k_idx) >= 2:
+                rho, _ = spearmanr(k_idx, k_amp)
+                if not np.isnan(rho):
+                    neuron_trends.append(rho)
+        if len(neuron_trends) < 10:
+            return None
+        _, p = ttest_1samp(neuron_trends, 0)
+        mean_rho = np.mean(neuron_trends)
+        direction = "incr." if mean_rho > 0 else "decr."
+        return f"Trend ({direction}): mean ρ={mean_rho:.3f}, t-test p={p:.4f} (n={len(neuron_trends)})"
+
+    # Infer reward group color from the data (each call is pre-filtered to one group)
+    _rg_vals = pd.concat(list(dfs.values()))['reward_group'].dropna().unique()
+    _REWARD_COLORS = {1: 'forestgreen', 0: 'crimson'}
+    _bar_color = _REWARD_COLORS.get(int(_rg_vals[0]), 'steelblue') if len(_rg_vals) == 1 else 'steelblue'
+
+    # Ordered regions following area_groups structure
+    ordered_regions = [
+        area
+        for areas in area_groups.values()
+        for area in areas
+        if any(area in df["area_acronym_custom"].values for df in dfs.values())
+    ]
+
     for model_key, df in dfs.items():
-        if model_key == "1k":  # Skip single kernel model
+        if model_key == "1k":
             continue
 
         model_label = model_labels[model_key]
         print(model_label)
-        # Collect amplitude data per kernel per region
-        amplitude_data = []
 
+        # Collect amplitude data per kernel × region
+        amplitude_data = []
         for kernel in whisker_kernels:
             for region in ordered_regions:
-                region_df = df[df["area_acronym_custom"] == region]
-                neuron_groups = region_df.groupby(["mouse_id", "neuron_id"])
-
-                peak_amplitudes = []
-
-                for (_, _), grp in neuron_groups:
-                    neuron_kernels = []
-
-                    for _, row in grp.iterrows():
-                        predictors = row["predictors_full"]
-                        coefs = row["coef_full_mean"]
-                        idx, lag_list = extract_sorted_kernel_indices(predictors, kernel)
-
-                        if idx:
-                            neuron_kernels.append(coefs[idx])
-
-                    if neuron_kernels:
-                        mean_kernel = np.nanmean(np.stack(neuron_kernels), axis=0)
-                        # Check if all values are NaN
-                        if not np.all(np.isnan(mean_kernel)):
-                            peak_amp = np.nanmax(np.abs(mean_kernel))
-                            if not np.isnan(peak_amp):
-                                peak_amplitudes.append(peak_amp)
-
-                if peak_amplitudes:
-                    amplitude_data.append({
-                        'kernel': kernel,
-                        'region': region,
-                        'mean_amplitude': np.mean(peak_amplitudes),
-                        'sem_amplitude': np.std(peak_amplitudes, ddof=1) / np.sqrt(len(peak_amplitudes)),
-                        'n_neurons': len(peak_amplitudes)
-                    })
+                nmap = build_neuron_map(df[df["area_acronym_custom"] == region], kernel)
+                if not nmap:
+                    continue
+                amps = list(nmap.values())
+                amplitude_data.append({
+                    'kernel': kernel,
+                    'region': region,
+                    'mean_amplitude': np.mean(amps),
+                    'sem_amplitude': np.std(amps, ddof=1) / np.sqrt(len(amps)),
+                    'n_neurons': len(amps),
+                    'neuron_map': nmap,
+                })
 
         if not amplitude_data:
             print(f"[WARNING] No amplitude data for model {model_key}")
             continue
 
         amplitude_df = pd.DataFrame(amplitude_data)
-
-        # Filter to only kernels that exist in this model
         available_kernels = amplitude_df['kernel'].unique()
 
-        # --- Plot 1: Bar plot comparing amplitudes across kernels (aggregated across regions) ---
-        fig, ax = plt.subplots(1, 1, figsize=(10, 6))
-
-        # Aggregate across regions
-        kernel_means = []
-        kernel_sems = []
-        kernel_labels = []
-
+        # Merge neuron maps across regions per kernel
+        nmap_per_kernel = {}
         for kernel in available_kernels:
-            kernel_data = amplitude_df[amplitude_df['kernel'] == kernel]
-            # Weighted average by number of neurons
-            total_neurons = kernel_data['n_neurons'].sum()
-            weighted_mean = (kernel_data['mean_amplitude'] * kernel_data['n_neurons']).sum() / total_neurons
+            merged = {}
+            for nmap in amplitude_df[amplitude_df['kernel'] == kernel]['neuron_map']:
+                merged.update(nmap)
+            nmap_per_kernel[kernel] = merged
+        kernel_order = list(available_kernels)
+        print(f"[amplitude_evolution] {model_key} kernel_order: {kernel_order}")
 
-            # Correct SEM propagation: sqrt(sum(variance * n)) / total_n
-            # variance = sem^2 * n, so we need to convert back
-            variances = kernel_data['sem_amplitude']**2 * kernel_data['n_neurons']
-            overall_sem = np.sqrt(variances.sum()) / np.sqrt(total_neurons)
+        # Build mean-coefficient-over-time data (signed mean, not |peak|)
+        mean_amp_data = []
+        for kernel in whisker_kernels:
+            _pat = re.compile(fr"^{re.escape(kernel)}_t([+-]?\d+\.\d+)s$")
+            for region in ordered_regions:
+                nmap_m = {}
+                for (mouse_id, neuron_id), grp in df[df["area_acronym_custom"] == region].groupby(["mouse_id", "neuron_id"]):
+                    fold_means = []
+                    for _, row in grp.iterrows():
+                        matches = sorted(
+                            [(float(_m.group(1)), i)
+                             for i, p in enumerate(row["predictors_full"])
+                             if (_m := _pat.match(p))]
+                        )
+                        if matches:
+                            idx = [i for _, i in matches]
+                            fold_means.append(np.mean(np.array(row["coef_full_mean"])[idx]))
+                    if fold_means:
+                        nmap_m[(mouse_id, neuron_id)] = np.nanmean(fold_means)
+                if not nmap_m:
+                    continue
+                amps_m = list(nmap_m.values())
+                mean_amp_data.append({
+                    'kernel': kernel, 'region': region,
+                    'mean_amplitude': np.mean(amps_m),
+                    'sem_amplitude': np.std(amps_m, ddof=1) / np.sqrt(len(amps_m)),
+                    'n_neurons': len(amps_m),
+                    'neuron_map': nmap_m,
+                })
+        mean_amp_df = pd.DataFrame(mean_amp_data) if mean_amp_data else None
+        if mean_amp_df is not None:
+            nmap_per_kernel_mean = {}
+            for kernel in mean_amp_df['kernel'].unique():
+                _merged = {}
+                for nmap in mean_amp_df[mean_amp_df['kernel'] == kernel]['neuron_map']:
+                    _merged.update(nmap)
+                nmap_per_kernel_mean[kernel] = _merged
 
-            kernel_means.append(weighted_mean)
-            kernel_sems.append(overall_sem)
+        # --- Plot 1: Overall bar plot ---
+        fig, ax = plt.subplots(figsize=(10, 6))
+        kernel_means, kernel_sems, kernel_labels = [], [], []
+        for kernel in available_kernels:
+            kd = amplitude_df[amplitude_df['kernel'] == kernel]
+            n = kd['n_neurons'].sum()
+            kernel_means.append((kd['mean_amplitude'] * kd['n_neurons']).sum() / n)
+            kernel_sems.append(np.sqrt((kd['sem_amplitude']**2 * kd['n_neurons']).sum()) / np.sqrt(n))
             kernel_labels.append(kernel)
 
         x_pos = np.arange(len(kernel_labels))
-        ax.bar(x_pos, kernel_means, yerr=kernel_sems, capsize=5, alpha=0.7, color='steelblue')
+        ax.bar(x_pos, kernel_means, yerr=kernel_sems, capsize=5, alpha=0.7, color=_bar_color)
         ax.set_xlabel('Whisker Kernel')
         ax.set_ylabel('Mean Peak Amplitude (|coef|)')
         ax.set_title(f'Kernel amplitudes within {model_label}')
@@ -7844,84 +8289,308 @@ def compare_kernel_amplitude_evolution(
         ax.set_xticklabels(kernel_labels, rotation=45, ha='right')
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        plt.tight_layout()
 
-        fname = f"kernel_amplitude_within_{model_key}_overall"
-        putils.save_figure_with_options(fig, file_formats=["png"],
-                                      filename=fname,
-                                      output_dir=output_folder)
+        y_max = max(m + s for m, s in zip(kernel_means, kernel_sems))
+        draw_planned_brackets(ax, kernel_order, nmap_per_kernel, y_max, y_max * 0.06)
+
+        trend_lbl = compute_trend_label(nmap_per_kernel, kernel_order)
+        if trend_lbl:
+            ax.text(0.02, 0.97, trend_lbl, transform=ax.transAxes, fontsize=8,
+                    va='top', ha='left', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+        plt.tight_layout()
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                        filename=f"kernel_amplitude_within_{model_key}_overall",
+                                        output_dir=output_folder)
         plt.close(fig)
 
-        # --- Plot 2: Per-region comparison of kernel amplitudes ---
+        # --- Plot 1b: Overall bar plot, averaged per mouse ---
+        mouse_map_per_kernel = {k: nmap_to_mouse_map(nmap_per_kernel[k]) for k in kernel_order}
+
+        fig, ax = plt.subplots(figsize=(10, 6))
+        mouse_means, mouse_sems, mouse_labels = [], [], []
+        for kernel in available_kernels:
+            amps = list(mouse_map_per_kernel[kernel].values())
+            mouse_means.append(np.mean(amps) if amps else 0)
+            mouse_sems.append(np.std(amps, ddof=1) / np.sqrt(len(amps)) if len(amps) >= 2 else 0)
+            mouse_labels.append(kernel)
+
+        x_pos = np.arange(len(mouse_labels))
+        ax.bar(x_pos, mouse_means, yerr=mouse_sems, capsize=5, alpha=0.7, color=_bar_color)
+        ax.set_xlabel('Whisker Kernel')
+        ax.set_ylabel('Mean Peak Amplitude (|coef|)')
+        ax.set_title(f'Kernel amplitudes within {model_label} (per mouse)')
+        ax.set_xticks(x_pos)
+        ax.set_xticklabels(mouse_labels, rotation=45, ha='right')
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        y_max_m = max(m + s for m, s in zip(mouse_means, mouse_sems))
+        draw_planned_brackets(ax, kernel_order, mouse_map_per_kernel, y_max_m, y_max_m * 0.06, min_n=3)
+
+        trend_lbl_m = compute_trend_label(mouse_map_per_kernel, kernel_order)
+        if trend_lbl_m:
+            ax.text(0.02, 0.97, trend_lbl_m, transform=ax.transAxes, fontsize=8,
+                    va='top', ha='left', bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+        plt.tight_layout()
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                        filename=f"kernel_amplitude_within_{model_key}_overall_per_mouse",
+                                        output_dir=output_folder)
+        plt.close(fig)
+
+        # --- Plot 2: Per-region bar plots ---
         n_rows = math.ceil(len(ordered_regions) / n_cols)
         fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
         axes = np.array(axes).reshape(-1)
 
         for ax, region in zip(axes, ordered_regions):
             region_data = amplitude_df[amplitude_df['region'] == region]
-
             if region_data.empty:
                 ax.set_visible(False)
                 continue
 
-            kernels_in_region = region_data['kernel'].values
-            means_in_region = region_data['mean_amplitude'].values
-            sems_in_region = region_data['sem_amplitude'].values
+            kernels_r = list(region_data['kernel'])
+            means_r   = region_data['mean_amplitude'].values
+            sems_r    = region_data['sem_amplitude'].values
+            nmaps_r   = dict(zip(kernels_r, region_data['neuron_map']))
 
-            x_pos = np.arange(len(kernels_in_region))
-            ax.bar(x_pos, means_in_region, yerr=sems_in_region, capsize=3, alpha=0.7)
-            ax.set_title(f'{region}')
+            x_pos = np.arange(len(kernels_r))
+            ax.bar(x_pos, means_r, yerr=sems_r, capsize=3, alpha=0.7, color=_bar_color)
+            ax.set_title(region)
             ax.set_xlabel('Kernel')
             ax.set_ylabel('Peak Amplitude')
             ax.set_xticks(x_pos)
-            ax.set_xticklabels(kernels_in_region, rotation=45, ha='right', fontsize=8)
+            ax.set_xticklabels(kernels_r, rotation=45, ha='right', fontsize=8)
             ax.spines["top"].set_visible(False)
             ax.spines["right"].set_visible(False)
 
-        # Hide empty axes
+            y_max_r = float(max(means_r + sems_r))
+            draw_planned_brackets(ax, kernels_r, nmaps_r, y_max_r, y_max_r * 0.08, lw=0.8, fontsize=7)
+
         for ax in axes[len(ordered_regions):]:
             ax.set_visible(False)
 
         plt.suptitle(f'Kernel amplitudes per region: {model_label}', fontsize=14)
         plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-        fname = f"kernel_amplitude_within_{model_key}_per_region"
-        putils.save_figure_with_options(fig, file_formats=["png"],
-                                      filename=fname,
-                                      output_dir=output_folder)
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                        filename=f"kernel_amplitude_within_{model_key}_per_region",
+                                        output_dir=output_folder)
         plt.close(fig)
 
-        # --- Plot 3: Heatmap showing kernel amplitudes per region ---
+        # --- Plot 2b: Per-region bar plots, averaged per mouse ---
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+        axes = np.array(axes).reshape(-1)
+
+        for ax, region in zip(axes, ordered_regions):
+            region_data = amplitude_df[amplitude_df['region'] == region]
+            if region_data.empty:
+                ax.set_visible(False)
+                continue
+
+            kernels_r = list(region_data['kernel'])
+            nmaps_r   = dict(zip(kernels_r, region_data['neuron_map']))
+            mmaps_r   = {k: nmap_to_mouse_map(v) for k, v in nmaps_r.items()}
+
+            means_r = [np.mean(list(mmaps_r[k].values())) if mmaps_r[k] else 0 for k in kernels_r]
+            sems_r  = [np.std(list(mmaps_r[k].values()), ddof=1) / np.sqrt(len(mmaps_r[k]))
+                       if len(mmaps_r[k]) >= 2 else 0 for k in kernels_r]
+
+            x_pos = np.arange(len(kernels_r))
+            ax.bar(x_pos, means_r, yerr=sems_r, capsize=3, alpha=0.7, color=_bar_color)
+            ax.set_title(region)
+            ax.set_xlabel('Kernel')
+            ax.set_ylabel('Peak Amplitude')
+            ax.set_xticks(x_pos)
+            ax.set_xticklabels(kernels_r, rotation=45, ha='right', fontsize=8)
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+
+            y_max_r = float(max(m + s for m, s in zip(means_r, sems_r))) if any(means_r) else 1
+            draw_planned_brackets(ax, kernels_r, mmaps_r, y_max_r, y_max_r * 0.08,
+                                  lw=0.8, fontsize=7, min_n=3)
+
+        for ax in axes[len(ordered_regions):]:
+            ax.set_visible(False)
+
+        plt.suptitle(f'Kernel amplitudes per region: {model_label} (per mouse)', fontsize=14)
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                        filename=f"kernel_amplitude_within_{model_key}_per_region_per_mouse",
+                                        output_dir=output_folder)
+        plt.close(fig)
+
+        # --- Plot 2c: Per-region mean coef over time ---
+        if mean_amp_df is not None:
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+            axes = np.array(axes).reshape(-1)
+
+            for ax, region in zip(axes, ordered_regions):
+                region_data = mean_amp_df[mean_amp_df['region'] == region]
+                if region_data.empty:
+                    ax.set_visible(False)
+                    continue
+
+                kernels_r = list(region_data['kernel'])
+                means_r   = region_data['mean_amplitude'].values
+                sems_r    = region_data['sem_amplitude'].values
+                nmaps_r   = dict(zip(kernels_r, region_data['neuron_map']))
+
+                x_pos = np.arange(len(kernels_r))
+                ax.bar(x_pos, means_r, yerr=sems_r, capsize=3, alpha=0.7, color=_bar_color)
+                ax.axhline(0, color='k', linewidth=0.6, linestyle='--', alpha=0.4)
+                ax.set_title(region)
+                ax.set_xlabel('Kernel')
+                ax.set_ylabel('Mean Coef. (over time)')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(kernels_r, rotation=45, ha='right', fontsize=8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+
+                y_max_r = float(max(means_r + sems_r))
+                draw_planned_brackets(ax, kernels_r, nmaps_r, y_max_r, abs(y_max_r) * 0.08, lw=0.8, fontsize=7)
+
+            for ax in axes[len(ordered_regions):]:
+                ax.set_visible(False)
+
+            plt.suptitle(f'Kernel mean coef per region: {model_label}', fontsize=14)
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                            filename=f"kernel_mean_coef_within_{model_key}_per_region",
+                                            output_dir=output_folder)
+            plt.close(fig)
+
+            # --- Plot 2d: Per-region mean coef, averaged per mouse ---
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+            axes = np.array(axes).reshape(-1)
+
+            for ax, region in zip(axes, ordered_regions):
+                region_data = mean_amp_df[mean_amp_df['region'] == region]
+                if region_data.empty:
+                    ax.set_visible(False)
+                    continue
+
+                kernels_r = list(region_data['kernel'])
+                nmaps_r   = dict(zip(kernels_r, region_data['neuron_map']))
+                mmaps_r   = {k: nmap_to_mouse_map(v) for k, v in nmaps_r.items()}
+
+                means_r = [np.mean(list(mmaps_r[k].values())) if mmaps_r[k] else 0 for k in kernels_r]
+                sems_r  = [np.std(list(mmaps_r[k].values()), ddof=1) / np.sqrt(len(mmaps_r[k]))
+                           if len(mmaps_r[k]) >= 2 else 0 for k in kernels_r]
+
+                x_pos = np.arange(len(kernels_r))
+                ax.bar(x_pos, means_r, yerr=sems_r, capsize=3, alpha=0.7, color=_bar_color)
+                ax.axhline(0, color='k', linewidth=0.6, linestyle='--', alpha=0.4)
+                ax.set_title(region)
+                ax.set_xlabel('Kernel')
+                ax.set_ylabel('Mean Coef. (over time)')
+                ax.set_xticks(x_pos)
+                ax.set_xticklabels(kernels_r, rotation=45, ha='right', fontsize=8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+
+                y_max_r = float(max(m + s for m, s in zip(means_r, sems_r))) if any(means_r) else 1
+                draw_planned_brackets(ax, kernels_r, mmaps_r, y_max_r, abs(y_max_r) * 0.08,
+                                      lw=0.8, fontsize=7, min_n=3)
+
+            for ax in axes[len(ordered_regions):]:
+                ax.set_visible(False)
+
+            plt.suptitle(f'Kernel mean coef per region: {model_label} (per mouse)', fontsize=14)
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                            filename=f"kernel_mean_coef_within_{model_key}_per_region_per_mouse",
+                                            output_dir=output_folder)
+            plt.close(fig)
+
+        # --- Plot 3: Heatmap ---
         pivot_data = amplitude_df.pivot_table(
-            index='region',
-            columns='kernel',
-            values='mean_amplitude',
-            aggfunc='mean'
+            index='region', columns='kernel', values='mean_amplitude', aggfunc='mean'
         )
-
-        # Reorder rows by ordered_regions
-        row_order = [r for r in ordered_regions if r in pivot_data.index]
-        pivot_data = pivot_data.loc[row_order]
-
-        # Reorder columns by kernel order
-        col_order = [k for k in available_kernels if k in pivot_data.columns]
-        pivot_data = pivot_data[col_order]
-
-        fig, ax = plt.subplots(1, 1, figsize=(max(8, len(col_order) * 1.5), max(6, len(row_order) * 0.4)))
-
-        sns.heatmap(pivot_data, annot=True, fmt='.3f', cmap='viridis',
-                   ax=ax, cbar_kws={'label': 'Peak Amplitude'})
-
+        pivot_data = pivot_data.loc[
+            [r for r in ordered_regions if r in pivot_data.index],
+            [k for k in available_kernels if k in pivot_data.columns],
+        ]
+        fig, ax = plt.subplots(figsize=(max(8, len(pivot_data.columns) * 1.5),
+                                        max(6, len(pivot_data) * 0.4)))
+        _cmap_amp = matplotlib.colors.LinearSegmentedColormap.from_list('rw_amp', ['white', 'forestgreen'])
+        sns.heatmap(pivot_data, annot=True, fmt='.3f', cmap=_cmap_amp,
+                    ax=ax, cbar_kws={'label': 'Peak Amplitude'})
         ax.set_title(f'Kernel amplitudes heatmap: {model_label}')
         ax.set_xlabel('Whisker Kernel')
         ax.set_ylabel('Region')
         plt.tight_layout()
-
-        fname = f"kernel_amplitude_within_{model_key}_heatmap"
-        putils.save_figure_with_options(fig, file_formats=["png"],
-                                      filename=fname,
-                                      output_dir=output_folder)
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                        filename=f"kernel_amplitude_within_{model_key}_heatmap",
+                                        output_dir=output_folder)
         plt.close(fig)
+
+        # --- Plot 4: Average kernel waveforms for planned pairs ---
+        pat_cache = {}
+        for ka, kb in PLANNED_PAIRS:
+            if ka not in available_kernels or kb not in available_kernels:
+                continue
+
+            n_regions = len(ordered_regions)
+            n_cols = min(5, n_regions)
+            n_rows = int(np.ceil(n_regions / n_cols))
+            fig, axes = plt.subplots(n_rows, n_cols,
+                                     figsize=(n_cols * 3, n_rows * 2.5), squeeze=False)
+
+            for ax_idx, region in enumerate(ordered_regions):
+                ax = axes[ax_idx // n_cols][ax_idx % n_cols]
+                region_df = df[df["area_acronym_custom"] == region]
+
+                for kernel_name, linestyle in [(ka, '--'), (kb, '-')]:
+                    pat = pat_cache.setdefault(
+                        kernel_name,
+                        re.compile(fr"^{re.escape(kernel_name)}_t([+-]?\d+\.\d+)s$")
+                    )
+                    waveform_per_neuron = {}
+                    lags_ref = None
+                    for (mouse_id, neuron_id), grp in region_df.groupby(["mouse_id", "neuron_id"]):
+                        per_fold = []
+                        for _, row in grp.iterrows():
+                            matches = sorted(
+                                [(float(m.group(1)), i)
+                                 for i, p in enumerate(row["predictors_full"])
+                                 if (m := pat.match(p))]
+                            )
+                            if not matches:
+                                continue
+                            if lags_ref is None:
+                                lags_ref = np.array([lag for lag, _ in matches])
+                            idx = [i for _, i in matches]
+                            per_fold.append(np.array(row["coef_full_mean"])[idx])
+                        if per_fold:
+                            waveform_per_neuron[(mouse_id, neuron_id)] = np.nanmean(per_fold, axis=0)
+
+                    if not waveform_per_neuron or lags_ref is None:
+                        continue
+
+                    mat = np.array(list(waveform_per_neuron.values()))
+                    mean_wvf = np.nanmean(mat, axis=0)
+                    sem_wvf = np.nanstd(mat, axis=0, ddof=1) / np.sqrt(len(mat))
+                    ax.plot(lags_ref, mean_wvf, color=_bar_color, linestyle=linestyle,
+                            linewidth=1.5, label=kernel_name)
+                    ax.fill_between(lags_ref, mean_wvf - sem_wvf, mean_wvf + sem_wvf,
+                                    color=_bar_color, alpha=0.15)
+
+                ax.axhline(0, color='k', linewidth=0.5, linestyle=':')
+                ax.set_title(region, fontsize=9)
+                ax.tick_params(labelsize=7)
+
+            for ax_idx in range(len(ordered_regions), n_rows * n_cols):
+                axes[ax_idx // n_cols][ax_idx % n_cols].set_visible(False)
+
+            axes[0][0].legend(fontsize=7, frameon=False)
+            plt.suptitle(f'Kernel waveforms: {model_label}  ({ka} vs {kb})', fontsize=12)
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+            pair_tag = f"{ka}_vs_{kb}"
+            putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                            filename=f"kernel_waveform_{model_key}_{pair_tag}",
+                                            output_dir=output_folder)
+            plt.close(fig)
 
 
 def compare_kernel_amplitude_evolution_2(
@@ -8099,7 +8768,7 @@ def compare_kernel_amplitude_evolution_2(
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         fname = f"kernel_weights_all_lags_{model_key}_per_region"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                       filename=fname,
                                       output_dir=output_folder)
         plt.close(fig)
@@ -8168,7 +8837,7 @@ def compare_kernel_amplitude_evolution_2(
             plt.tight_layout()
 
             fname = f"kernel_weights_heatmap_{kernel}_{model_key}"
-            putils.save_figure_with_options(fig, file_formats=["png"],
+            putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                           filename=fname,
                                           output_dir=output_folder)
             plt.close(fig)
@@ -8233,7 +8902,7 @@ def compare_kernel_amplitude_evolution_2(
         plt.tight_layout(rect=[0, 0, 1, 0.96])
 
         fname = f"kernel_amplitude_comparison_per_lag_{model_key}"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                       filename=fname,
                                       output_dir=output_folder)
         plt.close(fig)
@@ -8312,7 +8981,7 @@ def compare_kernel_amplitude_evolution_2(
                 plt.tight_layout()
 
                 fname = f"kernel_comparison_heatmap_aggregated_{model_key}"
-                putils.save_figure_with_options(fig, file_formats=["png"],
+                putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                               filename=fname,
                                               output_dir=output_folder)
                 plt.close(fig)
@@ -8387,8 +9056,8 @@ def analyze_kernel_amplitude_differences_2(
         for kernel in whisker_kernels:
             # Extract base name - handles patterns like:
             # 'whisker_hits_stim_0' -> 'whisker_hits_stim'
-            # 'whisker_misses_stim0' -> 'whisker_misses_stim'
-            # 'auditory_stim0' -> 'auditory_stim'
+            # 'whisker_misses_stim_0' -> 'whisker_misses_stim'
+            # 'auditory_stim_0' -> 'auditory_stim'
             # 'whisker_stim_0' -> 'whisker_stim'
             import re
             # Remove trailing digit(s) with optional underscore before them
@@ -8467,12 +9136,14 @@ def analyze_kernel_amplitude_differences_2(
                 # Also collect differences by reward group (R+ = 1, R- = 0)
                 amplitude_diffs_by_reward = {}  # {reward_group: {lag_idx: [diff values]}}
                 amplitude_diffs_by_region_and_reward = {}  # {region: {reward_group: {lag_idx: [diff values]}}}
+                amplitude_diffs_lag_avg = {}  # {region: {reward_group: [mean-across-lags per neuron]}}
 
                 for region in ordered_regions:
                     region_df = df[df["area_acronym_custom"] == region]
                     neuron_groups = region_df.groupby(["mouse_id", "neuron_id"])
 
                     amplitude_diffs_by_region_and_reward[region] = {}
+                    amplitude_diffs_lag_avg[region] = {}
 
                     for (mouse_id, neuron_id), grp in neuron_groups:
                         # Get reward group for this neuron
@@ -8527,6 +9198,11 @@ def analyze_kernel_amplitude_differences_2(
                                         amplitude_diffs_by_region_and_reward[region][reward_group][lag_idx] = []
                                     amplitude_diffs_by_region_and_reward[region][reward_group][lag_idx].append(diff_val)
 
+                                # Store mean across lags for this neuron
+                                if reward_group not in amplitude_diffs_lag_avg[region]:
+                                    amplitude_diffs_lag_avg[region][reward_group] = []
+                                amplitude_diffs_lag_avg[region][reward_group].append(float(np.mean(diff)))
+
                 # Plot distributions for each region
                 n_rows = math.ceil(len(ordered_regions) / n_cols)
 
@@ -8548,251 +9224,251 @@ def analyze_kernel_amplitude_differences_2(
                 # Get available reward groups
                 available_reward_groups = sorted(amplitude_diffs_by_reward.keys())
 
-                # Plot 1: Overlaid histograms for each reward group at each lag, one subplot per region
-                for lag_idx, lag in enumerate(lags):
-                    n_rows = math.ceil(len(ordered_regions) / n_cols)
-                    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
-                    axes = np.array(axes).reshape(-1)
+                # # Plot 1: Overlaid histograms for each reward group at each lag, one subplot per region
+                # for lag_idx, lag in enumerate(lags):
+                #     n_rows = math.ceil(len(ordered_regions) / n_cols)
+                #     fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+                #     axes = np.array(axes).reshape(-1)
 
-                    for ax, region in zip(axes, ordered_regions):
-                        # Check if region has data for this lag
-                        has_data = False
-                        all_diffs_region = []
-                        region_data_by_group = {}
+                #     for ax, region in zip(axes, ordered_regions):
+                #         # Check if region has data for this lag
+                #         has_data = False
+                #         all_diffs_region = []
+                #         region_data_by_group = {}
 
-                        for reward_group in available_reward_groups:
-                            if (region in amplitude_diffs_by_region_and_reward and
-                                reward_group in amplitude_diffs_by_region_and_reward[region] and
-                                lag_idx in amplitude_diffs_by_region_and_reward[region][reward_group]):
-                                diffs = amplitude_diffs_by_region_and_reward[region][reward_group][lag_idx]
-                                if len(diffs) > 0:
-                                    has_data = True
-                                    all_diffs_region.extend(diffs)
-                                    region_data_by_group[reward_group] = np.array(diffs)
+                #         for reward_group in available_reward_groups:
+                #             if (region in amplitude_diffs_by_region_and_reward and
+                #                 reward_group in amplitude_diffs_by_region_and_reward[region] and
+                #                 lag_idx in amplitude_diffs_by_region_and_reward[region][reward_group]):
+                #                 diffs = amplitude_diffs_by_region_and_reward[region][reward_group][lag_idx]
+                #                 if len(diffs) > 0:
+                #                     has_data = True
+                #                     all_diffs_region.extend(diffs)
+                #                     region_data_by_group[reward_group] = np.array(diffs)
 
-                        if not has_data:
-                            ax.set_visible(False)
-                            continue
+                #         if not has_data:
+                #             ax.set_visible(False)
+                #             continue
 
-                        # Determine shared bin edges for this region
-                        bins = np.linspace(np.min(all_diffs_region), np.max(all_diffs_region), 41)  # 40 bins
+                #         # Determine shared bin edges for this region
+                #         bins = np.linspace(np.min(all_diffs_region), np.max(all_diffs_region), 41)  # 40 bins
 
-                        # Plot histograms with shared bins
-                        for reward_group in available_reward_groups:
-                            if reward_group in region_data_by_group:
-                                diffs = region_data_by_group[reward_group]
-                                label = reward_group_labels.get(reward_group, f'Group {reward_group}')
-                                color = reward_group_colors.get(reward_group, 'gray')
-                                ax.hist(diffs, bins=bins, alpha=0.5, label=f'{label} (n={len(diffs)})', density=True,
-                                       color=color, edgecolor='black', linewidth=0.5)
+                #         # Plot histograms with shared bins
+                #         for reward_group in available_reward_groups:
+                #             if reward_group in region_data_by_group:
+                #                 diffs = region_data_by_group[reward_group]
+                #                 label = reward_group_labels.get(reward_group, f'Group {reward_group}')
+                #                 color = reward_group_colors.get(reward_group, 'gray')
+                #                 ax.hist(diffs, bins=bins, alpha=0.5, label=f'{label} (n={len(diffs)})', density=True,
+                #                        color=color, edgecolor='black', linewidth=0.5)
 
-                        # Add statistical test if we have both groups
-                        if len(region_data_by_group) >= 2:
-                            group_keys = sorted(region_data_by_group.keys())
-                            data1 = region_data_by_group[group_keys[0]]
-                            data2 = region_data_by_group[group_keys[1]]
+                #         # Add statistical test if we have both groups
+                #         if len(region_data_by_group) >= 2:
+                #             group_keys = sorted(region_data_by_group.keys())
+                #             data1 = region_data_by_group[group_keys[0]]
+                #             data2 = region_data_by_group[group_keys[1]]
 
-                            # Kolmogorov-Smirnov test (tests if distributions are different)
-                            ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
+                #             # Kolmogorov-Smirnov test (tests if distributions are different)
+                #             ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
 
-                            # Effect size: Cliff's Delta (non-parametric effect size)
-                            n1, n2 = len(data1), len(data2)
-                            comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
-                            cliffs_delta = comparisons / (n1 * n2)
+                #             # Effect size: Cliff's Delta (non-parametric effect size)
+                #             n1, n2 = len(data1), len(data2)
+                #             comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
+                #             cliffs_delta = comparisons / (n1 * n2)
 
-                            # Determine significance level
-                            if ks_pvalue < 0.001:
-                                sig_str = '***'
-                            elif ks_pvalue < 0.01:
-                                sig_str = '**'
-                            elif ks_pvalue < 0.05:
-                                sig_str = '*'
-                            else:
-                                sig_str = 'n.s.'
+                #             # Determine significance level
+                #             if ks_pvalue < 0.001:
+                #                 sig_str = '***'
+                #             elif ks_pvalue < 0.01:
+                #                 sig_str = '**'
+                #             elif ks_pvalue < 0.05:
+                #                 sig_str = '*'
+                #             else:
+                #                 sig_str = 'n.s.'
 
-                            test_text = f"KS: p={ks_pvalue:.3f} {sig_str}\nδ={cliffs_delta:.3f}"
-                            ax.text(0.98, 0.98, test_text, transform=ax.transAxes,
-                                   fontsize=6, verticalalignment='top', horizontalalignment='right',
-                                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+                #             test_text = f"KS: p={ks_pvalue:.3f} {sig_str}\nδ={cliffs_delta:.3f}"
+                #             ax.text(0.98, 0.98, test_text, transform=ax.transAxes,
+                #                    fontsize=6, verticalalignment='top', horizontalalignment='right',
+                #                    bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
 
-                        ax.axvline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
-                        ax.set_title(f'{region}', fontsize=10, fontweight='bold')
-                        ax.set_xlabel(f'Amp. Diff. ({kernel_1} - {kernel_0})', fontsize=8)
-                        ax.set_ylabel('Density', fontsize=8)
-                        ax.legend(fontsize=7, loc='upper left')
-                        ax.spines["top"].set_visible(False)
-                        ax.spines["right"].set_visible(False)
-                        ax.tick_params(labelsize=7)
+                #         ax.axvline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+                #         ax.set_title(f'{region}', fontsize=10, fontweight='bold')
+                #         ax.set_xlabel(f'Amp. Diff. ({kernel_1} - {kernel_0})', fontsize=8)
+                #         ax.set_ylabel('Density', fontsize=8)
+                #         ax.legend(fontsize=7, loc='upper left')
+                #         ax.spines["top"].set_visible(False)
+                #         ax.spines["right"].set_visible(False)
+                #         ax.tick_params(labelsize=7)
 
-                    # Hide unused subplots
-                    for ax in axes[len(ordered_regions):]:
-                        ax.set_visible(False)
+                #     # Hide unused subplots
+                #     for ax in axes[len(ordered_regions):]:
+                #         ax.set_visible(False)
 
-                    plt.suptitle(f'Reward Group Comparison by Region at Lag {lag:.3f}s\n{model_label}',
-                               fontsize=14, fontweight='bold')
-                    plt.tight_layout(rect=[0, 0, 1, 0.96])
+                #     plt.suptitle(f'Reward Group Comparison by Region at Lag {lag:.3f}s\n{model_label}',
+                #                fontsize=14, fontweight='bold')
+                #     plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-                    fname = f"amplitude_diff_by_reward_per_area_lag{lag:.3f}s_{kernel_1}_minus_{kernel_0}_{model_key}"
-                    putils.save_figure_with_options(fig, file_formats=["png"],
-                                                  filename=fname,
-                                                  output_dir=output_folder)
-                    plt.close(fig)
+                #     fname = f"amplitude_diff_by_reward_per_area_lag{lag:.3f}s_{kernel_1}_minus_{kernel_0}_{model_key}"
+                #     putils.save_figure_with_options(fig, file_formats=["png"],
+                #                                   filename=fname,
+                #                                   output_dir=output_folder)
+                #     plt.close(fig)
 
                 # Plot 2: Box plots comparing reward groups across all lags
-                fig, axes = plt.subplots(1, n_lags, figsize=(n_lags * 3, 5), sharey=True)
-                if n_lags == 1:
-                    axes = [axes]
+                # fig, axes = plt.subplots(1, n_lags, figsize=(n_lags * 3, 5), sharey=True)
+                # if n_lags == 1:
+                #     axes = [axes]
 
-                for lag_idx, (lag, ax) in enumerate(zip(lags, axes)):
-                    group_data = []
-                    group_labels = []
-                    group_colors = []
+                # for lag_idx, (lag, ax) in enumerate(zip(lags, axes)):
+                #     group_data = []
+                #     group_labels = []
+                #     group_colors = []
 
-                    for reward_group in available_reward_groups:
-                        if lag_idx in amplitude_diffs_by_reward[reward_group]:
-                            diffs = amplitude_diffs_by_reward[reward_group][lag_idx]
-                            if len(diffs) > 0:
-                                group_data.append(diffs)
-                                group_labels.append(reward_group_labels.get(reward_group, f'Group {reward_group}'))
-                                group_colors.append(reward_group_colors.get(reward_group, 'gray'))
+                #     for reward_group in available_reward_groups:
+                #         if lag_idx in amplitude_diffs_by_reward[reward_group]:
+                #             diffs = amplitude_diffs_by_reward[reward_group][lag_idx]
+                #             if len(diffs) > 0:
+                #                 group_data.append(diffs)
+                #                 group_labels.append(reward_group_labels.get(reward_group, f'Group {reward_group}'))
+                #                 group_colors.append(reward_group_colors.get(reward_group, 'gray'))
 
-                    if group_data:
-                        # Create box plot
-                        bp = ax.boxplot(group_data, labels=group_labels, patch_artist=True)
+                #     if group_data:
+                #         # Create box plot
+                #         bp = ax.boxplot(group_data, labels=group_labels, patch_artist=True)
 
-                        # Color boxes by reward group
-                        for patch, color in zip(bp['boxes'], group_colors):
-                            patch.set_facecolor(color)
-                            patch.set_alpha(0.7)
+                #         # Color boxes by reward group
+                #         for patch, color in zip(bp['boxes'], group_colors):
+                #             patch.set_facecolor(color)
+                #             patch.set_alpha(0.7)
 
-                        ax.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
-                        ax.set_title(f'Lag {lag:.2f}s', fontsize=10)
-                        ax.set_xlabel('Reward Group', fontsize=9)
-                        if lag_idx == 0:
-                            ax.set_ylabel(f'Amplitude Difference\n({kernel_1} - {kernel_0})', fontsize=9)
-                        ax.tick_params(axis='x', rotation=45)
-                        ax.spines["top"].set_visible(False)
-                        ax.spines["right"].set_visible(False)
+                #         ax.axhline(0, color='black', linestyle='--', linewidth=1, alpha=0.5)
+                #         ax.set_title(f'Lag {lag:.2f}s', fontsize=10)
+                #         ax.set_xlabel('Reward Group', fontsize=9)
+                #         if lag_idx == 0:
+                #             ax.set_ylabel(f'Amplitude Difference\n({kernel_1} - {kernel_0})', fontsize=9)
+                #         ax.tick_params(axis='x', rotation=45)
+                #         ax.spines["top"].set_visible(False)
+                #         ax.spines["right"].set_visible(False)
 
-                plt.suptitle(f'Reward Group Comparison Across Lags\n{kernel_1} - {kernel_0} | {model_label}',
-                           fontsize=14, fontweight='bold')
-                plt.tight_layout(rect=[0, 0, 1, 0.96])
+                # plt.suptitle(f'Reward Group Comparison Across Lags\n{kernel_1} - {kernel_0} | {model_label}',
+                #            fontsize=14, fontweight='bold')
+                # plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-                fname = f"amplitude_diff_boxplot_by_reward_{kernel_1}_minus_{kernel_0}_{model_key}"
-                putils.save_figure_with_options(fig, file_formats=["png"],
-                                              filename=fname,
-                                              output_dir=output_folder)
-                plt.close(fig)
+                # fname = f"amplitude_diff_boxplot_by_reward_{kernel_1}_minus_{kernel_0}_{model_key}"
+                # putils.save_figure_with_options(fig, file_formats=["png"],
+                #                               filename=fname,
+                #                               output_dir=output_folder)
+                # plt.close(fig)
 
                 # Plot 3: Summary heatmap showing effect direction and significance
                 # Create a matrix: regions × lags showing which group has higher mean and if significant
-                n_lags = len(lags)
-                effect_matrix = np.zeros((len(ordered_regions), n_lags))  # Will store effect direction
-                pvalue_matrix = np.ones((len(ordered_regions), n_lags))   # Will store p-values
+                # n_lags = len(lags)
+                # effect_matrix = np.zeros((len(ordered_regions), n_lags))  # Will store effect direction
+                # pvalue_matrix = np.ones((len(ordered_regions), n_lags))   # Will store p-values
 
-                for region_idx, region in enumerate(ordered_regions):
-                    for lag_idx, lag in enumerate(lags):
-                        if (region in amplitude_diffs_by_region_and_reward and
-                            len(amplitude_diffs_by_region_and_reward[region]) >= 2):
+                # for region_idx, region in enumerate(ordered_regions):
+                #     for lag_idx, lag in enumerate(lags):
+                #         if (region in amplitude_diffs_by_region_and_reward and
+                #             len(amplitude_diffs_by_region_and_reward[region]) >= 2):
 
-                            # Get data for both reward groups
-                            group_keys = sorted(amplitude_diffs_by_region_and_reward[region].keys())
+                #             # Get data for both reward groups
+                #             group_keys = sorted(amplitude_diffs_by_region_and_reward[region].keys())
 
-                            if (len(group_keys) >= 2 and
-                                lag_idx in amplitude_diffs_by_region_and_reward[region].get(group_keys[0], {}) and
-                                lag_idx in amplitude_diffs_by_region_and_reward[region].get(group_keys[1], {})):
+                #             if (len(group_keys) >= 2 and
+                #                 lag_idx in amplitude_diffs_by_region_and_reward[region].get(group_keys[0], {}) and
+                #                 lag_idx in amplitude_diffs_by_region_and_reward[region].get(group_keys[1], {})):
 
-                                data1 = np.array(amplitude_diffs_by_region_and_reward[region][group_keys[0]][lag_idx])
-                                data2 = np.array(amplitude_diffs_by_region_and_reward[region][group_keys[1]][lag_idx])
+                #                 data1 = np.array(amplitude_diffs_by_region_and_reward[region][group_keys[0]][lag_idx])
+                #                 data2 = np.array(amplitude_diffs_by_region_and_reward[region][group_keys[1]][lag_idx])
 
-                                if len(data1) > 0 and len(data2) > 0:
-                                    # KS test
-                                    ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
-                                    pvalue_matrix[region_idx, lag_idx] = ks_pvalue
+                #                 if len(data1) > 0 and len(data2) > 0:
+                #                     # KS test
+                #                     ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
+                #                     pvalue_matrix[region_idx, lag_idx] = ks_pvalue
 
-                                    # Effect direction: positive if R- (group_keys[0]=0) > R+ (group_keys[1]=1)
-                                    # negative if R+ > R-
-                                    mean_diff = np.mean(data1) - np.mean(data2)
+                #                     # Effect direction: positive if R- (group_keys[0]=0) > R+ (group_keys[1]=1)
+                #                     # negative if R+ > R-
+                #                     mean_diff = np.mean(data1) - np.mean(data2)
 
-                                    # Store signed effect size (Cliff's Delta with sign)
-                                    n1, n2 = len(data1), len(data2)
-                                    comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
-                                    cliffs_delta = comparisons / (n1 * n2)
+                #                     # Store signed effect size (Cliff's Delta with sign)
+                #                     n1, n2 = len(data1), len(data2)
+                #                     comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
+                #                     cliffs_delta = comparisons / (n1 * n2)
 
-                                    effect_matrix[region_idx, lag_idx] = cliffs_delta
+                #                     effect_matrix[region_idx, lag_idx] = cliffs_delta
 
-                # Create heatmap
-                fig, ax = plt.subplots(1, 1, figsize=(max(10, n_lags * 1.5), max(8, len(ordered_regions) * 0.4)))
+                # # Create heatmap
+                # fig, ax = plt.subplots(1, 1, figsize=(max(10, n_lags * 1.5), max(8, len(ordered_regions) * 0.4)))
 
-                # Create custom colormap: green for R+ > R-, white for 0, red for R- > R+
-                # Note: Cliff's Delta is positive when data1 (R-) > data2 (R+)
-                from matplotlib.colors import TwoSlopeNorm, LinearSegmentedColormap
+                # # Create custom colormap: green for R+ > R-, white for 0, red for R- > R+
+                # # Note: Cliff's Delta is positive when data1 (R-) > data2 (R+)
+                # from matplotlib.colors import TwoSlopeNorm, LinearSegmentedColormap
 
-                # Mask non-significant effects
-                masked_effect = effect_matrix.copy()
-                masked_effect[pvalue_matrix >= 0.05] = 0  # Set non-significant to 0
+                # # Mask non-significant effects
+                # masked_effect = effect_matrix.copy()
+                # masked_effect[pvalue_matrix >= 0.05] = 0  # Set non-significant to 0
 
-                # Create custom green-white-red colormap
-                # Colormap goes from min to max value:
-                # Most negative (R+ > R-) → green
-                # Zero → white
-                # Most positive (R- > R+) → red
-                colors_rgb = ['forestgreen', 'white', 'crimson']
-                n_bins = 256
-                cmap_custom = LinearSegmentedColormap.from_list('custom_gwr', colors_rgb, N=n_bins)
+                # # Create custom green-white-red colormap
+                # # Colormap goes from min to max value:
+                # # Most negative (R+ > R-) → green
+                # # Zero → white
+                # # Most positive (R- > R+) → red
+                # colors_rgb = ['forestgreen', 'white', 'crimson']
+                # n_bins = 256
+                # cmap_custom = LinearSegmentedColormap.from_list('custom_gwr', colors_rgb, N=n_bins)
 
-                # Plot heatmap
-                vmax = max(abs(np.min(masked_effect)), abs(np.max(masked_effect)))
-                if vmax == 0:
-                    vmax = 1  # Avoid division by zero if all non-significant
+                # # Plot heatmap
+                # vmax = max(abs(np.min(masked_effect)), abs(np.max(masked_effect)))
+                # if vmax == 0:
+                #     vmax = 1  # Avoid division by zero if all non-significant
 
-                norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
-                im = ax.imshow(masked_effect, cmap=cmap_custom, aspect='auto', norm=norm)
+                # norm = TwoSlopeNorm(vmin=-vmax, vcenter=0, vmax=vmax)
+                # im = ax.imshow(masked_effect, cmap=cmap_custom, aspect='auto', norm=norm)
 
-                # Add significance markers
-                for region_idx in range(len(ordered_regions)):
-                    for lag_idx in range(n_lags):
-                        pval = pvalue_matrix[region_idx, lag_idx]
-                        effect = effect_matrix[region_idx, lag_idx]
+                # # Add significance markers
+                # for region_idx in range(len(ordered_regions)):
+                #     for lag_idx in range(n_lags):
+                #         pval = pvalue_matrix[region_idx, lag_idx]
+                #         effect = effect_matrix[region_idx, lag_idx]
 
-                        # Add stars for significance
-                        if pval < 0.001:
-                            marker = '***'
-                        elif pval < 0.01:
-                            marker = '**'
-                        elif pval < 0.05:
-                            marker = '*'
-                        else:
-                            marker = ''
+                #         # Add stars for significance
+                #         if pval < 0.001:
+                #             marker = '***'
+                #         elif pval < 0.01:
+                #             marker = '**'
+                #         elif pval < 0.05:
+                #             marker = '*'
+                #         else:
+                #             marker = ''
 
-                        if marker:
-                            ax.text(lag_idx, region_idx, marker, ha='center', va='center',
-                                   color='black', fontsize=8, fontweight='bold')
+                #         if marker:
+                #             ax.text(lag_idx, region_idx, marker, ha='center', va='center',
+                #                    color='black', fontsize=8, fontweight='bold')
 
-                # Set ticks and labels
-                ax.set_xticks(np.arange(n_lags))
-                ax.set_xticklabels([f'{lag:.2f}s' for lag in lags], rotation=45, ha='right')
-                ax.set_yticks(np.arange(len(ordered_regions)))
-                ax.set_yticklabels(ordered_regions)
+                # # Set ticks and labels
+                # ax.set_xticks(np.arange(n_lags))
+                # ax.set_xticklabels([f'{lag:.2f}s' for lag in lags], rotation=45, ha='right')
+                # ax.set_yticks(np.arange(len(ordered_regions)))
+                # ax.set_yticklabels(ordered_regions)
 
-                ax.set_xlabel('Lag', fontsize=11)
-                ax.set_ylabel('Brain Region', fontsize=11)
-                ax.set_title(f'Reward Group Effect Summary: {kernel_1} - {kernel_0}\n'
-                           f'{model_label}\n'
-                           f'(Red: R- > R+, Green: R+ > R-, * p<0.05, ** p<0.01, *** p<0.001)',
-                           fontsize=12, fontweight='bold', pad=20)
+                # ax.set_xlabel('Lag', fontsize=11)
+                # ax.set_ylabel('Brain Region', fontsize=11)
+                # ax.set_title(f'Reward Group Effect Summary: {kernel_1} - {kernel_0}\n'
+                #            f'{model_label}\n'
+                #            f'(Red: R- > R+, Green: R+ > R-, * p<0.05, ** p<0.01, *** p<0.001)',
+                #            fontsize=12, fontweight='bold', pad=20)
 
-                # Add colorbar
-                cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-                cbar.set_label("Cliff's Delta\n(Effect Size & Direction)", rotation=270, labelpad=20, fontsize=10)
+                # # Add colorbar
+                # cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                # cbar.set_label("Cliff's Delta\n(Effect Size & Direction)", rotation=270, labelpad=20, fontsize=10)
 
-                plt.tight_layout()
+                # plt.tight_layout()
 
-                fname = f"amplitude_diff_summary_heatmap_{kernel_1}_minus_{kernel_0}_{model_key}"
-                putils.save_figure_with_options(fig, file_formats=["png"],
-                                              filename=fname,
-                                              output_dir=output_folder)
-                plt.close(fig)
+                # fname = f"amplitude_diff_summary_heatmap_{kernel_1}_minus_{kernel_0}_{model_key}"
+                # putils.save_figure_with_options(fig, file_formats=["png"],
+                #                               filename=fname,
+                #                               output_dir=output_folder)
+                # plt.close(fig)
 
                 # Plot 4: Statistical comparison - compute p-values between reward groups
                 # Create a summary table showing mean, std, and statistical tests
@@ -8826,6 +9502,414 @@ def analyze_kernel_amplitude_differences_2(
                                 # Mann-Whitney U test (non-parametric)
                                 statistic, pvalue = stats.mannwhitneyu(data1, data2, alternative='two-sided')
                                 print(f"      {group1} vs {group2}: p={pvalue:.4f}")
+
+                def _sig_str(p):
+                    if p < 0.001: return '***'
+                    if p < 0.01:  return '**'
+                    if p < 0.05:  return '*'
+                    return 'n.s.'
+
+                # Plot 5: Lag-averaged amplitude difference distributions, R+ and R- on the same plot
+                n_rows = math.ceil(len(ordered_regions) / n_cols)
+                fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows))
+                axes = np.array(axes).reshape(-1)
+
+                for ax, region in zip(axes, ordered_regions):
+                    region_data_by_group = {}
+                    all_diffs_region = []
+
+                    for reward_group in available_reward_groups:
+                        if (region in amplitude_diffs_lag_avg and
+                                reward_group in amplitude_diffs_lag_avg[region]):
+                            vals = amplitude_diffs_lag_avg[region][reward_group]
+                            if len(vals) > 0:
+                                region_data_by_group[reward_group] = np.array(vals)
+                                all_diffs_region.extend(vals)
+
+                    if not all_diffs_region:
+                        ax.set_visible(False)
+                        continue
+
+                    bins = np.linspace(np.min(all_diffs_region), np.max(all_diffs_region), 41)
+
+                    for reward_group in available_reward_groups:
+                        if reward_group in region_data_by_group:
+                            diffs = region_data_by_group[reward_group]
+                            label = reward_group_labels.get(reward_group, f'Group {reward_group}')
+                            color = reward_group_colors.get(reward_group, 'gray')
+                            ax.hist(diffs, bins=bins, alpha=0.5, label=f'{label} (n={len(diffs)})',
+                                    density=True, color=color, edgecolor='black', linewidth=0.5)
+
+                    # KS test + Mann-Whitney U + Cliff's delta if both groups present
+                    if len(region_data_by_group) >= 2:
+                        group_keys = sorted(region_data_by_group.keys())
+                        data1 = region_data_by_group[group_keys[0]]
+                        data2 = region_data_by_group[group_keys[1]]
+
+                        ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
+                        mw_stat, mw_pvalue = stats.mannwhitneyu(data1, data2, alternative='two-sided')
+
+                        n1, n2 = len(data1), len(data2)
+                        comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
+                        cliffs_delta = comparisons / (n1 * n2)
+
+                        test_text = (f"KS: p={ks_pvalue:.3f} {_sig_str(ks_pvalue)}\n"
+                                     f"MW: p={mw_pvalue:.3f} {_sig_str(mw_pvalue)}\n"
+                                     f"δ={cliffs_delta:.3f}")
+                        ax.text(0.98, 0.98, test_text, transform=ax.transAxes,
+                                fontsize=6, verticalalignment='top', horizontalalignment='right',
+                                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
+
+                    ax.axvline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+                    ax.set_title(f'{region}', fontsize=10, fontweight='bold')
+                    ax.set_xlabel(f'Mean Amp. Diff. across lags ({kernel_1} - {kernel_0})', fontsize=8)
+                    ax.set_ylabel('Density', fontsize=8)
+                    ax.legend(fontsize=7, loc='upper left')
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                    ax.tick_params(labelsize=7)
+
+                for ax in axes[len(ordered_regions):]:
+                    ax.set_visible(False)
+
+                plt.suptitle(f'Lag-Averaged Weight Change by Region (R+ vs R-)\n{model_label}',
+                             fontsize=14, fontweight='bold')
+                plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+                fname = f"amplitude_diff_lag_avg_by_reward_per_area_{kernel_1}_minus_{kernel_0}_{model_key}"
+                putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                               filename=fname,
+                                               output_dir=output_folder)
+                plt.close(fig)
+
+                # Plot 6: Lag-averaged amplitude difference, pooled across all areas (single panel)
+                pooled_by_group = {}
+                for region in ordered_regions:
+                    if region not in amplitude_diffs_lag_avg:
+                        continue
+                    for reward_group in available_reward_groups:
+                        if reward_group in amplitude_diffs_lag_avg[region]:
+                            pooled_by_group.setdefault(reward_group, []).extend(
+                                amplitude_diffs_lag_avg[region][reward_group]
+                            )
+
+                if len(pooled_by_group) >= 1:
+                    all_pooled = []
+                    for vals in pooled_by_group.values():
+                        all_pooled.extend(vals)
+                    bins = np.linspace(np.min(all_pooled), np.max(all_pooled), 41)
+
+                    fig, ax = plt.subplots(1, 1, figsize=(8, 5))
+                    for reward_group in available_reward_groups:
+                        if reward_group in pooled_by_group:
+                            diffs = np.array(pooled_by_group[reward_group])
+                            label = reward_group_labels.get(reward_group, f'Group {reward_group}')
+                            color = reward_group_colors.get(reward_group, 'gray')
+                            ax.hist(diffs, bins=bins, alpha=0.5, label=f'{label} (n={len(diffs)})',
+                                    density=True, color=color, edgecolor='black', linewidth=0.5)
+
+                    # KS + Mann-Whitney U + Cliff's delta
+                    if len(pooled_by_group) >= 2:
+                        group_keys = sorted(pooled_by_group.keys())
+                        data1 = np.array(pooled_by_group[group_keys[0]])
+                        data2 = np.array(pooled_by_group[group_keys[1]])
+
+                        ks_stat, ks_pvalue = stats.ks_2samp(data1, data2)
+                        mw_stat, mw_pvalue = stats.mannwhitneyu(data1, data2, alternative='two-sided')
+
+                        n1, n2 = len(data1), len(data2)
+                        comparisons = np.sum(data1[:, None] > data2[None, :]) - np.sum(data1[:, None] < data2[None, :])
+                        cliffs_delta = comparisons / (n1 * n2)
+
+                        test_text = (f"KS: p={ks_pvalue:.3f} {_sig_str(ks_pvalue)}\n"
+                                     f"MW: p={mw_pvalue:.3f} {_sig_str(mw_pvalue)}\n"
+                                     f"δ={cliffs_delta:.3f}")
+                        ax.text(0.98, 0.98, test_text, transform=ax.transAxes,
+                                fontsize=9, verticalalignment='top', horizontalalignment='right',
+                                bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.7))
+
+                    ax.axvline(0, color='black', linestyle='--', linewidth=1.5, alpha=0.7)
+                    ax.set_xlabel(f'Mean Amp. Diff. across lags ({kernel_1} - {kernel_0})', fontsize=11)
+                    ax.set_ylabel('Density', fontsize=11)
+                    ax.set_title(f'Lag-Averaged Weight Change – All Areas (R+ vs R-)\n{model_label}',
+                                 fontsize=13, fontweight='bold')
+                    ax.legend(fontsize=9)
+                    ax.spines["top"].set_visible(False)
+                    ax.spines["right"].set_visible(False)
+                    plt.tight_layout()
+
+                    fname = f"amplitude_diff_lag_avg_by_reward_all_areas_{kernel_1}_minus_{kernel_0}_{model_key}"
+                    putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
+                                                   filename=fname,
+                                                   output_dir=output_folder)
+                    plt.close(fig)
+
+
+def plot_paired_kernel_comparison_per_area(
+        dfs,
+        model_labels,
+        output_folder,
+        area_groups,
+        area_colors,
+        n_cols=3,
+        alpha=0.05):
+    """
+    For each model and brain area, plot two kernels of the same stimulus type
+    overlaid (mean ± SEM across neurons), with a paired Wilcoxon signed-rank test
+    at each time bin (pairing = same neuron). A colored significance bar is drawn
+    above the traces for bins where p < alpha.
+
+    Three figures per model:
+      - Whisker hits:   whisker_hits_stim_0 vs whisker_hits_stim_1
+      - Whisker misses: whisker_misses_stim_0 vs whisker_misses_stim_1
+      - Auditory:       auditory_stim_0       vs auditory_stim_1
+    """
+    from scipy.stats import ttest_rel
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Infer reward group color (dfs are pre-filtered to one reward group)
+    _rg_vals = pd.concat(list(dfs.values()))['reward_group'].dropna().unique()
+    if len(_rg_vals) == 1 and int(_rg_vals[0]) == 1:
+        _col0, _col1, _sig_color = '#90EE90', 'forestgreen', 'darkgreen'
+    elif len(_rg_vals) == 1 and int(_rg_vals[0]) == 0:
+        _col0, _col1, _sig_color = '#FF9999', 'crimson', 'darkred'
+    else:
+        _col0, _col1, _sig_color = 'steelblue', 'navy', 'navy'
+
+    # (kernel_0, kernel_1, descriptive_title, color_0, color_1, sig_bar_color)
+    KERNEL_PAIR_SPECS = [
+        ('whisker_hits_stim_0',  'whisker_hits_stim_1',
+         'Whisker Hits',
+         _col0, _col1, _sig_color),
+        ('whisker_misses_stim_0', 'whisker_misses_stim_1',
+         'Whisker Misses',
+         _col0, _col1, _sig_color),
+        ('auditory_stim_0',       'auditory_stim_1',
+         'Auditory',
+         _col0, _col1, _sig_color),
+        ('piezo_reward_0',        'piezo_reward_1',
+         'Reward (whisker)',
+         _col0, _col1, _sig_color),
+        ('piezo_reward_au_0',     'piezo_reward_au_1',
+         'Reward (auditory)',
+         _col0, _col1, _sig_color),
+    ]
+
+    # ── Helper: extract one kernel's (lags, coefs) from a single model row ──
+    def _extract_kernel(predictors, coefs, kernel_name):
+        pattern = re.compile(fr"^{re.escape(kernel_name)}_t([+-]\d+\.\d+)s$")
+        matches = sorted(
+            [(float(m.group(1)), i)
+             for i, p in enumerate(predictors)
+             if (m := pattern.match(p))]
+        )
+        if not matches:
+            return None, None
+        lags = np.array([lag for lag, _ in matches])
+        idx  = [i for _, i in matches]
+        return lags, np.array(coefs)[idx]
+
+    # ── Helper: collect paired matrices across neurons in a region ───────────
+    def _collect_paired(region_df, k0_name, k1_name):
+        """
+        Returns (lags, mat0, mat1) where mat0/mat1 are (n_sessions, n_lags).
+        Each row is one session; only rows that have BOTH kernels are included.
+        Returns (None, None, None) if fewer than 3 paired rows are found.
+        """
+        lags_ref = None
+        paired0, paired1 = [], []
+        for _, row in region_df.iterrows():
+            l0, c0 = _extract_kernel(
+                row["predictors_full"], row["coef_full_mean"], k0_name)
+            l1, c1 = _extract_kernel(
+                row["predictors_full"], row["coef_full_mean"], k1_name)
+            if l0 is not None and l1 is not None and len(c0) == len(c1):
+                if lags_ref is None:
+                    lags_ref = l0
+                paired0.append(c0)
+                paired1.append(c1)
+        if len(paired0) < 3 or lags_ref is None:
+            return None, None, None
+        return lags_ref, np.stack(paired0), np.stack(paired1)
+
+    # ── Helper: paired t-test at every time bin ──────────────────────────────
+    def _paired_wilcoxon_per_bin(mat0, mat1):
+        """Returns p-value array of length n_lags (paired t-test)."""
+        n_lags = mat0.shape[1]
+        pvals  = np.ones(n_lags)
+        for t in range(n_lags):
+            if len(mat0[:, t]) >= 3:
+                try:
+                    _, pvals[t] = ttest_rel(mat0[:, t], mat1[:, t])
+                except Exception:
+                    pass
+        return pvals
+
+    # ── Ordered regions following area_groups structure ───────────────────────
+    ordered_regions = [
+        area
+        for areas in area_groups.values()
+        for area in areas
+        if any(area in df["area_acronym_custom"].values for df in dfs.values())
+    ]
+
+    # ── Main loop ─────────────────────────────────────────────────────────────
+    for model_key, df in dfs.items():
+        model_label = model_labels.get(model_key, model_key)
+
+        for k0_name, k1_name, pair_title, col0, col1, sig_color in KERNEL_PAIR_SPECS:
+
+            n_rows = math.ceil(len(ordered_regions) / n_cols)
+            fig, axes = plt.subplots(
+                n_rows, n_cols,
+                figsize=(5 * n_cols, 3.5 * n_rows),
+                sharex=False
+            )
+            axes = np.array(axes).reshape(-1)
+            any_plotted = False
+            # Accumulate per-area p-value arrays for the heatmap
+            heatmap_regions = []
+            heatmap_pvals   = []   # list of 1-D arrays (one per area)
+            heatmap_lags    = None
+
+            for ax, region in zip(axes, ordered_regions):
+                region_df = df[df["area_acronym_custom"] == region]
+                lags, mat0, mat1 = _collect_paired(region_df, k0_name, k1_name)
+                if lags is None:
+                    ax.set_visible(False)
+                    continue
+                any_plotted = True
+                if heatmap_lags is None:
+                    heatmap_lags = lags
+
+                n_neurons = mat0.shape[0]
+                mean0 = np.mean(mat0, axis=0)
+                sem0  = np.std(mat0,  axis=0, ddof=1) / np.sqrt(n_neurons)
+                mean1 = np.mean(mat1, axis=0)
+                sem1  = np.std(mat1,  axis=0, ddof=1) / np.sqrt(n_neurons)
+
+                # Plot both kernels
+                ax.plot(lags, mean0, color=col0, lw=2,
+                        label=f'stim 0  (n={n_neurons})')
+                ax.fill_between(lags, mean0 - sem0, mean0 + sem0,
+                                color=col0, alpha=0.25, lw=0)
+                ax.plot(lags, mean1, color=col1, lw=2,
+                        label='stim 1')
+                ax.fill_between(lags, mean1 - sem1, mean1 + sem1,
+                                color=col1, alpha=0.25, lw=0)
+                ax.axhline(0, color='black', lw=0.8, linestyle='--', alpha=0.4)
+
+                # Paired t-test per time bin
+                pvals    = _paired_wilcoxon_per_bin(mat0, mat1)
+                sig_mask = pvals < alpha
+
+                # Accumulate for heatmap
+                heatmap_regions.append(region)
+                heatmap_pvals.append(pvals)
+
+                # Compute y range and set ylim before drawing the significance bar
+                all_vals = np.concatenate([
+                    mean0 + sem0, mean0 - sem0,
+                    mean1 + sem1, mean1 - sem1
+                ])
+                y_bot  = np.nanmin(all_vals)
+                y_top  = np.nanmax(all_vals)
+                y_span = max(y_top - y_bot, 1e-9)
+                y_bar  = y_top + y_span * 0.08
+                bar_h  = y_span * 0.05
+                ax.set_ylim(y_bot - y_span * 0.05,
+                            y_bar + bar_h + y_span * 0.08)
+
+                # Significance bar above the traces
+                if np.any(sig_mask):
+                    ax.fill_between(lags, y_bar, y_bar + bar_h,
+                                    where=sig_mask,
+                                    color=sig_color, alpha=0.75,
+                                    linewidth=0, zorder=5)
+
+                ax.set_title(f'{region}', fontsize=10, fontweight='bold')
+                ax.set_xlabel('Lag (s)', fontsize=8)
+                ax.set_ylabel('Coefficient', fontsize=8)
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                ax.legend(fontsize=6, loc='best')
+
+            if not any_plotted:
+                plt.close(fig)
+                continue
+
+            for ax in axes[len(ordered_regions):]:
+                ax.set_visible(False)
+
+            pair_clean = f'{k0_name}_vs_{k1_name}'
+            plt.suptitle(
+                f'{pair_title}: stim_0 vs stim_1 — {model_label}',
+                fontsize=13, fontweight='bold'
+            )
+            plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+            fname = f'paired_kernel_comparison_{pair_clean}_{model_key}'
+            putils.save_figure_with_options(
+                fig, file_formats=["png", "pdf"],
+                filename=fname,
+                output_dir=output_folder
+            )
+            plt.close(fig)
+
+            # ── Heatmap: areas × time bins, cells show p-value + star ────────
+            if heatmap_regions and heatmap_lags is not None:
+                pval_matrix = np.stack(heatmap_pvals)   # (n_areas, n_lags)
+                n_areas, n_lags = pval_matrix.shape
+
+                fig_h, ax_h = plt.subplots(
+                    figsize=(max(6, n_lags * 0.6), max(3, n_areas * 0.5))
+                )
+
+                # Color by -log10(p); cap at 4 for display
+                log_p = np.clip(-np.log10(pval_matrix), 0, 4)
+                _cmap_pval = matplotlib.colors.LinearSegmentedColormap.from_list('rw_sig', ['white', 'crimson'])
+                im = ax_h.imshow(log_p, aspect='auto', cmap=_cmap_pval,
+                                 vmin=0, vmax=4)
+
+                # Annotate each cell with the p-value and a star if significant
+                for r_idx in range(n_areas):
+                    for c_idx in range(n_lags):
+                        p = pval_matrix[r_idx, c_idx]
+                        star = '*' if p < alpha else ''
+                        txt = f'{p:.3f}{star}' if p >= 0.001 else f'<.001{star}'
+                        # White text on dark cells, black on light cells
+                        text_color = 'white' if log_p[r_idx, c_idx] > 2 else 'black'
+                        ax_h.text(c_idx, r_idx, txt,
+                                  ha='center', va='center',
+                                  fontsize=6, color=text_color)
+
+                ax_h.set_xticks(np.arange(n_lags))
+                ax_h.set_xticklabels([f'{l:.2f}' for l in heatmap_lags],
+                                     rotation=45, ha='right', fontsize=7)
+                ax_h.set_yticks(np.arange(n_areas))
+                ax_h.set_yticklabels(heatmap_regions, fontsize=8)
+                ax_h.set_xlabel('Lag (s)', fontsize=9)
+
+                cbar = plt.colorbar(im, ax=ax_h, fraction=0.03, pad=0.02)
+                cbar.set_label('−log₁₀(p)', fontsize=8)
+                cbar.set_ticks([0, 1, 2, 3, 4])
+                cbar.set_ticklabels(['1', '0.1', '0.01', '0.001', '≤0.0001'],
+                                    fontsize=7)
+
+                plt.suptitle(
+                    f'{pair_title}: paired t-test p-values per bin — {model_label}',
+                    fontsize=11, fontweight='bold'
+                )
+                plt.tight_layout(rect=[0, 0, 1, 0.96])
+
+                fname_hm = f'paired_kernel_pvalue_heatmap_{pair_clean}_{model_key}'
+                putils.save_figure_with_options(
+                    fig_h, file_formats=["png", "pdf"],
+                    filename=fname_hm,
+                    output_dir=output_folder
+                )
+                plt.close(fig_h)
 
 
 def identify_consistently_increasing_neurons(
@@ -9016,7 +10100,7 @@ def identify_consistently_increasing_neurons(
                 plt.tight_layout()
 
                 fname = f"consistent_increase_heatmap_{kernel_1}_vs_{kernel_0}_{model_key}"
-                putils.save_figure_with_options(fig, file_formats=["png"],
+                putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                               filename=fname,
                                               output_dir=output_folder)
                 plt.close(fig)
@@ -9135,6 +10219,9 @@ def analyze_kernel_consistency(
                                 k1 = kernel_curves[kernel1]
                                 k2 = kernel_curves[kernel2]
 
+                                if len(k1) != len(k2):
+                                    continue
+
                                 # Compute correlation
                                 corr = np.corrcoef(k1, k2)[0, 1]
                                 if not np.isnan(corr):
@@ -9181,8 +10268,9 @@ def analyze_kernel_consistency(
 
         fig, ax = plt.subplots(1, 1, figsize=(8, 7))
 
-        sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap='coolwarm',
-                   center=0, vmin=0, vmax=1,
+        _cmap_corr = matplotlib.colors.LinearSegmentedColormap.from_list('rw_corr', ['white', 'forestgreen'])
+        sns.heatmap(corr_matrix, annot=True, fmt='.2f', cmap=_cmap_corr,
+                   center=None, vmin=0, vmax=1,
                    xticklabels=unique_kernels, yticklabels=unique_kernels,
                    ax=ax, cbar_kws={'label': 'Correlation'})
 
@@ -9190,7 +10278,7 @@ def analyze_kernel_consistency(
         plt.tight_layout()
 
         fname = f"kernel_consistency_corr_matrix_{model_key}"
-        putils.save_figure_with_options(fig, file_formats=["png"],
+        putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                       filename=fname,
                                       output_dir=output_folder)
         plt.close(fig)
@@ -9222,7 +10310,7 @@ def analyze_kernel_consistency(
             plt.tight_layout()
 
             fname = f"kernel_consistency_per_region_{model_key}"
-            putils.save_figure_with_options(fig, file_formats=["png"],
+            putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                           filename=fname,
                                           output_dir=output_folder)
             plt.close(fig)
@@ -9511,7 +10599,7 @@ def _plot_across_model_changes(metrics_df, top_neurons, dfs, model_labels, whisk
 
     plt.tight_layout()
     fname = "across_models_variability_scatter"
-    putils.save_figure_with_options(fig, file_formats=["png"],
+    putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                   filename=fname,
                                   output_dir=output_folder)
     plt.close(fig)
@@ -9560,7 +10648,7 @@ def _plot_across_model_changes(metrics_df, top_neurons, dfs, model_labels, whisk
     plt.tight_layout(rect=[0, 0, 1, 0.97])
 
     fname = "across_models_top_neurons_trajectories"
-    putils.save_figure_with_options(fig, file_formats=["png"],
+    putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                   filename=fname,
                                   output_dir=output_folder)
     plt.close(fig)
@@ -9599,7 +10687,7 @@ def _plot_within_model_changes(metrics_df, top_neurons, dfs, model_labels, whisk
     plt.tight_layout()
 
     fname = "within_model_variability_scatter"
-    putils.save_figure_with_options(fig, file_formats=["png"],
+    putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                   filename=fname,
                                   output_dir=output_folder)
     plt.close(fig)
@@ -9651,7 +10739,2514 @@ def _plot_within_model_changes(metrics_df, top_neurons, dfs, model_labels, whisk
     plt.tight_layout(rect=[0, 0, 1, 0.97])
 
     fname = "within_model_top_neurons_kernels"
-    putils.save_figure_with_options(fig, file_formats=["png"],
+    putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                   filename=fname,
                                   output_dir=output_folder)
     plt.close(fig)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# KERNEL CONSISTENCY PLOTTING
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _extract_kernel_vector(coef_full_mean, predictors_full, kernel_name):
+    """Extract sorted (by lag) coefficient vector for a named kernel.
+
+    Parameters
+    ----------
+    coef_full_mean : array-like
+        Mean coefficient vector for the neuron (across folds).
+    predictors_full : list of str
+        Predictor names matching positions in coef_full_mean.
+    kernel_name : str
+        Exact kernel base name (e.g. 'whisker_hits_stim_0').
+
+    Returns
+    -------
+    lags : np.ndarray or None
+    coefs : np.ndarray or None
+    """
+    pattern = re.compile(rf"^{re.escape(kernel_name)}_t([+-])(\d+\.\d+)s$")
+    kernel_data = []
+    for i, p in enumerate(predictors_full):
+        m = pattern.match(p)
+        if m:
+            sign = 1 if m.group(1) == '+' else -1
+            lag = sign * float(m.group(2))
+            kernel_data.append((lag, coef_full_mean[i]))
+    if not kernel_data:
+        return None, None
+    kernel_data.sort(key=lambda x: x[0])
+    lags = np.array([x[0] for x in kernel_data])
+    coefs = np.array([x[1] for x in kernel_data])
+    return lags, coefs
+
+
+def _build_neuron_change_table(df, kernel_0, kernel_1):
+    """For each neuron, compute directional % weight change from kernel_0 to kernel_1.
+
+    Direction consistency is read from the pre-computed columns produced by
+    compute_kernel_consistency during summary creation:
+      - ``kernel_pair``       : e.g. 'whisker_hits_stim_1_vs_whisker_hits_stim_0'
+      - ``is_consistent``     : True if the neuron passed the fold-consistency threshold
+      - ``consistency_score`` : float, positive = consistent increase,
+                                negative = consistent decrease
+
+    ``all_positive`` is True when is_consistent=True and consistency_score > 0.
+    ``all_negative`` is True when is_consistent=True and consistency_score < 0.
+
+    If those columns are absent the function warns and falls back to checking
+    the sign of every lag bin in the mean-coefficient delta.
+
+    The percent change is defined as::
+
+        pct_change = mean(w1 - w0) / (mean(|w0|) + mean(|w1|) + ε) * 100
+
+    Bounded in [-100 %, +100 %] by the triangle inequality.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Must contain 'model_name', 'coef_full_mean', 'predictors_full',
+        'area_acronym_custom', 'reward_group'.
+        Should also contain 'kernel_pair', 'is_consistent', 'consistency_score'.
+    kernel_0, kernel_1 : str
+        Kernel names to compare.
+
+    Returns
+    -------
+    pd.DataFrame with columns:
+        mouse_id, neuron_id, area_acronym_custom, reward_group,
+        pct_change, all_positive, all_negative, w0, w1, lags
+    """
+    pair_name = f"{kernel_1}_vs_{kernel_0}"
+    df_full = df[df['model_name'] == 'full']
+    has_consistency = ('kernel_pair' in df_full.columns
+                       and 'is_consistent' in df_full.columns
+                       and 'consistency_score' in df_full.columns)
+    if not has_consistency:
+        print("[kernel_consistency] WARNING: consistency columns not found in df. "
+              "Falling back to all-bins delta direction. "
+              "Re-run create_summary to generate them.")
+
+    rows = []
+    for (mouse_id, neuron_id), grp in df_full.groupby(['mouse_id', 'neuron_id']):
+        # coef_full_mean and predictors_full are the same across all fold-rows
+        row = grp.iloc[0]
+        coef = np.array(row['coef_full_mean'])
+        preds = row['predictors_full']
+        area = row['area_acronym_custom']
+        reward_group = row['reward_group']
+
+        lags, w0 = _extract_kernel_vector(coef, preds, kernel_0)
+        _, w1 = _extract_kernel_vector(coef, preds, kernel_1)
+
+        if w0 is None or w1 is None or len(w0) != len(w1):
+            continue
+
+        # Peak-based % change: symmetric, bounded in [-100 %, +100 %]
+        amp0 = np.max(np.abs(w0))
+        amp1 = np.max(np.abs(w1))
+        pct_change = (amp1 - amp0) / (amp0 + amp1 + 1e-10) * 100
+
+        # Mean-coef % change: same formula but using signed mean over time bins
+        mean0 = np.mean(w0)
+        mean1 = np.mean(w1)
+        mean_pct_change = (mean1 - mean0) / (np.abs(mean0) + np.abs(mean1) + 1e-10) * 100
+
+        if has_consistency:
+            pair_rows = grp[grp['kernel_pair'] == pair_name]
+            if pair_rows.empty:
+                all_positive = False
+                all_negative = False
+            else:
+                r = pair_rows.iloc[0]
+                is_con = bool(r['is_consistent']) if not pd.isna(r['is_consistent']) else False
+                score = float(r['consistency_score']) if not pd.isna(r['consistency_score']) else 0.0
+                all_positive = is_con and score > 0
+                all_negative = is_con and score < 0
+        else:
+            all_positive = bool(np.all(delta > 0))
+            all_negative = bool(np.all(delta < 0))
+
+        rows.append({
+            'mouse_id': mouse_id,
+            'neuron_id': neuron_id,
+            'area_acronym_custom': area,
+            'reward_group': reward_group,
+            'pct_change': pct_change,
+            'mean_pct_change': mean_pct_change,
+            'all_positive': all_positive,
+            'all_negative': all_negative,
+            'w0': w0,
+            'w1': w1,
+            'lags': lags,
+        })
+    return pd.DataFrame(rows)
+
+
+def _plot_consistent_kernels_by_area(
+        neuron_df, ordered_regions, region_to_color,
+        threshold, direction, output_folder,
+        kernel_0, kernel_1, reward_label, n_cols=3):
+    """Plot average kernel_0 (light) and kernel_1 (full colour) by brain area
+    for a subset of neurons that consistently change in the given direction.
+
+    Parameters
+    ----------
+    neuron_df : pd.DataFrame
+        Already-filtered rows from _build_neuron_change_table.
+    ordered_regions : list of str
+    region_to_color : dict  {region: hex_color}
+    threshold : float       % change threshold (used in title/filename only here).
+    direction : str         'up' or 'down'.
+    output_folder : str
+    kernel_0, kernel_1 : str
+    reward_label : str      e.g. 'R+' or 'R-'.
+    n_cols : int
+    """
+    if neuron_df.empty:
+        return
+
+    present_regions = [r for r in ordered_regions
+                       if r in neuron_df['area_acronym_custom'].values]
+    if not present_regions:
+        return
+
+    n_rows = math.ceil(len(present_regions) / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4 * n_cols, 3 * n_rows), sharex=True)
+    axes = np.array(axes).reshape(-1)
+
+    legend_added = False
+    for ax, region in zip(axes, present_regions):
+        region_rows = neuron_df[neuron_df['area_acronym_custom'] == region]
+        if region_rows.empty:
+            ax.set_visible(False)
+            continue
+
+        w0_stack = np.stack(region_rows['w0'].values)
+        w1_stack = np.stack(region_rows['w1'].values)
+        lags = region_rows.iloc[0]['lags']
+        n = len(region_rows)
+
+        mean_w0 = w0_stack.mean(axis=0)
+        sem_w0 = (w0_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w0)
+        mean_w1 = w1_stack.mean(axis=0)
+        sem_w1 = (w1_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w1)
+
+        base_color = region_to_color.get(region, 'gray')
+
+        # kernel_0: lighter / kernel_1: full colour
+        ax.plot(lags, mean_w0, color=base_color, alpha=0.45, lw=1.5,
+                label=kernel_0)
+        ax.fill_between(lags, mean_w0 - sem_w0, mean_w0 + sem_w0,
+                        color=base_color, alpha=0.12)
+        ax.plot(lags, mean_w1, color=base_color, alpha=1.0, lw=2.0,
+                label=kernel_1)
+        ax.fill_between(lags, mean_w1 - sem_w1, mean_w1 + sem_w1,
+                        color=base_color, alpha=0.28)
+
+        ax.axhline(0, color='gray', lw=0.8, ls='--')
+        ax.set_title(f"{region} (n={n})", fontsize=9)
+        ax.set_xlabel("Lag (s)", fontsize=8)
+        ax.set_ylabel("Coef", fontsize=8)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+
+        if not legend_added:
+            ax.legend(fontsize=7)
+            legend_added = True
+
+    for ax in axes[len(present_regions):]:
+        ax.set_visible(False)
+
+    dir_label = 'increase' if direction == 'up' else 'decrease'
+    thr_str = f"{threshold:.0f}"
+    plt.suptitle(
+        f"Avg kernels – consistent {dir_label} >|{thr_str}%| "
+        f"[{kernel_1} vs {kernel_0}] – {reward_label}",
+        fontsize=11
+    )
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+
+    thr_label = str(threshold).replace('.', 'p')
+    fname = (f"cst_{direction}_gt{thr_label}pct")
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
+                                    output_dir=output_folder)
+    plt.close(fig)
+
+
+def _plot_consistency_fraction_by_area(
+        neuron_df, reward_groups, reward_group_labels,
+        ordered_regions, threshold,
+        output_folder, kernel_0, kernel_1):
+    """Grouped bar chart: % of neurons with consistent weight increase / decrease
+    per brain area, one bar cluster per reward group.
+
+    Produces two figures: one for 'up', one for 'down'.
+
+    Parameters
+    ----------
+    neuron_df : pd.DataFrame
+        Full table from _build_neuron_change_table (all reward groups).
+    reward_groups : list of int
+    reward_group_labels : dict  {int: str}
+    ordered_regions : list of str
+    threshold : float
+    output_folder : str
+    kernel_0, kernel_1 : str
+    """
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+    thr_label = str(threshold).replace('.', 'p')
+
+    present_regions = [r for r in ordered_regions
+                       if r in neuron_df['area_acronym_custom'].values]
+    if not present_regions:
+        return
+
+    from scipy.stats import mannwhitneyu as _mwu
+
+    def _per_mouse_fracs(rg_df, region, direction, threshold):
+        per_mouse = []
+        for _, mouse_df in rg_df[rg_df['area_acronym_custom'] == region].groupby('mouse_id'):
+            total_m = len(mouse_df)
+            if total_m == 0:
+                continue
+            if direction == 'up':
+                n_sel = (mouse_df['all_positive'] & (mouse_df['pct_change'] > threshold)).sum()
+            else:
+                n_sel = (mouse_df['all_negative'] & (mouse_df['pct_change'] < -threshold)).sum()
+            per_mouse.append(100.0 * n_sel / total_m)
+        return per_mouse
+
+    n_rg = len(reward_groups)
+    bar_width = 0.8 / n_rg
+
+    for direction in ['up', 'down']:
+        # Sort areas by R+ mean fraction (descending) for this direction
+        rp_df = neuron_df[neuron_df['reward_group'] == 1]
+        def _region_rp_frac(region):
+            total = len(rp_df[rp_df['area_acronym_custom'] == region])
+            if total == 0:
+                return 0.0
+            if direction == 'up':
+                n_sel = (rp_df[rp_df['area_acronym_custom'] == region]['all_positive']
+                         & (rp_df[rp_df['area_acronym_custom'] == region]['pct_change'] > threshold)).sum()
+            else:
+                n_sel = (rp_df[rp_df['area_acronym_custom'] == region]['all_negative']
+                         & (rp_df[rp_df['area_acronym_custom'] == region]['pct_change'] < -threshold)).sum()
+            return 100.0 * n_sel / total
+        sorted_regions = sorted(present_regions, key=_region_rp_frac, reverse=True)
+        x = np.arange(len(sorted_regions))
+        fig, ax = plt.subplots(figsize=(max(10, len(sorted_regions) * 0.75), 5))
+
+        # Collect per-mouse fractions for all groups first (needed for the MWU test)
+        all_fracs = {}   # reward_group -> list-of-lists (one per region)
+        for reward_group in reward_groups:
+            rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+            all_fracs[reward_group] = [
+                _per_mouse_fracs(rg_df, region, direction, threshold)
+                for region in sorted_regions
+            ]
+
+        # Plot bars + dots
+        bar_tops = np.zeros(len(sorted_regions))
+        for rg_idx, reward_group in enumerate(reward_groups):
+            rg_label = reward_group_labels.get(reward_group, str(reward_group))
+            fracs = all_fracs[reward_group]
+            means = [np.mean(f) if f else 0.0 for f in fracs]
+            sems  = [np.std(f, ddof=1) / np.sqrt(len(f)) if len(f) >= 2 else 0.0 for f in fracs]
+
+            offset = (rg_idx - (n_rg - 1) / 2) * bar_width
+            ax.bar(x + offset, means, yerr=sems, width=bar_width,
+                   color=reward_colors.get(reward_group, 'gray'),
+                   label=rg_label, alpha=0.85, edgecolor='white',
+                   capsize=3, error_kw={'linewidth': 1.2})
+            for xi, per_mouse in zip(x + offset, fracs):
+                ax.scatter(np.full(len(per_mouse), xi), per_mouse,
+                           color='k', s=12, zorder=5, alpha=0.6, linewidths=0)
+            bar_tops = np.maximum(bar_tops,
+                                  [m + s for m, s in zip(means, sems)])
+
+        # Mann-Whitney U (R+ vs R-) per area, annotate stars
+        if len(reward_groups) == 2:
+            rg_a, rg_b = reward_groups[0], reward_groups[1]
+            y_star = bar_tops * 1.05
+            step = bar_tops.max() * 0.06 if bar_tops.max() > 0 else 1.0
+            for xi, fa, fb, yt in zip(x, all_fracs[rg_a], all_fracs[rg_b], y_star):
+                if len(fa) < 2 or len(fb) < 2:
+                    continue
+                _, p = _mwu(fa, fb, alternative='two-sided')
+                stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
+                if stars:
+                    ax.text(xi, yt + step * 0.1, stars, ha='center', va='bottom',
+                            fontsize=10, fontweight='bold')
+
+        ax.set_xticks(x)
+        ax.set_xticklabels(sorted_regions, rotation=45, ha='right', fontsize=9)
+        ax.set_ylabel('% neurons (mean ± SEM across mice)', fontsize=10)
+        dir_label = 'increase' if direction == 'up' else 'decrease'
+        thr_title = 'no % threshold' if threshold == 0 else f'>|{threshold:.0f}%|'
+        ax.set_title(
+            f"% neurons – consistent {dir_label} {thr_title} per area"
+            f"\n[{kernel_1} vs {kernel_0}]",
+            fontsize=11
+        )
+        ax.legend(fontsize=9)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        plt.tight_layout()
+
+        fname_thr = 'no_thr' if threshold == 0 else f'gt{thr_label}pct'
+        fname = (f"f_{direction}_{fname_thr}_by_area")
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
+                                        output_dir=output_folder)
+        plt.close(fig)
+
+
+def _plot_pct_change_vs_performance(
+        neuron_df, reward_groups, reward_group_labels,
+        ordered_regions, threshold,
+        output_folder, kernel_0, kernel_1,
+        perf_df, change_col='pct_change'):
+    """Scatter: per-mouse mean pct_change vs behavioural performance per area."""
+    from scipy.stats import spearmanr
+
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+    present_regions = [r for r in ordered_regions
+                       if r in neuron_df['area_acronym_custom'].values]
+    if not present_regions:
+        return
+
+    thr_label = 'no_thr' if threshold == 0 else f"gt{str(threshold).replace('.', 'p')}pct"
+
+    # Per-mouse mean of change_col per area
+    records = []
+    for region in present_regions:
+        region_df = neuron_df[neuron_df['area_acronym_custom'] == region]
+        for (mouse_id, rg), grp in region_df.groupby(['mouse_id', 'reward_group']):
+            records.append({
+                'mouse_id': mouse_id,
+                'reward_group': int(rg),
+                'area': region,
+                'mean_pct_change': grp[change_col].mean(),
+            })
+    if not records:
+        return
+
+    mouse_area_df = pd.DataFrame(records).merge(
+        perf_df[['mouse_id', 'outcome_w', 'd_prime_w']], on='mouse_id', how='inner')
+    if mouse_area_df.empty:
+        return
+
+    perf_folder = os.path.join(output_folder, 'vs_performance')
+    os.makedirs(perf_folder, exist_ok=True)
+
+    n_regions = len(present_regions)
+    n_cols = min(5, n_regions)
+    n_rows = math.ceil(n_regions / n_cols)
+
+    for metric in ['outcome_w', 'd_prime_w']:
+        fig, axes = plt.subplots(n_rows, n_cols,
+                                 figsize=(4 * n_cols, 3.5 * n_rows), squeeze=False)
+        for ax_idx, region in enumerate(present_regions):
+            ax = axes[ax_idx // n_cols][ax_idx % n_cols]
+            region_data = mouse_area_df[mouse_area_df['area'] == region]
+            any_plotted = False
+            for rg in reward_groups:
+                rg_data = region_data[region_data['reward_group'] == rg].dropna(
+                    subset=[metric, 'mean_pct_change'])
+                if len(rg_data) < 3:
+                    continue
+                x = rg_data['mean_pct_change'].values
+                y = rg_data[metric].values
+                color = reward_colors.get(rg, 'gray')
+                label = reward_group_labels.get(rg, str(rg))
+                ax.scatter(x, y, color=color, s=30, alpha=0.8, label=label, zorder=3)
+                m, b = np.polyfit(x, y, 1)
+                x_line = np.linspace(x.min(), x.max(), 50)
+                ax.plot(x_line, m * x_line + b, color=color, linewidth=1.2, alpha=0.7)
+                r, p = spearmanr(x, y)
+                p_str = f'p={p:.2e}' if p >= 0.001 else 'p<0.001'
+                ax.annotate(f'{label}: r={r:.2f}, {p_str}',
+                            xy=(0.05, 0.95 - reward_groups.index(rg) * 0.13),
+                            xycoords='axes fraction', fontsize=7,
+                            color=color, va='top')
+                any_plotted = True
+            if not any_plotted:
+                ax.set_visible(False)
+                continue
+            ax.axvline(0, color='k', linewidth=0.5, linestyle='--', alpha=0.4)
+            change_label = 'Mean % change (mean coef)' if change_col == 'mean_pct_change' else 'Mean % change (peak amp)'
+            ax.set_title(region, fontsize=9, fontweight='bold')
+            ax.set_xlabel(change_label, fontsize=8)
+            ax.set_ylabel(metric, fontsize=8)
+            ax.tick_params(labelsize=7)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+
+        for ax_idx in range(len(present_regions), n_rows * n_cols):
+            axes[ax_idx // n_cols][ax_idx % n_cols].set_visible(False)
+
+        col_tag = 'mean_coef' if change_col == 'mean_pct_change' else 'peak_amp'
+        plt.suptitle(f'Mean % {col_tag} change vs {metric}\n[{kernel_1} vs {kernel_0}]',
+                     fontsize=12)
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        fname = f"pct_change_{col_tag}_vs_{metric}"
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                        filename=fname, output_dir=perf_folder)
+        plt.close(fig)
+
+
+def _plot_pct_change_by_area(
+        neuron_df, reward_groups, reward_group_labels,
+        ordered_regions, threshold,
+        output_folder, kernel_0, kernel_1):
+    """Mean pct_change per area, R+ vs R−, with Mann-Whitney U stars.
+
+    Four figures: {all, consistent} x {per_neuron, per_mouse}.
+    """
+    from scipy.stats import mannwhitneyu as _mwu
+
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+    present_regions = [r for r in ordered_regions
+                       if r in neuron_df['area_acronym_custom'].values]
+    if not present_regions:
+        return
+
+    n_rg = len(reward_groups)
+    bar_width = 0.8 / n_rg
+    x = np.arange(len(present_regions))
+    thr_label = 'no_thr' if threshold == 0 else f"gt{str(threshold).replace('.', 'p')}pct"
+
+    for subset_label in ['all', 'consistent']:
+        if subset_label == 'consistent':
+            sub_df = neuron_df[neuron_df['all_positive'] | neuron_df['all_negative']]
+            if threshold > 0:
+                sub_df = sub_df[np.abs(sub_df['pct_change']) > threshold]
+        else:
+            sub_df = neuron_df
+
+        for avg_method in ['per_neuron', 'per_mouse']:
+            # Collect values first so the sort key matches the plotted aggregation
+            rp_df = sub_df[sub_df['reward_group'] == 1]
+            all_vals = {}
+            for reward_group in reward_groups:
+                rg_df = sub_df[sub_df['reward_group'] == reward_group]
+                region_vals = []
+                for region in present_regions:
+                    region_rg = rg_df[rg_df['area_acronym_custom'] == region]
+                    if avg_method == 'per_mouse':
+                        v = [mouse_df['pct_change'].mean()
+                             for _, mouse_df in region_rg.groupby('mouse_id')
+                             if len(mouse_df) > 0]
+                    else:
+                        v = list(region_rg['pct_change'].dropna().values)
+                    region_vals.append(v)
+                all_vals[reward_group] = region_vals
+
+            # Sort by R+ aggregated mean (matches exactly what is plotted)
+            rp_vals = dict(zip(present_regions, all_vals.get(1, [[] for _ in present_regions])))
+            region_sort_key = {r: (np.mean(rp_vals[r]) if rp_vals[r] else 0.0)
+                               for r in present_regions}
+            sorted_regions = sorted(present_regions,
+                                    key=lambda r: region_sort_key.get(r, 0.0),
+                                    reverse=True)
+            # Reorder all_vals to match sorted_regions
+            region_idx = {r: i for i, r in enumerate(present_regions)}
+            all_vals = {rg: [vals[region_idx[r]] for r in sorted_regions]
+                        for rg, vals in all_vals.items()}
+
+            n_reg = len(sorted_regions)
+            fig, ax = plt.subplots(figsize=(6, max(4, n_reg * 0.55 + 1.5)))
+            y = np.arange(n_reg)
+            bar_rights = np.zeros(n_reg)
+            for rg_idx, reward_group in enumerate(reward_groups):
+                rg_label = reward_group_labels.get(reward_group, str(reward_group))
+                vals = all_vals[reward_group]
+                means = [np.mean(v) if v else 0.0 for v in vals]
+                sems  = [np.std(v, ddof=1) / np.sqrt(len(v)) if len(v) >= 2 else 0.0 for v in vals]
+                offset = (rg_idx - (n_rg - 1) / 2) * bar_width
+                ax.barh(y + offset, means, xerr=sems, height=bar_width,
+                        color=reward_colors.get(reward_group, 'gray'),
+                        label=rg_label, alpha=0.85, edgecolor='white',
+                        capsize=3, error_kw={'linewidth': 1.2})
+                if avg_method == 'per_mouse':
+                    for yi, v in zip(y + offset, vals):
+                        ax.scatter(v, np.full(len(v), yi),
+                                   color='k', s=12, zorder=5, alpha=0.6, linewidths=0)
+                bar_rights = np.maximum(bar_rights,
+                                        [abs(m) + s for m, s in zip(means, sems)])
+
+            if len(reward_groups) == 2:
+                rg_a, rg_b = reward_groups[0], reward_groups[1]
+                step = bar_rights.max() * 0.06 if bar_rights.max() > 0 else 1.0
+                for yi, fa, fb, xr in zip(y, all_vals[rg_a], all_vals[rg_b], bar_rights * 1.05):
+                    if len(fa) < 2 or len(fb) < 2:
+                        continue
+                    _, p = _mwu(fa, fb, alternative='two-sided')
+                    stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
+                    if stars:
+                        ax.text(xr + step * 0.1, yi, stars, ha='left', va='center',
+                                fontsize=10, fontweight='bold')
+
+            ax.axvline(0, color='k', linewidth=0.6, linestyle='--', alpha=0.4)
+            ax.set_yticks(y)
+            ax.set_yticklabels(sorted_regions, fontsize=9)
+            avg_lbl = 'per mouse' if avg_method == 'per_mouse' else 'per neuron'
+            ax.set_xlabel(f'Mean % amplitude change ({avg_lbl})', fontsize=10)
+            subset_title = 'consistent neurons' if subset_label == 'consistent' else 'all neurons'
+            thr_title = '' if threshold == 0 else f'  (>|{threshold:.0f}%|)'
+            ax.set_title(f'Δ amplitude – {subset_title}{thr_title} per area', fontsize=11)
+            ax.legend(fontsize=9)
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            plt.tight_layout()
+            fname = (f"pct_change_{subset_label}_{avg_method}_{thr_label}")
+            putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                            filename=fname, output_dir=output_folder)
+            plt.close(fig)
+
+
+
+def _plot_consistency_fraction_combined(
+        neuron_df, reward_groups, reward_group_labels,
+        ordered_regions, threshold,
+        output_folder, kernel_0, kernel_1):
+    """Three figures showing fraction of neurons with ANY consistent change
+    (up OR down combined) at a given threshold.
+
+    Figure 1 – by area, both reward groups on the same axes (grouped bars).
+    Figure 2 – all areas pooled, one bar per reward group.
+    Figure 3 – one figure per reward group: fraction per area
+                (to compare area contributions within each reward group).
+
+    Parameters
+    ----------
+    neuron_df : pd.DataFrame  (output of _build_neuron_change_table)
+    reward_groups : list of int
+    reward_group_labels : dict {int: str}
+    ordered_regions : list of str
+    threshold : float   (0 = no threshold)
+    output_folder : str
+    kernel_0, kernel_1 : str
+    """
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+    fname_thr = 'no_thr' if threshold == 0 else f'gt{str(threshold).replace(".", "p")}pct'
+    thr_title = 'no % threshold' if threshold == 0 else f'>|{threshold:.0f}%|'
+
+    present_regions = [r for r in ordered_regions
+                       if r in neuron_df['area_acronym_custom'].values]
+    if not present_regions:
+        return
+
+    def _count_consistent(sub_df, thr):
+        """Count neurons with any consistent change at threshold thr."""
+        if thr == 0:
+            return (sub_df['all_positive'] | sub_df['all_negative']).sum()
+        return (
+            (sub_df['all_positive'] & (sub_df['pct_change'] > thr)) |
+            (sub_df['all_negative'] & (sub_df['pct_change'] < -thr))
+        ).sum()
+
+    # ── Figure 1: by area, grouped bars (all reward groups on same axes) ──────
+    n_rg = len(reward_groups)
+    bar_width = 0.8 / n_rg
+    x = np.arange(len(present_regions))
+
+    fig1, ax1 = plt.subplots(figsize=(max(10, len(present_regions) * 0.75), 5))
+    for rg_idx, reward_group in enumerate(reward_groups):
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+        fractions = []
+        for region in present_regions:
+            region_rg = rg_df[rg_df['area_acronym_custom'] == region]
+            total = len(region_rg)
+            if total == 0:
+                fractions.append(0.0)
+            else:
+                fractions.append(100.0 * _count_consistent(region_rg, threshold) / total)
+        offset = (rg_idx - (n_rg - 1) / 2) * bar_width
+        ax1.bar(x + offset, fractions, width=bar_width,
+                color=reward_colors.get(reward_group, 'gray'),
+                label=rg_label, alpha=0.85, edgecolor='white')
+
+    ax1.set_xticks(x)
+    ax1.set_xticklabels(present_regions, rotation=45, ha='right', fontsize=9)
+    ax1.set_ylabel('% neurons', fontsize=10)
+    ax1.set_title(
+        f"% neurons – consistent changes (up or down) {thr_title} per area"
+        f"\n[{kernel_1} vs {kernel_0}]",
+        fontsize=11
+    )
+    ax1.legend(fontsize=9)
+    ax1.spines["top"].set_visible(False)
+    ax1.spines["right"].set_visible(False)
+    plt.tight_layout()
+    putils.save_figure_with_options(
+        fig1, file_formats=['png', 'pdf'],
+        filename=f"frac_cst_{fname_thr}_areas",
+        output_dir=output_folder)
+    plt.close(fig1)
+
+    # ── Figure 2: all areas pooled, one bar per reward group ──────────────────
+    fig2, ax2 = plt.subplots(figsize=(4, 5))
+    overall_fractions = []
+    overall_labels = []
+    overall_colors = []
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+        total = len(rg_df)
+        frac = (100.0 * _count_consistent(rg_df, threshold) / total) if total > 0 else 0.0
+        overall_fractions.append(frac)
+        overall_labels.append(rg_label)
+        overall_colors.append(reward_colors.get(reward_group, 'gray'))
+
+    ax2.bar(overall_labels, overall_fractions, color=overall_colors,
+            alpha=0.85, edgecolor='white', width=0.5)
+    ax2.set_ylabel('% neurons', fontsize=10)
+    ax2.set_title(
+        f"% neurons – consistent changes (all areas pooled)\n{thr_title}"
+        f"\n[{kernel_1} vs {kernel_0}]",
+        fontsize=11
+    )
+    ax2.spines["top"].set_visible(False)
+    ax2.spines["right"].set_visible(False)
+    plt.tight_layout()
+    putils.save_figure_with_options(
+        fig2, file_formats=['png', 'pdf'],
+        filename=f"frac_cst_{fname_thr}_areas",
+        output_dir=output_folder)
+    plt.close(fig2)
+
+    # ── Figure 3: per reward group, fraction per area (area contribution) ─────
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+        color = reward_colors.get(reward_group, 'gray')
+
+        fractions = []
+        for region in present_regions:
+            region_rg = rg_df[rg_df['area_acronym_custom'] == region]
+            total = len(region_rg)
+            if total == 0:
+                fractions.append(0.0)
+            else:
+                fractions.append(100.0 * _count_consistent(region_rg, threshold) / total)
+
+        fig3, ax3 = plt.subplots(figsize=(max(10, len(present_regions) * 0.75), 5))
+        ax3.bar(present_regions, fractions, color=color, alpha=0.85, edgecolor='white')
+        ax3.set_xticks(range(len(present_regions)))
+        ax3.set_xticklabels(present_regions, rotation=45, ha='right', fontsize=9)
+        ax3.set_ylabel('% neurons', fontsize=10)
+        ax3.set_title(
+            f"Area contribution – consistent changes – {rg_label} {thr_title}"
+            f"\n[{kernel_1} vs {kernel_0}]",
+            fontsize=11
+        )
+        ax3.spines["top"].set_visible(False)
+        ax3.spines["right"].set_visible(False)
+        plt.tight_layout()
+        putils.save_figure_with_options(
+            fig3, file_formats=['png', 'pdf'],
+            filename=f"area_contrib_cst__{rg_label}",
+            output_dir=output_folder)
+        plt.close(fig3)
+
+
+def _plot_pct_change_distribution(
+        neuron_df, reward_groups, reward_group_labels,
+        output_folder, kernel_0, kernel_1):
+    """Histogram of per-neuron % weight change, overlaid by reward group.
+
+    Plots ALL neurons (no threshold filter) to help choose thresholds.
+    When exactly two reward groups are present, a Mann-Whitney U test is
+    run and the p-value is annotated on the figure.
+
+    Parameters
+    ----------
+    neuron_df : pd.DataFrame
+        Full table from _build_neuron_change_table.
+    reward_groups : list of int
+    reward_group_labels : dict  {int: str}
+    output_folder : str
+    kernel_0, kernel_1 : str
+    """
+    from scipy import stats
+
+    if neuron_df.empty:
+        return
+
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+
+    fig, ax = plt.subplots(figsize=(7, 4))
+
+    group_values = {}
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        values = neuron_df.loc[neuron_df['reward_group'] == reward_group, 'pct_change'].values
+        if len(values) == 0:
+            continue
+        group_values[reward_group] = values
+        color = reward_colors.get(reward_group, 'gray')
+        ax.hist(values, bins=50, color=color, alpha=0.5,
+                label=f"{rg_label} (n={len(values)})",
+                density=True, edgecolor='none')
+
+    ax.axvline(0, color='black', lw=1, ls='--')
+    ax.set_xlabel('% amplitude change  (peak|w₁| − peak|w₀|) / (peak|w₁| + peak|w₀|)', fontsize=9)
+    ax.set_ylabel('Density', fontsize=9)
+
+    # Mann-Whitney U test when exactly two groups are available
+    stat_text = ''
+    keys = list(group_values.keys())
+    if len(keys) == 2:
+        v1, v2 = group_values[keys[0]], group_values[keys[1]]
+        _, p = stats.mannwhitneyu(v1, v2, alternative='two-sided')
+        if p < 0.001:
+            p_str = 'p < 0.001'
+        elif p < 0.01:
+            p_str = f'p = {p:.3f}'
+        else:
+            p_str = f'p = {p:.2f}'
+        lbl0 = reward_group_labels.get(keys[0], str(keys[0]))
+        lbl1 = reward_group_labels.get(keys[1], str(keys[1]))
+        stat_text = f'Mann-Whitney U\n{lbl0} vs {lbl1}: {p_str}'
+        ax.text(0.97, 0.95, stat_text,
+                transform=ax.transAxes, fontsize=8,
+                va='top', ha='right',
+                bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.7, ec='lightgray'))
+
+    ax.set_title(
+        f"Distribution of weight change\n{kernel_1} vs {kernel_0}",
+        fontsize=11
+    )
+    ax.legend(fontsize=9)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    plt.tight_layout()
+
+    fname = f"pct_change_distribution_{kernel_1}_vs_{kernel_0}"
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
+                                    output_dir=output_folder)
+    plt.close(fig)
+
+
+def _plot_consistent_neurons_encoding_profile(
+        neuron_df, df, reward_groups, reward_group_labels,
+        output_folder, kernel_0, kernel_1, encoding_models=None,
+        area_groups=None, ordered_regions=None,
+        excluded_models=None):
+    """Horizontal bar chart: % consistently-up / consistently-down neurons that
+    are LRT-significant for each encoding model, vs all-neuron baseline.
+
+    Produces three sets of figures per direction ('up'/'down'):
+      1. Pooled (all areas).
+      2. Per area_group  → per_area_group/ subfolder.
+      3. Per area        → per_area/ subfolder.
+
+    Bars    : % consistent neurons that are LRT-significant.
+    Dashed  : % of ALL neurons in that reward group (baseline).
+    Colours : forestgreen = R+, crimson = R-.
+    """
+    from scipy.stats import fisher_exact
+
+    lrt_cols = ['mouse_id', 'neuron_id', 'model_name', 'lrt_significant']
+    if not all(c in df.columns for c in lrt_cols):
+        print("[kernel_consistency] 'lrt_significant' column missing – "
+              "skipping encoding profile plot.")
+        return
+
+    _EXCLUDE = excluded_models if excluded_models is not None else [
+        'random_split', '1whisker_kernel'
+    ]
+
+    if encoding_models is None:
+        encoding_models = sorted(
+            m for m in df['model_name'].dropna().unique() if m != 'full'
+        )
+    encoding_models = [m for m in encoding_models
+                       if not any(ex in m for ex in _EXCLUDE)]
+
+    if not encoding_models:
+        print("[kernel_consistency] No reduced models found for profile plot.")
+        return
+
+    # One LRT row per (mouse_id, neuron_id, model_name) — avoid fold duplication
+    lrt_df = (
+        df[df['model_name'].isin(encoding_models)][lrt_cols]
+        .dropna(subset=['lrt_significant'])
+        .groupby(['mouse_id', 'neuron_id', 'model_name'])['lrt_significant']
+        .first()
+        .reset_index()
+    )
+
+    model_short = {m: m.replace('_encoding', '').replace('_', ' ')
+                   for m in encoding_models}
+    reward_colors = {1: 'forestgreen', 0: 'crimson'}
+    n_models = len(encoding_models)
+    n_rg = len(reward_groups)
+    bar_height = 0.7 / n_rg
+    y_pos = np.arange(n_models)
+
+    def _sig_label(p):
+        if p < 0.001: return '***'
+        if p < 0.01:  return '**'
+        if p < 0.05:  return '*'
+        return ''
+
+    def _draw_profile(ax, neuron_sub, direction, avg_method='per_neuron'):
+        """Draw encoding-profile barh into ax for a subset of neurons.
+
+        avg_method='per_neuron' : fraction pooled across all neurons.
+        avg_method='per_mouse'  : mean ± SEM of per-mouse fractions.
+        Fisher's exact test is always per-neuron (count-based).
+        """
+        for rg_idx, reward_group in enumerate(reward_groups):
+            rg_label = reward_group_labels.get(reward_group, str(reward_group))
+            rg_df = neuron_sub[neuron_sub['reward_group'] == reward_group]
+            color = reward_colors.get(reward_group, 'gray')
+
+            all_ids = rg_df[['mouse_id', 'neuron_id']].drop_duplicates()
+            if direction == 'up':
+                cons_ids = rg_df.loc[rg_df['all_positive'],
+                                     ['mouse_id', 'neuron_id']].drop_duplicates()
+            else:
+                cons_ids = rg_df.loc[rg_df['all_negative'],
+                                     ['mouse_id', 'neuron_id']].drop_duplicates()
+
+            n_cons = len(cons_ids)
+            fracs_cons, fracs_base, sems_cons, pvals = [], [], [], []
+
+            for model in encoding_models:
+                model_lrt = lrt_df[lrt_df['model_name'] == model]
+                all_m  = all_ids.merge(model_lrt, on=['mouse_id', 'neuron_id'])
+                cons_m = cons_ids.merge(model_lrt, on=['mouse_id', 'neuron_id'])
+
+                if avg_method == 'per_mouse':
+                    mc = [g['lrt_significant'].mean() * 100
+                          for _, g in cons_m.groupby('mouse_id')]
+                    mb = [g['lrt_significant'].mean() * 100
+                          for _, g in all_m.groupby('mouse_id')]
+                    fracs_cons.append(np.mean(mc) if mc else 0.0)
+                    sems_cons.append(
+                        np.std(mc, ddof=1) / np.sqrt(len(mc)) if len(mc) > 1 else 0.0)
+                    fracs_base.append(np.mean(mb) if mb else 0.0)
+                else:
+                    fracs_cons.append(
+                        cons_m['lrt_significant'].mean() * 100 if len(cons_m) > 0 else 0.0)
+                    sems_cons.append(0.0)
+                    fracs_base.append(
+                        all_m['lrt_significant'].mean() * 100 if len(all_m) > 0 else 0.0)
+
+                # Fisher's exact (per-neuron counts)
+                cons_sig     = int(cons_m['lrt_significant'].sum())
+                cons_not_sig = len(cons_m) - cons_sig
+                non_cons_m   = all_m.merge(
+                    cons_ids, on=['mouse_id', 'neuron_id'], how='left', indicator=True)
+                non_cons_m       = non_cons_m[non_cons_m['_merge'] == 'left_only']
+                non_cons_sig     = int(non_cons_m['lrt_significant'].sum())
+                non_cons_not_sig = len(non_cons_m) - non_cons_sig
+                contingency = [[cons_sig, cons_not_sig],
+                               [non_cons_sig, non_cons_not_sig]]
+                if cons_not_sig + non_cons_not_sig > 0 and cons_sig + non_cons_sig > 0:
+                    _, p = fisher_exact(contingency, alternative='two-sided')
+                else:
+                    p = 1.0
+                pvals.append(p)
+
+            offset = (rg_idx - (n_rg - 1) / 2) * bar_height
+            xerr = sems_cons if avg_method == 'per_mouse' else None
+            bars = ax.barh(y_pos + offset, fracs_cons, height=bar_height, color=color,
+                           alpha=0.85, label=f"{rg_label} consistent (n={n_cons})",
+                           edgecolor='white', xerr=xerr,
+                           error_kw={'ecolor': color, 'capsize': 2, 'elinewidth': 1.2})
+
+            for yi, b in zip(y_pos, fracs_base):
+                ax.vlines(b, yi + offset - bar_height / 2, yi + offset + bar_height / 2,
+                          colors=color, linestyles='--', linewidth=1.5)
+
+            for bar, p in zip(bars, pvals):
+                lbl = _sig_label(p)
+                if lbl:
+                    ax.text(bar.get_width() + 0.8,
+                            bar.get_y() + bar.get_height() / 2,
+                            lbl, ha='left', va='center',
+                            fontsize=10, color=color, fontweight='bold')
+
+        ax.set_yticks(y_pos)
+        ax.set_yticklabels([model_short[m] for m in encoding_models], fontsize=9)
+        xlabel = ('% LRT-significant (mean ± SEM per mouse)'
+                  if avg_method == 'per_mouse' else '% LRT-significant neurons')
+        ax.set_xlabel(xlabel, fontsize=9)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
+    panel_h = max(4, n_models * 0.55 + 1.5)
+
+    for avg_method in ['per_neuron', 'per_mouse']:
+        _avg_suffix = f'_{avg_method}'
+
+        # ── 1. Pooled (all areas) ─────────────────────────────────────────────
+        for direction in ['up', 'down']:
+            fig, ax = plt.subplots(figsize=(6, panel_h))
+            _draw_profile(ax, neuron_df, direction, avg_method)
+            dir_label = 'increase' if direction == 'up' else 'decrease'
+            ax.set_title(
+                f"Encoding profile – consistently {dir_label}ing neurons\n"
+                f"[{kernel_1} vs {kernel_0}]  "
+                f"(dashed = baseline, * Fisher's exact p<0.05)",
+                fontsize=10)
+            ax.legend(fontsize=8)
+            plt.tight_layout()
+            fname = (f"{direction}_{_avg_suffix}")
+            putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                            filename=fname, output_dir=output_folder)
+            plt.close(fig)
+
+        # ── 2. Per area_group ─────────────────────────────────────────────────
+        if area_groups is not None:
+            ag_folder = os.path.join(output_folder, 'per_area_group')
+            os.makedirs(ag_folder, exist_ok=True)
+            groups_present = {gn: areas for gn, areas in area_groups.items()
+                              if any(a in neuron_df['area_acronym_custom'].values
+                                     for a in areas)}
+            if groups_present:
+                for direction in ['up', 'down']:
+                    n_g = len(groups_present)
+                    n_cols_g = min(3, n_g)
+                    n_rows_g = math.ceil(n_g / n_cols_g)
+                    fig, axes = plt.subplots(
+                        n_rows_g, n_cols_g,
+                        figsize=(6 * n_cols_g, panel_h * n_rows_g),
+                        squeeze=False)
+                    for g_idx, (gn, areas) in enumerate(groups_present.items()):
+                        ax = axes[g_idx // n_cols_g][g_idx % n_cols_g]
+                        sub = neuron_df[neuron_df['area_acronym_custom'].isin(areas)]
+                        _draw_profile(ax, sub, direction, avg_method)
+                        ax.set_title(gn, fontsize=10, fontweight='bold')
+                        if g_idx == 0:
+                            ax.legend(fontsize=7)
+                    for g_idx in range(len(groups_present), n_rows_g * n_cols_g):
+                        axes[g_idx // n_cols_g][g_idx % n_cols_g].set_visible(False)
+                    dir_label = 'increase' if direction == 'up' else 'decrease'
+                    plt.suptitle(
+                        f"Encoding profile per area group – consistently {dir_label}ing\n"
+                        f"[{kernel_1} vs {kernel_0}]  (dashed = baseline, * Fisher p<0.05)",
+                        fontsize=11)
+                    plt.tight_layout(rect=[0, 0, 1, 0.96])
+                    fname = (f"{direction}_{_avg_suffix}")
+                    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                                    filename=fname, output_dir=ag_folder)
+                    plt.close(fig)
+
+        # ── 3. Per area ───────────────────────────────────────────────────────
+        if ordered_regions is not None:
+            area_folder = os.path.join(output_folder, 'per_area')
+            os.makedirs(area_folder, exist_ok=True)
+            regions_present = [r for r in ordered_regions
+                               if r in neuron_df['area_acronym_custom'].values]
+            if regions_present:
+                for direction in ['up', 'down']:
+                    n_r = len(regions_present)
+                    n_cols_r = min(5, n_r)
+                    n_rows_r = math.ceil(n_r / n_cols_r)
+                    fig, axes = plt.subplots(
+                        n_rows_r, n_cols_r,
+                        figsize=(6 * n_cols_r, panel_h * n_rows_r),
+                        squeeze=False)
+                    for r_idx, region in enumerate(regions_present):
+                        ax = axes[r_idx // n_cols_r][r_idx % n_cols_r]
+                        sub = neuron_df[neuron_df['area_acronym_custom'] == region]
+                        _draw_profile(ax, sub, direction, avg_method)
+                        ax.set_title(region, fontsize=10, fontweight='bold')
+                        if r_idx == 0:
+                            ax.legend(fontsize=7)
+                    for r_idx in range(len(regions_present), n_rows_r * n_cols_r):
+                        axes[r_idx // n_cols_r][r_idx % n_cols_r].set_visible(False)
+                    dir_label = 'increase' if direction == 'up' else 'decrease'
+                    plt.suptitle(
+                        f"Encoding profile per area – consistently {dir_label}ing\n"
+                        f"[{kernel_1} vs {kernel_0}]  (dashed = baseline, * Fisher p<0.05)",
+                        fontsize=11)
+                    plt.tight_layout(rect=[0, 0, 1, 0.96])
+                    fname = (f"{direction}_{_avg_suffix}")
+                    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                                    filename=fname, output_dir=area_folder)
+                    plt.close(fig)
+
+
+def _plot_kernel_correlation_matrices(
+        neuron_df, df, reward_groups, reward_group_labels,
+        output_folder, kernel_0, kernel_1):
+    """
+    For each reward group, compute and plot the average pairwise correlation
+    matrix between all kernels, separately for:
+      - consistent-up neurons  (all_positive == True)
+      - consistent-down neurons (all_negative == True)
+      - non-consistent neurons
+
+    For each neuron, a (n_kernels × n_kernels) correlation matrix is computed
+    by correlating the time-series vectors of each pair of kernels (Pearson r
+    between the two coefficient vectors across time lags).  These per-neuron
+    matrices are then averaged across neurons in each group.
+
+    One figure per reward group with 3 subplots side-by-side.
+    """
+    import re as _re
+    from scipy.stats import pearsonr
+
+    df_full = df[df['model_name'] == 'full'].copy()
+    if df_full.empty:
+        return
+
+    # ── auto-detect kernel names from a sample row ────────────────────────────
+    sample_preds = df_full.iloc[0]['predictors_full']
+    kernel_pattern = _re.compile(r'^(.+)_t[+-]\d+\.\d+s$')
+    seen = set()
+    detected = []
+    for p in sample_preds:
+        p_str = p.decode() if isinstance(p, bytes) else p
+        m = kernel_pattern.match(p_str)
+        if m:
+            kb = m.group(1)
+            if kb not in seen:
+                seen.add(kb)
+                detected.append(kb)
+
+    # ── order kernels by biological grouping ─────────────────────────────────
+    # Group order: whisker hits, whisker misses, auditory, piezo reward (whisker),
+    # piezo reward (auditory), then anything remaining (motor, jaw, etc.)
+    GROUP_ORDER = [
+        'whisker_hits_stim_',
+        'whisker_misses_stim_',
+        'auditory_stim_',
+        'piezo_reward_au_',   # au before plain so prefix match doesn't swallow it
+        'piezo_reward_',
+    ]
+
+    def _sort_key(kname):
+        for rank, prefix in enumerate(GROUP_ORDER):
+            if kname.startswith(prefix):
+                # secondary sort: numeric suffix (0 before 1 before 2 …)
+                suffix_match = _re.search(r'(\d+)$', kname)
+                secondary = int(suffix_match.group(1)) if suffix_match else 0
+                return (rank, secondary, kname)
+        return (len(GROUP_ORDER), 0, kname)   # unknown → end
+
+    kernel_names_ordered = sorted(detected, key=_sort_key)
+
+    if len(kernel_names_ordered) < 2:
+        print("[_plot_kernel_correlation_matrices] fewer than 2 kernels found – skipping.")
+        return
+
+    n_k = len(kernel_names_ordered)
+
+    def _extract_vec(coef, preds, kernel_name):
+        pat = _re.compile(fr"^{_re.escape(kernel_name)}_t([+-]\d+\.\d+)s$")
+        matches = sorted(
+            [(float(m.group(1)), i)
+             for i, p in enumerate(preds)
+             if (m := pat.match(p.decode() if isinstance(p, bytes) else p))]
+        )
+        if not matches:
+            return None
+        return np.array(coef)[[i for _, i in matches]]
+
+    # ── per-neuron correlation matrix (n_kernels × n_kernels) ─────────────────
+    # Entry (i, j) = Pearson r between time series of kernel_i and kernel_j
+    # for this neuron.
+    neuron_corr_mats = {}  # (mouse_id, neuron_id) -> np.array (n_k, n_k)
+    for (mouse_id, neuron_id), grp in df_full.groupby(['mouse_id', 'neuron_id']):
+        row   = grp.iloc[0]
+        coef  = np.array(row['coef_full_mean'])
+        preds = row['predictors_full']
+        vecs  = [_extract_vec(coef, preds, k) for k in kernel_names_ordered]
+        if any(v is None for v in vecs):
+            continue
+
+        corr_mat = np.full((n_k, n_k), np.nan)
+        for i in range(n_k):
+            for j in range(n_k):
+                vi, vj = vecs[i], vecs[j]
+                if i == j:
+                    corr_mat[i, j] = 1.0
+                elif len(vi) == len(vj) and len(vi) >= 2:
+                    r, _ = pearsonr(vi, vj)
+                    corr_mat[i, j] = r
+        neuron_corr_mats[(mouse_id, neuron_id)] = corr_mat
+
+    if not neuron_corr_mats:
+        print("[_plot_kernel_correlation_matrices] no valid neuron records – skipping.")
+        return
+
+    def _group_avg_corr(uid_set):
+        """Mean correlation matrix across all neurons in uid_set."""
+        mats = [neuron_corr_mats[uid]
+                for uid in uid_set if uid in neuron_corr_mats]
+        if len(mats) < 2:
+            return None, 0
+        return np.nanmean(np.stack(mats), axis=0), len(mats)
+
+    short_labels = [k.replace('_stim', '').replace('_', '\n') for k in kernel_names_ordered]
+
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df    = neuron_df[neuron_df['reward_group'] == reward_group]
+        if rg_df.empty:
+            continue
+
+        all_ids  = set(zip(rg_df['mouse_id'], rg_df['neuron_id']))
+        up_ids   = set(zip(rg_df.loc[rg_df['all_positive'],  'mouse_id'],
+                           rg_df.loc[rg_df['all_positive'],  'neuron_id']))
+        down_ids = set(zip(rg_df.loc[rg_df['all_negative'],  'mouse_id'],
+                           rg_df.loc[rg_df['all_negative'],  'neuron_id']))
+        non_ids  = all_ids - up_ids - down_ids
+
+        groups = [
+            ('consistent up',   up_ids,   '#2ca02c'),
+            ('consistent down', down_ids, '#d62728'),
+            ('non-consistent',  non_ids,  '#7f7f7f'),
+        ]
+
+        fig, axes = plt.subplots(1, 3, figsize=(6 * 3, 5.5))
+
+        for ax, (group_label, uid_set, color) in zip(axes, groups):
+            corr, n = _group_avg_corr(uid_set)
+            if corr is None:
+                ax.set_visible(False)
+                continue
+
+            im = ax.imshow(corr, cmap='RdBu_r', vmin=-1, vmax=1,
+                           aspect='auto', interpolation='nearest')
+            ax.set_xticks(range(n_k))
+            ax.set_yticks(range(n_k))
+            ax.set_xticklabels(short_labels, fontsize=7, rotation=45, ha='right')
+            ax.set_yticklabels(short_labels, fontsize=7)
+            ax.set_title(f'{group_label}  (n={n})', fontsize=10,
+                         color=color, fontweight='bold')
+
+            for i in range(n_k):
+                for j in range(n_k):
+                    ax.text(j, i, f'{corr[i, j]:.2f}',
+                            ha='center', va='center', fontsize=6,
+                            color='black' if abs(corr[i, j]) < 0.6 else 'white')
+
+            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='mean Pearson r')
+
+        fig.suptitle(
+            f'Average per-neuron kernel correlation matrices  [{kernel_1} vs {kernel_0}]  |  {rg_label}',
+            fontsize=12)
+        fig.tight_layout()
+        fname = f"kernel_corr_matrix_{kernel_1}_vs_{kernel_0}_{rg_label}"
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                        filename=fname, output_dir=output_folder)
+        plt.close(fig)
+
+
+def plot_kernel_consistency_by_area(
+        df,
+        kernel_0,
+        kernel_1,
+        area_groups,
+        area_colors,
+        output_folder,
+        reward_groups=None,
+        thresholds=None,
+        n_cols=3,
+        performance_csv=None):
+    """Plot kernel consistency analysis by brain area and reward group.
+
+    For each reward group, identifies neurons whose weight changes consistently
+    in the SAME direction across ALL lag bins when going from kernel_0 to
+    kernel_1, and optionally exceeds a % change threshold.
+
+    The percent change is::
+
+        pct_change = mean(w1 - w0) / (mean(|w0|) + ε) × 100
+
+    Produces four plot types
+    ------------------------
+    **Plot 1** (threshold = thresholds[0], default 1 %)
+        Average kernel_0 (light) and kernel_1 (bold) by brain area for neurons
+        with all-positive / all-negative delta **and** |pct_change| > 1 %.
+        One figure for 'increase', one for 'decrease', per reward group.
+
+    **Plot 2** (threshold = thresholds[1], default 10 %)
+        Same as Plot 1 but with the stricter 10 % threshold.
+
+    **Plot 3** (per threshold)
+        Grouped bar chart: percentage of neurons with consistent increase /
+        decrease per brain area, one bar cluster per reward group.
+
+    **Plot 4** (no threshold filter)
+        Violin distribution of per-neuron pct_change split by reward group –
+        to help choose an appropriate threshold.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Merged dataframe with 'model_name', 'coef_full_mean', 'predictors_full',
+        'area_acronym_custom', 'reward_group' columns.
+    kernel_0 : str
+        Reference kernel (e.g. ``'whisker_hits_stim_0'``).
+    kernel_1 : str
+        Comparison kernel (e.g. ``'whisker_hits_stim_1'``).
+    area_groups : dict   {group_name: [area, ...]}
+    area_colors : dict   {group_name: hex_color}
+    output_folder : str
+    reward_groups : list of int, optional   Default ``[1, 0]``.
+    thresholds : list of float, optional    Default ``[1.0, 10.0]``.
+    n_cols : int                             Default ``3``.
+    """
+    if reward_groups is None:
+        reward_groups = [1, 0]
+    if thresholds is None:
+        thresholds = [1.0, 10.0]
+
+    reward_group_labels = {1: 'R+', 0: 'R-'}
+    os.makedirs(output_folder, exist_ok=True)
+
+    perf_df = None
+    if performance_csv is not None and os.path.exists(performance_csv):
+        perf_df = pd.read_csv(performance_csv)[['mouse_id', 'outcome_w', 'd_prime_w']]
+    elif performance_csv is not None:
+        print(f"[kernel_consistency] WARNING: performance_csv not found: {performance_csv}")
+
+    # Build region ordering and colour map
+    region_to_color = {}
+    for group_name, areas in area_groups.items():
+        for area in areas:
+            region_to_color[area] = area_colors[group_name]
+
+    ordered_regions = []
+    for group_name, areas in area_groups.items():
+        for area in areas:
+            if area in df['area_acronym_custom'].values:
+                ordered_regions.append(area)
+
+    # ── per-neuron change statistics ──────────────────────────────────────────
+    print(f"[kernel_consistency] Building change table: {kernel_0} → {kernel_1} ...")
+    neuron_df = _build_neuron_change_table(df, kernel_0, kernel_1)
+
+    if neuron_df.empty:
+        print(f"[WARNING] No neurons found with both '{kernel_0}' and '{kernel_1}'.")
+        return
+
+    print(f"[kernel_consistency] {len(neuron_df)} neurons analysed.")
+
+    # ── Plot 4: distribution of % change per reward group ─────────────────────
+    _plot_pct_change_distribution(
+        neuron_df=neuron_df,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        output_folder=output_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+
+    # ── Encoding profile (LRT) for consistently-changing neurons ─────────────
+    _plot_consistent_neurons_encoding_profile(
+        neuron_df=neuron_df,
+        df=df,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        output_folder=output_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+        area_groups=area_groups,
+        ordered_regions=ordered_regions,
+    )
+
+    # ── Kernel correlation matrices per group ─────────────────────────────────
+    # _plot_kernel_correlation_matrices(
+    #     neuron_df=neuron_df,
+    #     df=df,
+    #     reward_groups=reward_groups,
+    #     reward_group_labels=reward_group_labels,
+    #     output_folder=output_folder,
+    #     kernel_0=kernel_0,
+    #     kernel_1=kernel_1,
+    # )
+
+    # ── No % threshold: fraction chart + average kernel plots ─────────────────
+    no_thr_folder = os.path.join(output_folder, 'thr_none')
+    os.makedirs(no_thr_folder, exist_ok=True)
+    _plot_consistency_fraction_by_area(
+        neuron_df=neuron_df,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        ordered_regions=ordered_regions,
+        threshold=0,
+        output_folder=no_thr_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+    _plot_consistency_fraction_combined(
+        neuron_df=neuron_df,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        ordered_regions=ordered_regions,
+        threshold=0,
+        output_folder=no_thr_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+    _plot_pct_change_by_area(
+        neuron_df=neuron_df,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        ordered_regions=ordered_regions,
+        threshold=0,
+        output_folder=no_thr_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+    neuron_df_mean = neuron_df.copy()
+    neuron_df_mean['pct_change'] = neuron_df_mean['mean_pct_change']
+    _no_thr_mean_folder = os.path.join(no_thr_folder, 'mean_coef')
+    os.makedirs(_no_thr_mean_folder, exist_ok=True)
+    _plot_consistency_fraction_by_area(
+        neuron_df=neuron_df_mean,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        ordered_regions=ordered_regions,
+        threshold=0,
+        output_folder=_no_thr_mean_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+    _plot_pct_change_by_area(
+        neuron_df=neuron_df_mean,
+        reward_groups=reward_groups,
+        reward_group_labels=reward_group_labels,
+        ordered_regions=ordered_regions,
+        threshold=0,
+        output_folder=_no_thr_mean_folder,
+        kernel_0=kernel_0,
+        kernel_1=kernel_1,
+    )
+    if perf_df is not None:
+        _plot_pct_change_vs_performance(
+            neuron_df=neuron_df,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=0,
+            output_folder=no_thr_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+            perf_df=perf_df,
+            change_col='pct_change',
+        )
+        _plot_pct_change_vs_performance(
+            neuron_df=neuron_df_mean,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=0,
+            output_folder=_no_thr_mean_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+            perf_df=perf_df,
+            change_col='mean_pct_change',
+        )
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+        rg_folder = os.path.join(no_thr_folder, rg_label)
+        os.makedirs(rg_folder, exist_ok=True)
+
+        up_df = rg_df[rg_df['all_positive']]
+        _plot_consistent_kernels_by_area(
+            neuron_df=up_df,
+            ordered_regions=ordered_regions,
+            region_to_color=region_to_color,
+            threshold=0,
+            direction='up',
+            output_folder=rg_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+            reward_label=rg_label,
+            n_cols=n_cols,
+        )
+
+        down_df = rg_df[rg_df['all_negative']]
+        _plot_consistent_kernels_by_area(
+            neuron_df=down_df,
+            ordered_regions=ordered_regions,
+            region_to_color=region_to_color,
+            threshold=0,
+            direction='down',
+            output_folder=rg_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+            reward_label=rg_label,
+            n_cols=n_cols,
+        )
+
+    # ── Plots 1, 2, 3 per threshold ───────────────────────────────────────────
+    for threshold in thresholds:
+        thr_folder = os.path.join(output_folder,
+                                  f"thr_{str(threshold).replace('.', 'p')}pct")
+        os.makedirs(thr_folder, exist_ok=True)
+
+        # Plot 3 – fraction per area (all reward groups on same figure)
+        _plot_consistency_fraction_by_area(
+            neuron_df=neuron_df,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=threshold,
+            output_folder=thr_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+        )
+        _plot_consistency_fraction_combined(
+            neuron_df=neuron_df,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=threshold,
+            output_folder=thr_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+        )
+        _plot_pct_change_by_area(
+            neuron_df=neuron_df,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=threshold,
+            output_folder=thr_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+        )
+
+        # Plots 1/2 – average kernels per reward group
+        for reward_group in reward_groups:
+            rg_label = reward_group_labels.get(reward_group, str(reward_group))
+            rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+
+            rg_folder = os.path.join(thr_folder, rg_label)
+            os.makedirs(rg_folder, exist_ok=True)
+
+            # Consistently UP
+            up_df = rg_df[rg_df['all_positive'] & (rg_df['pct_change'] > threshold)]
+            _plot_consistent_kernels_by_area(
+                neuron_df=up_df,
+                ordered_regions=ordered_regions,
+                region_to_color=region_to_color,
+                threshold=threshold,
+                direction='up',
+                output_folder=rg_folder,
+                kernel_0=kernel_0,
+                kernel_1=kernel_1,
+                reward_label=rg_label,
+                n_cols=n_cols,
+            )
+
+            # Consistently DOWN
+            down_df = rg_df[rg_df['all_negative'] & (rg_df['pct_change'] < -threshold)]
+            _plot_consistent_kernels_by_area(
+                neuron_df=down_df,
+                ordered_regions=ordered_regions,
+                region_to_color=region_to_color,
+                threshold=threshold,
+                direction='down',
+                output_folder=rg_folder,
+                kernel_0=kernel_0,
+                kernel_1=kernel_1,
+                reward_label=rg_label,
+                n_cols=n_cols,
+            )
+
+        # Mean-coef versions of fraction + pct_change plots
+        _thr_mean_folder = os.path.join(thr_folder, 'mean_coef')
+        os.makedirs(_thr_mean_folder, exist_ok=True)
+        neuron_df_mean = neuron_df.copy()
+        neuron_df_mean['pct_change'] = neuron_df_mean['mean_pct_change']
+        _plot_consistency_fraction_by_area(
+            neuron_df=neuron_df_mean,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=threshold,
+            output_folder=_thr_mean_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+        )
+        _plot_pct_change_by_area(
+            neuron_df=neuron_df_mean,
+            reward_groups=reward_groups,
+            reward_group_labels=reward_group_labels,
+            ordered_regions=ordered_regions,
+            threshold=threshold,
+            output_folder=_thr_mean_folder,
+            kernel_0=kernel_0,
+            kernel_1=kernel_1,
+        )
+        if perf_df is not None:
+            _plot_pct_change_vs_performance(
+                neuron_df=neuron_df,
+                reward_groups=reward_groups,
+                reward_group_labels=reward_group_labels,
+                ordered_regions=ordered_regions,
+                threshold=threshold,
+                output_folder=thr_folder,
+                kernel_0=kernel_0,
+                kernel_1=kernel_1,
+                perf_df=perf_df,
+                change_col='pct_change',
+            )
+            _plot_pct_change_vs_performance(
+                neuron_df=neuron_df_mean,
+                reward_groups=reward_groups,
+                reward_group_labels=reward_group_labels,
+                ordered_regions=ordered_regions,
+                threshold=threshold,
+                output_folder=_thr_mean_folder,
+                kernel_0=kernel_0,
+                kernel_1=kernel_1,
+                perf_df=perf_df,
+                change_col='mean_pct_change',
+            )
+
+
+# Bin size used during GLM fitting — converts spikes/bin → Hz
+_BIN_SIZE_S    = 0.050          # 50 ms
+_SPIKES_TO_HZ  = 1.0 / _BIN_SIZE_S   # multiply y_test / y_pred by this factor
+
+# Trial window (seconds relative to stimulus onset)
+_WINDOW_START_S = -1.0
+_WINDOW_END_S   =  2.0
+
+# Colors for lick vs no-lick conditions
+_LICK_COLOR   = '#2ca02c'   # green  — lick trials
+_NOLICK_COLOR = '#d62728'   # red    — no-lick trials
+
+
+def _make_time_axis(n_bins):
+    """Return time axis in seconds from trial start (stimulus at t=0)."""
+    return np.arange(n_bins) * _BIN_SIZE_S + _WINDOW_START_S
+
+
+def _draw_psth_panel(ax, real_mat, pred_mat, color, lw=1.5):
+    """Draw mean ± SEM for real (solid) and predicted (dashed) on ax."""
+    n_bins = real_mat.shape[1]
+    x = _make_time_axis(n_bins)
+    n = real_mat.shape[0]
+    mean_r = real_mat.mean(axis=0)
+    sem_r  = real_mat.std(axis=0) / np.sqrt(n)
+    mean_p = pred_mat.mean(axis=0)
+    sem_p  = pred_mat.std(axis=0) / np.sqrt(n)
+    ax.plot(x, mean_r, color=color, lw=lw)
+    ax.fill_between(x, mean_r - sem_r, mean_r + sem_r, color=color, alpha=0.18)
+    ax.plot(x, mean_p, color=color, lw=lw, linestyle='--')
+    ax.fill_between(x, mean_p - sem_p, mean_p + sem_p, color=color, alpha=0.08)
+
+
+def _draw_residual_panel(ax, real_mat, pred_mat, color, lw=1.5):
+    """Draw mean ± SEM residual (real − predicted) on ax."""
+    resid = real_mat - pred_mat
+    x     = _make_time_axis(resid.shape[1])
+    n     = resid.shape[0]
+    mean_res = resid.mean(axis=0)
+    sem_res  = resid.std(axis=0) / np.sqrt(n)
+    ax.plot(x, mean_res, color=color, lw=lw)
+    ax.fill_between(x, mean_res - sem_res, mean_res + sem_res, color=color, alpha=0.18)
+
+
+def _make_area_grid(n_areas, n_cols, panel_w=4.5, panel_h=3.5, dpi=150):
+    n_rows = max(1, int(np.ceil(n_areas / n_cols)))
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(panel_w * n_cols, panel_h * n_rows),
+                             dpi=dpi)
+    axes = np.array(axes).flatten()
+    return fig, axes
+
+
+def plot_psth_predictions_per_trialtype_per_area(df_pred, area_groups, area_colors,
+                                                  output_folder, n_cols=4):
+    """
+    Plot PSTHs of real activity and model predictions split by lick / no-lick,
+    one figure per trial type and per reward group.
+
+    Layout per figure
+    -----------------
+    Grid of panels, one per brain area.
+    Each panel shows two PSTH pairs:
+      • Lick trials   — solid (real) / dashed (predicted), green
+      • No-lick trials— solid (real) / dashed (predicted), red
+    A companion residual figure (real − predicted) is also saved.
+
+    Parameters
+    ----------
+    df_pred : pd.DataFrame
+        One row per neuron. Required columns:
+          mouse_id, neuron_id, area_acronym_custom, reward_group,
+          trial_types – JSON list[str], one entry per trial,
+          lick_flags  – JSON list[int] (1=lick, 0=no-lick, -1=unknown),
+          y_pred      – JSON 2-D list (n_trials × n_bins),
+          y_test      – JSON 2-D list (n_trials × n_bins).
+    area_groups : dict  {group_name: [area, ...]}
+    area_colors : dict  {group_name: color}
+    output_folder : str
+    n_cols : int
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    # ── decode helper ─────────────────────────────────────────────────────────
+    def _decode(row):
+        def _j(v):
+            return json.loads(v) if isinstance(v, str) else v
+        tts   = np.array(_j(row['trial_types']))
+        licks = np.array(_j(row['lick_flags']), dtype=int)
+        y_p   = np.array(_j(row['y_pred']), dtype=float) * _SPIKES_TO_HZ
+        y_t   = np.array(_j(row['y_test']), dtype=float) * _SPIKES_TO_HZ
+        return tts, licks, y_p, y_t
+
+    # ── ordered areas ─────────────────────────────────────────────────────────
+    all_areas = set(df_pred['area_acronym_custom'].unique())
+    ordered_areas = []
+    area_to_color = {}
+    for grp_name, areas in area_groups.items():
+        for area in areas:
+            if area in all_areas:
+                ordered_areas.append(area)
+                area_to_color[area] = area_colors.get(grp_name, 'gray')
+
+    reward_labels = {1: 'r+', 0: 'r-'}
+
+    # ── loop over reward groups ────────────────────────────────────────────────
+    for reward_group, rg_label in reward_labels.items():
+        rg_df = df_pred[df_pred['reward_group'] == reward_group]
+        if rg_df.empty:
+            continue
+
+        # Collect per-(area, trial_type, lick) arrays
+        # data[area][trial_type][lick_key] = {'real': [psth, ...], 'pred': [psth, ...]}
+        # lick_key: 'lick' or 'nolick'
+        data = {area: {} for area in ordered_areas}
+
+        for _, row in rg_df.iterrows():
+            area = row['area_acronym_custom']
+            if area not in data:
+                continue
+            tts, licks, y_p, y_t = _decode(row)
+
+            for tt in np.unique(tts):
+                if tt not in data[area]:
+                    data[area][tt] = {'lick':   {'real': [], 'pred': []},
+                                      'nolick': {'real': [], 'pred': []}}
+                for lick_key, flag in [('lick', 1), ('nolick', 0)]:
+                    mask = (tts == tt) & (licks == flag)
+                    if mask.sum() == 0:
+                        continue
+                    # Average over trials of this (type, lick) for this neuron
+                    data[area][tt][lick_key]['real'].append(y_t[mask].mean(axis=0))
+                    data[area][tt][lick_key]['pred'].append(y_p[mask].mean(axis=0))
+
+        # All trial types seen
+        all_tts = sorted({tt for area_d in data.values() for tt in area_d})
+
+        # ── one figure pair per trial type ────────────────────────────────────
+        for tt in all_tts:
+            n_areas = len(ordered_areas)
+
+            # Figure A: real vs predicted
+            fig_a, axes_a = _make_area_grid(n_areas, n_cols)
+            # Figure B: residuals
+            fig_b, axes_b = _make_area_grid(n_areas, n_cols)
+
+            for ai, area in enumerate(ordered_areas):
+                ax_a = axes_a[ai]
+                ax_b = axes_b[ai]
+                n_neurons = len(rg_df[rg_df['area_acronym_custom'] == area])
+                title = f'{area}  (n={n_neurons})'
+
+                tt_data = data[area].get(tt, {})
+
+                for lick_key, color, label in [('lick',   _LICK_COLOR,   'lick'),
+                                                ('nolick', _NOLICK_COLOR, 'no lick')]:
+                    lk = tt_data.get(lick_key, {'real': [], 'pred': []})
+                    if not lk['real']:
+                        continue
+                    real_mat = np.stack(lk['real'])
+                    pred_mat = np.stack(lk['pred'])
+
+                    _draw_psth_panel(ax_a, real_mat, pred_mat, color)
+                    _draw_residual_panel(ax_b, real_mat, pred_mat, color)
+
+                area_color = area_to_color.get(area, 'black')
+                for ax, ylabel in [(ax_a, 'Firing rate (Hz)'), (ax_b, 'Residual (Hz)')]:
+                    ax.set_title(title, fontsize=8, color=area_color, fontweight='bold')
+                    ax.set_xlabel('Time from trial start (s)', fontsize=7)
+                    ax.set_ylabel(ylabel, fontsize=7)
+                    ax.tick_params(labelsize=6)
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                    ax.spines['left'].set_color(area_color)
+                    ax.spines['left'].set_linewidth(2.0)
+                    ax.spines['bottom'].set_color(area_color)
+                    ax.spines['bottom'].set_linewidth(2.0)
+                    ax.tick_params(color=area_color)
+                    ax.axvline(0, color='k', lw=0.8, ls='--', alpha=0.5)
+
+            # Hide unused panels
+            for ai in range(n_areas, len(axes_a)):
+                axes_a[ai].set_visible(False)
+                axes_b[ai].set_visible(False)
+
+            # Shared legend (in first visible panel)
+            legend_handles = [
+                plt.Line2D([0], [0], color=_LICK_COLOR,   lw=1.5, ls='-',  label='lick — real'),
+                plt.Line2D([0], [0], color=_LICK_COLOR,   lw=1.5, ls='--', label='lick — pred'),
+                plt.Line2D([0], [0], color=_NOLICK_COLOR, lw=1.5, ls='-',  label='no lick — real'),
+                plt.Line2D([0], [0], color=_NOLICK_COLOR, lw=1.5, ls='--', label='no lick — pred'),
+            ]
+            resid_legend = [
+                plt.Line2D([0], [0], color=_LICK_COLOR,   lw=1.5, label='lick'),
+                plt.Line2D([0], [0], color=_NOLICK_COLOR, lw=1.5, label='no lick'),
+            ]
+            if n_areas > 0:
+                axes_a[0].legend(handles=legend_handles, fontsize=6, loc='upper right')
+                axes_b[0].legend(handles=resid_legend,   fontsize=6, loc='upper right')
+
+            safe_tt = tt.replace(' ', '_')
+            fig_a.suptitle(f'{tt}  |  real (solid) vs predicted (dashed)  |  {rg_label}',
+                           fontsize=11)
+            fig_a.tight_layout()
+            putils.save_figure_with_options(
+                fig_a, file_formats=['png', 'pdf'],
+                filename=f'psth_{safe_tt}_{rg_label}',
+                output_dir=output_folder)
+            plt.close(fig_a)
+
+            fig_b.suptitle(f'{tt}  |  residual PSTHs (real − predicted)  |  {rg_label}',
+                           fontsize=11)
+            fig_b.tight_layout()
+            putils.save_figure_with_options(
+                fig_b, file_formats=['png', 'pdf'],
+                filename=f'psth_residuals_{safe_tt}_{rg_label}',
+                output_dir=output_folder)
+            plt.close(fig_b)
+
+
+# Colors for session-half comparison
+_FIRST_HALF_COLOR  = '#74c476'   # light green — first half of session
+_SECOND_HALF_COLOR = '#00441b'   # dark green  — second half of session
+
+
+def plot_psth_whisker_session_halves_per_area(df_pred, area_groups, area_colors,
+                                               output_folder, n_cols=4):
+    """
+    For whisker hits and whisker misses separately, plot PSTHs split by the
+    first vs second half of the session (ranked by trial order).
+
+    One figure per (lick condition × reward group):
+      - whisker_hits_{rg_label}   : first half (light green) vs second half (dark green)
+      - whisker_misses_{rg_label} : same colour scheme
+    Each panel = one brain area; solid = real, dashed = predicted.
+    A companion residual figure is also saved per combination.
+
+    Parameters
+    ----------
+    df_pred : pd.DataFrame
+        One row per neuron. Required columns:
+          mouse_id, neuron_id, area_acronym_custom, reward_group,
+          trial_ids   – JSON list[int], sorted ascending (= temporal order),
+          trial_types – JSON list[str],
+          lick_flags  – JSON list[int] (1=lick, 0=no-lick),
+          y_pred      – JSON 2-D list (n_trials × n_bins),
+          y_test      – JSON 2-D list (n_trials × n_bins).
+    area_groups : dict  {group_name: [area, ...]}
+    area_colors : dict  {group_name: color}
+    output_folder : str
+    n_cols : int
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    # ── decode helper ─────────────────────────────────────────────────────────
+    def _decode(row):
+        def _j(v):
+            return json.loads(v) if isinstance(v, str) else v
+        ids   = np.array(_j(row['trial_ids']),   dtype=int)
+        tts   = np.array(_j(row['trial_types']))
+        licks = np.array(_j(row['lick_flags']),  dtype=int)
+        y_p   = np.array(_j(row['y_pred']),      dtype=float) * _SPIKES_TO_HZ
+        y_t   = np.array(_j(row['y_test']),      dtype=float) * _SPIKES_TO_HZ
+        return ids, tts, licks, y_p, y_t
+
+    # ── ordered areas ─────────────────────────────────────────────────────────
+    all_areas = set(df_pred['area_acronym_custom'].unique())
+    ordered_areas = []
+    area_to_color = {}
+    for grp_name, areas in area_groups.items():
+        for area in areas:
+            if area in all_areas:
+                ordered_areas.append(area)
+                area_to_color[area] = area_colors.get(grp_name, 'gray')
+
+    reward_labels  = {1: 'r+', 0: 'r-'}
+    # (label, trial_type, lick_flag_value)  lick_val=None means all lick outcomes
+    lick_conditions = [
+        ('whisker_hits',   'whisker_trial',  1),
+        ('whisker_misses', 'whisker_trial',  0),
+        ('auditory_hits',  'auditory_trial', 1),
+        ('auditory_misses','auditory_trial', 0),
+    ]
+
+    for reward_group, rg_label in reward_labels.items():
+        rg_df = df_pred[df_pred['reward_group'] == reward_group]
+        if rg_df.empty:
+            continue
+
+        for cond_label, trial_type, lick_val in lick_conditions:
+
+            # data[area][half] = {'real': [psth_per_neuron, ...], 'pred': [...]}
+            # half ∈ {'first', 'second'}
+            data = {area: {'first':  {'real': [], 'pred': []},
+                           'second': {'real': [], 'pred': []}}
+                    for area in ordered_areas}
+
+            for _, row in rg_df.iterrows():
+                area = row['area_acronym_custom']
+                if area not in data:
+                    continue
+                ids, tts, licks, y_p, y_t = _decode(row)
+
+                mask = (tts == trial_type) & (licks == lick_val)
+                if mask.sum() < 2:
+                    continue
+
+                # trial_ids are already sorted ascending → temporal order preserved
+                sel_positions = np.where(mask)[0]   # positions in the arrays
+                n_sel = len(sel_positions)
+                mid   = n_sel // 2
+
+                first_pos  = sel_positions[:mid]
+                second_pos = sel_positions[mid:]
+
+                # Average over trials within each half → one PSTH per neuron per half
+                data[area]['first']['real'].append(y_t[first_pos].mean(axis=0))
+                data[area]['first']['pred'].append(y_p[first_pos].mean(axis=0))
+                data[area]['second']['real'].append(y_t[second_pos].mean(axis=0))
+                data[area]['second']['pred'].append(y_p[second_pos].mean(axis=0))
+
+            n_areas = len(ordered_areas)
+            fig_a, axes_a = _make_area_grid(n_areas, n_cols)
+            fig_b, axes_b = _make_area_grid(n_areas, n_cols)
+
+            half_specs = [
+                ('first',  _FIRST_HALF_COLOR,  '1st half'),
+                ('second', _SECOND_HALF_COLOR, '2nd half'),
+            ]
+
+            for ai, area in enumerate(ordered_areas):
+                ax_a = axes_a[ai]
+                ax_b = axes_b[ai]
+                n_neurons = len(rg_df[rg_df['area_acronym_custom'] == area])
+                title = f'{area}  (n={n_neurons})'
+
+                for half_key, color, _ in half_specs:
+                    half_d = data[area][half_key]
+                    if not half_d['real']:
+                        continue
+                    real_mat = np.stack(half_d['real'])
+                    pred_mat = np.stack(half_d['pred'])
+                    _draw_psth_panel(ax_a, real_mat, pred_mat, color)
+                    _draw_residual_panel(ax_b, real_mat, pred_mat, color)
+
+                area_color = area_to_color.get(area, 'black')
+                for ax, ylabel in [(ax_a, 'Firing rate (Hz)'), (ax_b, 'Residual (Hz)')]:
+                    ax.set_title(title, fontsize=8, color=area_color, fontweight='bold')
+                    ax.set_xlabel('Time from trial start (s)', fontsize=7)
+                    ax.set_ylabel(ylabel, fontsize=7)
+                    ax.tick_params(labelsize=6)
+                    ax.spines['top'].set_visible(False)
+                    ax.spines['right'].set_visible(False)
+                    ax.spines['left'].set_color(area_color)
+                    ax.spines['left'].set_linewidth(2.0)
+                    ax.spines['bottom'].set_color(area_color)
+                    ax.spines['bottom'].set_linewidth(2.0)
+                    ax.tick_params(color=area_color)
+                    ax.axvline(0, color='k', lw=0.8, ls='--', alpha=0.5)
+
+            for ai in range(n_areas, len(axes_a)):
+                axes_a[ai].set_visible(False)
+                axes_b[ai].set_visible(False)
+
+            legend_handles = [
+                plt.Line2D([0], [0], color=_FIRST_HALF_COLOR,  lw=1.5, ls='-',  label='1st half — real'),
+                plt.Line2D([0], [0], color=_FIRST_HALF_COLOR,  lw=1.5, ls='--', label='1st half — pred'),
+                plt.Line2D([0], [0], color=_SECOND_HALF_COLOR, lw=1.5, ls='-',  label='2nd half — real'),
+                plt.Line2D([0], [0], color=_SECOND_HALF_COLOR, lw=1.5, ls='--', label='2nd half — pred'),
+            ]
+            resid_legend = [
+                plt.Line2D([0], [0], color=_FIRST_HALF_COLOR,  lw=1.5, label='1st half'),
+                plt.Line2D([0], [0], color=_SECOND_HALF_COLOR, lw=1.5, label='2nd half'),
+            ]
+            if n_areas > 0:
+                axes_a[0].legend(handles=legend_handles, fontsize=6, loc='upper right')
+                axes_b[0].legend(handles=resid_legend,   fontsize=6, loc='upper right')
+
+            human_label = cond_label.replace('_', ' ')
+            fig_a.suptitle(
+                f'{human_label}  |  1st vs 2nd half  |  real (solid) / pred (dashed)  |  {rg_label}',
+                fontsize=11)
+            fig_a.tight_layout()
+            putils.save_figure_with_options(
+                fig_a, file_formats=['png', 'pdf'],
+                filename=f'psth_halves_{cond_label}_{rg_label}',
+                output_dir=output_folder)
+            plt.close(fig_a)
+
+            fig_b.suptitle(
+                f'{human_label}  |  residuals 1st vs 2nd half  |  {rg_label}',
+                fontsize=11)
+            fig_b.tight_layout()
+            putils.save_figure_with_options(
+                fig_b, file_formats=['png', 'pdf'],
+                filename=f'psth_halves_residuals_{cond_label}_{rg_label}',
+                output_dir=output_folder)
+            plt.close(fig_b)
+
+
+def plot_kernels_full_vs_optimal_split_per_area(
+        df_full,
+        df_optimal,
+        output_folder,
+        area_groups,
+        area_colors,
+        n_cols=3,
+        alpha=0.05):
+    """
+    For each kernel pair (kernel_0 and kernel_1 of each stimulus type), overlay
+    the average kernel from the *full* model and the *optimal_split* model on the
+    same axis, per brain area.  A per-bin paired t-test is run across neurons
+    to highlight bins where the two models differ significantly.
+
+    One figure per stimulus-type pair (whisker hits, whisker misses, auditory,
+    reward …).  Each panel = one brain area.
+
+    Parameters
+    ----------
+    df_full : pd.DataFrame
+        Rows from the full model (model_name == 'full').
+    df_optimal : pd.DataFrame
+        Rows from the optimal_split model (model_name == 'optimal_split').
+    output_folder : str
+    area_groups : dict  {group_name: [area, ...]}
+    area_colors : dict  {group_name: color}
+    n_cols : int
+    alpha : float  significance threshold for per-bin t-test
+    """
+    from scipy.stats import ttest_rel
+
+    os.makedirs(output_folder, exist_ok=True)
+
+    # Each entry: (kernel_name, title, color_full, color_optimal)
+    KERNEL_SPECS = [
+        ('whisker_hits_stim_0',   'Whisker Hits – kernel 0',   '#4daf4a', '#a6d96a'),
+        ('whisker_hits_stim_1',   'Whisker Hits – kernel 1',   '#1a7416', '#66bb6a'),
+        ('whisker_misses_stim_0', 'Whisker Misses – kernel 0', '#e41a1c', '#f4a582'),
+        ('whisker_misses_stim_1', 'Whisker Misses – kernel 1', '#8b0000', '#d6604d'),
+        ('auditory_stim_0',       'Auditory – kernel 0',       '#377eb8', '#74b9ff'),
+        ('auditory_stim_1',       'Auditory – kernel 1',       '#08306b', '#2171b5'),
+        ('piezo_reward_0',        'Reward whisker – kernel 0', '#ff7f00', '#fdbf6f'),
+        ('piezo_reward_1',        'Reward whisker – kernel 1', '#b35806', '#e08214'),
+        ('piezo_reward_au_0',     'Reward auditory – kernel 0','#984ea3', '#c994c7'),
+        ('piezo_reward_au_1',     'Reward auditory – kernel 1','#6a3d9a', '#9970ab'),
+    ]
+
+    def _extract_kernel(predictors, coefs, kernel_name):
+        pattern = re.compile(fr"^{re.escape(kernel_name)}_t([+-]\d+\.\d+)s$")
+        matches = sorted(
+            [(float(m.group(1)), i)
+             for i, p in enumerate(predictors)
+             if (m := pattern.match(p.decode() if isinstance(p, bytes) else p))]
+        )
+        if not matches:
+            return None, None
+        lags = np.array([lag for lag, _ in matches])
+        idx  = [i for _, i in matches]
+        return lags, np.array(coefs)[idx]
+
+    def _collect_neuron_matrix(region_df, kernel_name):
+        """Return (lags, n_neurons x n_lags matrix) for neurons that have the kernel."""
+        lags_ref, rows = None, []
+        for _, row in region_df.iterrows():
+            lags, coefs = _extract_kernel(
+                row['predictors_full'], row['coef_full_mean'], kernel_name)
+            if lags is not None:
+                if lags_ref is None:
+                    lags_ref = lags
+                rows.append(coefs)
+        if not rows or lags_ref is None:
+            return None, None
+        return lags_ref, np.stack(rows)
+
+    ordered_regions = [
+        area
+        for areas in area_groups.values()
+        for area in areas
+        if area in df_full['area_acronym_custom'].values
+        or area in df_optimal['area_acronym_custom'].values
+    ]
+
+    def _to_str(p):
+        return p.decode() if isinstance(p, bytes) else p
+
+    for kernel_name, title, color_full, color_optimal in KERNEL_SPECS:
+        # Quick check: kernel present in at least one model
+        sample_full    = df_full.iloc[0]['predictors_full'] if len(df_full) > 0 else []
+        sample_optimal = df_optimal.iloc[0]['predictors_full'] if len(df_optimal) > 0 else []
+        has_kernel = (
+            any(_to_str(p).startswith(kernel_name + '_t') for p in sample_full) or
+            any(_to_str(p).startswith(kernel_name + '_t') for p in sample_optimal)
+        )
+        if not has_kernel:
+            continue
+
+        n_rows = math.ceil(len(ordered_regions) / n_cols)
+        fig, axes = plt.subplots(
+            n_rows, n_cols, figsize=(4.5 * n_cols, 3.5 * n_rows), sharex=False)
+        axes = np.array(axes).reshape(-1)
+
+        for ax, region in zip(axes, ordered_regions):
+            reg_full    = df_full[df_full['area_acronym_custom'] == region]
+            reg_optimal = df_optimal[df_optimal['area_acronym_custom'] == region]
+
+            # Restrict to neurons present in both models.
+            # Cast to str to avoid silent drops from dtype mismatches (int vs str, bytes vs str).
+            ids_full    = set(zip(reg_full['mouse_id'].astype(str),    reg_full['neuron_id'].astype(str)))
+            ids_optimal = set(zip(reg_optimal['mouse_id'].astype(str), reg_optimal['neuron_id'].astype(str)))
+            common_ids  = ids_full & ids_optimal
+
+            mask_f = reg_full.apply(
+                lambda r: (str(r['mouse_id']), str(r['neuron_id'])) in common_ids, axis=1)
+            mask_o = reg_optimal.apply(
+                lambda r: (str(r['mouse_id']), str(r['neuron_id'])) in common_ids, axis=1)
+            reg_full    = reg_full[mask_f]
+            reg_optimal = reg_optimal[mask_o]
+
+            lags_f, mat_f = _collect_neuron_matrix(reg_full, kernel_name)
+            lags_o, mat_o = _collect_neuron_matrix(reg_optimal, kernel_name)
+
+            n_common = len(common_ids)
+            plotted = False
+            if mat_f is not None and len(mat_f) > 0:
+                mean_f = np.nanmean(mat_f, axis=0)
+                sem_f  = np.nanstd(mat_f, axis=0, ddof=1) / np.sqrt(len(mat_f))
+                ax.plot(lags_f, mean_f, color=color_full, lw=2,
+                        label=f'full (n={n_common})')
+                ax.fill_between(lags_f, mean_f - sem_f, mean_f + sem_f,
+                                color=color_full, alpha=0.2)
+                plotted = True
+
+            if mat_o is not None and len(mat_o) > 0:
+                mean_o = np.nanmean(mat_o, axis=0)
+                sem_o  = np.nanstd(mat_o, axis=0, ddof=1) / np.sqrt(len(mat_o))
+                ax.plot(lags_o, mean_o, color=color_optimal, lw=2, linestyle='--',
+                        label=f'optimal split (n={n_common})')
+                ax.fill_between(lags_o, mean_o - sem_o, mean_o + sem_o,
+                                color=color_optimal, alpha=0.2)
+                plotted = True
+
+            # Paired t-test on the matched neurons
+            if mat_f is not None and mat_o is not None and lags_f is not None and n_common >= 3:
+                pairs_f, pairs_o = [], []
+                for uid in common_ids:
+                    rows_f = reg_full[
+                        (reg_full['mouse_id'].astype(str) == uid[0]) &
+                        (reg_full['neuron_id'].astype(str) == uid[1])]
+                    rows_o = reg_optimal[
+                        (reg_optimal['mouse_id'].astype(str) == uid[0]) &
+                        (reg_optimal['neuron_id'].astype(str) == uid[1])]
+                    if rows_f.empty or rows_o.empty:
+                        continue
+                    _, cf = _extract_kernel(
+                        rows_f.iloc[0]['predictors_full'],
+                        rows_f.iloc[0]['coef_full_mean'], kernel_name)
+                    _, co = _extract_kernel(
+                        rows_o.iloc[0]['predictors_full'],
+                        rows_o.iloc[0]['coef_full_mean'], kernel_name)
+                    if cf is not None and co is not None and len(cf) == len(co):
+                        pairs_f.append(cf)
+                        pairs_o.append(co)
+
+                if len(pairs_f) >= 3:
+                    mat_pf = np.stack(pairs_f)
+                    mat_po = np.stack(pairs_o)
+                    n_lags = mat_pf.shape[1]
+                    pvals  = np.ones(n_lags)
+                    for t in range(n_lags):
+                        try:
+                            _, pvals[t] = ttest_rel(mat_pf[:, t], mat_po[:, t])
+                        except Exception:
+                            pass
+                    sig_bins = pvals < alpha
+                    if sig_bins.any():
+                        y_top = ax.get_ylim()[1]
+                        ax.scatter(lags_f[sig_bins],
+                                   np.full(sig_bins.sum(), y_top * 0.95),
+                                   marker='*', color='black', s=20, zorder=5)
+
+            color = area_colors.get(
+                next((g for g, areas in area_groups.items() if region in areas), None),
+                'gray')
+            ax.set_title(region, fontsize=9, color=color, fontweight='bold')
+            ax.set_xlabel('Lag (s)', fontsize=8)
+            ax.set_ylabel('Coefficient', fontsize=8)
+            ax.axhline(0, color='gray', lw=0.5, ls=':')
+            ax.spines['top'].set_visible(False)
+            ax.spines['right'].set_visible(False)
+            if plotted:
+                ax.legend(fontsize=7)
+
+        for ax in axes[len(ordered_regions):]:
+            ax.set_visible(False)
+
+        fig.suptitle(f'{title}  |  full vs optimal split', fontsize=12)
+        fig.tight_layout()
+        safe_name = kernel_name.replace('/', '_')
+        putils.save_figure_with_options(
+            fig, file_formats=['png', 'pdf'],
+            filename=f'full_vs_optimal_split_{safe_name}',
+            output_dir=output_folder)
+        plt.close(fig)
+
+
+def plot_split_idx_distribution(df_optimal, output_folder, area_groups, area_colors, n_cols=3):
+    """
+    Plot the distribution of split_idx values for the optimal_split model.
+
+    split_idx is the trial index chosen as the boundary between kernel_0 and
+    kernel_1 for each neuron.  A uniform distribution across trial positions
+    would mean no preferred split point; a peaked distribution indicates a
+    preferred moment in the session where the neural response changes.
+
+    Produces:
+      - One figure with a histogram per brain area (deduplicated per neuron,
+        taking the value from the first fold).
+      - One overall histogram across all areas.
+      - One figure showing median split_idx per area as a bar plot.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    if 'split_idx' not in df_optimal.columns:
+        print('[plot_split_idx_distribution] No split_idx column found — skipping.')
+        return
+
+    # One row per neuron (first fold is enough; split_idx is neuron-level)
+    df_dedup = (df_optimal
+                .drop_duplicates(subset=['mouse_id', 'neuron_id'], keep='first')
+                .copy())
+    df_dedup['split_idx'] = pd.to_numeric(df_dedup['split_idx'], errors='coerce')
+    df_dedup = df_dedup.dropna(subset=['split_idx'])
+
+    if df_dedup.empty:
+        print('[plot_split_idx_distribution] split_idx is empty after cleaning — skipping.')
+        return
+
+    ordered_regions = [
+        area
+        for areas in area_groups.values()
+        for area in areas
+        if area in df_dedup['area_acronym_custom'].values
+    ]
+
+    # ── 1. Histogram per brain area ───────────────────────────────────────────
+    n_rows = math.ceil(len(ordered_regions) / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols,
+                             figsize=(4.5 * n_cols, 3.5 * n_rows))
+    axes = np.array(axes).reshape(-1)
+
+    global_min = df_dedup['split_idx'].min()
+    global_max = df_dedup['split_idx'].max()
+    bins = np.linspace(global_min, global_max, 30)
+
+    for ax, region in zip(axes, ordered_regions):
+        reg_df = df_dedup[df_dedup['area_acronym_custom'] == region]
+        vals = reg_df['split_idx'].values
+
+        color = area_colors.get(
+            next((g for g, areas in area_groups.items() if region in areas), None),
+            'steelblue')
+
+        ax.hist(vals, bins=bins, color=color, alpha=0.75, edgecolor='white', lw=0.4)
+        median_val = np.median(vals)
+        ax.axvline(median_val, color='black', lw=1.5, ls='--',
+                   label=f'median={median_val:.0f}')
+        ax.set_title(f'{region}  (n={len(vals)})', fontsize=9,
+                     color=color, fontweight='bold')
+        ax.set_xlabel('split_idx (trial)', fontsize=8)
+        ax.set_ylabel('# neurons', fontsize=8)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.legend(fontsize=7)
+
+    for ax in axes[len(ordered_regions):]:
+        ax.set_visible(False)
+
+    fig.suptitle('split_idx distribution per area  |  optimal split', fontsize=12)
+    fig.tight_layout()
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
+                                    filename='split_idx_distribution_per_area',
+                                    output_dir=output_folder)
+    plt.close(fig)
+
+    # ── 2. Overall histogram (all areas combined) ─────────────────────────────
+    fig2, ax2 = plt.subplots(figsize=(6, 4))
+    all_vals = df_dedup['split_idx'].values
+    ax2.hist(all_vals, bins=30, color='steelblue', alpha=0.75,
+             edgecolor='white', lw=0.4)
+    ax2.axvline(np.median(all_vals), color='black', lw=1.5, ls='--',
+                label=f'median={np.median(all_vals):.0f}')
+    ax2.axvline(np.mean(all_vals), color='red', lw=1.5, ls=':',
+                label=f'mean={np.mean(all_vals):.0f}')
+    ax2.set_xlabel('split_idx (trial)', fontsize=10)
+    ax2.set_ylabel('# neurons', fontsize=10)
+    ax2.set_title(f'split_idx distribution — all areas  (n={len(all_vals)})', fontsize=11)
+    ax2.spines['top'].set_visible(False)
+    ax2.spines['right'].set_visible(False)
+    ax2.legend(fontsize=9)
+    fig2.tight_layout()
+    putils.save_figure_with_options(fig2, file_formats=['png', 'pdf'],
+                                    filename='split_idx_distribution_overall',
+                                    output_dir=output_folder)
+    plt.close(fig2)
+
+    # ── 3. Median split_idx per area (bar plot) ───────────────────────────────
+    medians, stds, ns, colors_bar, region_labels = [], [], [], [], []
+    for region in ordered_regions:
+        vals = df_dedup[df_dedup['area_acronym_custom'] == region]['split_idx'].values
+        if len(vals) == 0:
+            continue
+        medians.append(np.median(vals))
+        stds.append(np.std(vals))
+        ns.append(len(vals))
+        colors_bar.append(area_colors.get(
+            next((g for g, areas in area_groups.items() if region in areas), None),
+            'steelblue'))
+        region_labels.append(f'{region}\n(n={len(vals)})')
+
+    fig3, ax3 = plt.subplots(figsize=(max(6, len(medians) * 0.8), 4))
+    x = np.arange(len(medians))
+    bars = ax3.bar(x, medians, color=colors_bar, alpha=0.8, edgecolor='white')
+    ax3.errorbar(x, medians, yerr=stds, fmt='none', color='black',
+                 capsize=3, lw=1.2)
+    ax3.set_xticks(x)
+    ax3.set_xticklabels(region_labels, fontsize=8, rotation=45, ha='right')
+    ax3.set_ylabel('median split_idx (trial)', fontsize=10)
+    ax3.set_title('Median optimal split index per area', fontsize=11)
+    ax3.spines['top'].set_visible(False)
+    ax3.spines['right'].set_visible(False)
+    fig3.tight_layout()
+    putils.save_figure_with_options(fig3, file_formats=['png', 'pdf'],
+                                    filename='split_idx_median_per_area',
+                                    output_dir=output_folder)
+    plt.close(fig3)
+
+
+def plot_activity_trial_correlation_matrices(
+        merged_pred_df, merged_df, output_folder, area_groups, area_colors, n_cols=4):
+    """
+    For each consistency group (consistent up, consistent down, non-consistent),
+    and for each kernel pair found in merged_df, compute and plot the average
+    trial × trial correlation matrix of neural activity per area per mouse.
+
+    For each neuron, a (n_trials × n_trials) Pearson correlation matrix is computed
+    from the trial responses (each trial = PSTH vector of n_bins).  These matrices
+    are then averaged across neurons sharing the same (mouse, area, group).
+
+    Three trial subsets per figure:
+      - whisker hits only  (trial_type == 'whisker', lick_flag == 1)
+      - whisker misses only (trial_type == 'whisker', lick_flag == 0)
+      - both mixed          (trial_type == 'whisker')
+
+    Each saved figure: 2 rows (real | predicted) × n_areas cols.
+    """
+    os.makedirs(output_folder, exist_ok=True)
+
+    # ── decode helper ─────────────────────────────────────────────────────────
+    def _decode(row):
+        def _j(v):
+            return json.loads(v) if isinstance(v, str) else v
+        tts   = np.array(_j(row['trial_types']))
+        licks = np.array(_j(row['lick_flags']), dtype=int)
+        y_t   = np.array(_j(row['y_test']), dtype=float) * _SPIKES_TO_HZ
+        y_p   = np.array(_j(row['y_pred']), dtype=float) * _SPIKES_TO_HZ
+        return tts, licks, y_t, y_p
+
+    def _trial_corr(mat):
+        """Return n_trials × n_trials Pearson correlation matrix, or None."""
+        if mat.shape[0] < 3:
+            return None
+        # Avoid degenerate rows (constant activity)
+        stds = mat.std(axis=1)
+        if (stds == 0).all():
+            return None
+        try:
+            return np.corrcoef(mat)
+        except Exception:
+            return None
+
+    # ── build consistency lookup from merged_df ───────────────────────────────
+    cons_cols = ['mouse_id', 'neuron_id', 'kernel_pair', 'is_consistent', 'consistency_score']
+    if not all(c in merged_df.columns for c in cons_cols):
+        print("[plot_activity_trial_correlation_matrices] Consistency columns missing – skipping.")
+        return
+
+    cons_lookup = (
+        merged_df[merged_df['model_name'] == 'full'][cons_cols]
+        .dropna(subset=['kernel_pair'])
+        .groupby(['mouse_id', 'neuron_id', 'kernel_pair'])
+        .first()
+        .reset_index()
+    )
+
+    # Ordered areas
+    all_areas_in_pred = set(merged_pred_df['area_acronym_custom'].unique())
+    ordered_areas = [
+        area for areas in area_groups.values()
+        for area in areas if area in all_areas_in_pred
+    ]
+    area_to_color = {
+        area: area_colors.get(grp, 'gray')
+        for grp, areas in area_groups.items()
+        for area in areas
+    }
+
+    reward_labels = {1: 'r+', 0: 'r-'}
+
+    TRIAL_SUBSETS = [
+        ('hits',   lambda tts, licks: (tts == 'whisker_trial') & (licks == 1)),
+        ('misses', lambda tts, licks: (tts == 'whisker_trial') & (licks == 0)),
+        ('both',   lambda tts, licks:  tts == 'whisker_trial'),
+    ]
+
+    # ── shared helper: run corr plots for one group ──────────────────────────
+    def _run_corr_group(group_ids, group_label, group_folder, pair_name=''):
+        group_pred = merged_pred_df.merge(
+            group_ids.drop_duplicates(), on=['mouse_id', 'neuron_id'], how='inner')
+        if group_pred.empty:
+            return
+        os.makedirs(group_folder, exist_ok=True)
+
+        for reward_group, rg_label in reward_labels.items():
+            rg_pred = group_pred[group_pred['reward_group'] == reward_group]
+            if rg_pred.empty:
+                continue
+            rg_folder = os.path.join(group_folder, rg_label)
+            os.makedirs(rg_folder, exist_ok=True)
+
+            for trial_label, trial_mask_fn in TRIAL_SUBSETS:
+
+                def _compute_mouse_corr(args, _tmf=trial_mask_fn):
+                    mid, mpred = args
+                    real_by_area, pred_by_area, n_by = {}, {}, {}
+                    for area in ordered_areas:
+                        area_rows = mpred[mpred['area_acronym_custom'] == area]
+                        if area_rows.empty:
+                            continue
+                        real_mats, pred_mats = [], []
+                        for _, row in area_rows.iterrows():
+                            tts, licks, y_t, y_p = _decode(row)
+                            mask = _tmf(tts, licks)
+                            if mask.sum() < 3:
+                                continue
+                            cr = _trial_corr(y_t[mask])
+                            cp = _trial_corr(y_p[mask])
+                            if cr is not None:
+                                real_mats.append(cr)
+                            if cp is not None:
+                                pred_mats.append(cp)
+                        if real_mats:
+                            real_by_area[area] = np.nanmean(np.stack(real_mats), axis=0)
+                            n_by[area] = len(real_mats)
+                        if pred_mats:
+                            pred_by_area[area] = np.nanmean(np.stack(pred_mats), axis=0)
+                    return mid, real_by_area, pred_by_area, n_by
+
+                mouse_groups = list(rg_pred.groupby('mouse_id'))
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                with _TPE(max_workers=min(8, len(mouse_groups))) as ex:
+                    mouse_results = list(ex.map(_compute_mouse_corr, mouse_groups))
+
+                for mouse_id, real_corr_by_area, pred_corr_by_area, n_by_area \
+                        in mouse_results:
+
+                    areas_to_plot = [a for a in ordered_areas if a in real_corr_by_area]
+                    if not areas_to_plot:
+                        continue
+
+                    n_areas_plot = len(areas_to_plot)
+                    fig, axes = plt.subplots(2, n_areas_plot,
+                                             figsize=(3.5 * n_areas_plot, 7),
+                                             squeeze=False)
+
+                    for ai, area in enumerate(areas_to_plot):
+                        color = area_to_color.get(area, 'gray')
+                        n_neu = n_by_area.get(area, 0)
+                        for row_idx, (label_row, corr_dict) in enumerate([
+                                ('real', real_corr_by_area),
+                                ('predicted', pred_corr_by_area)]):
+                            ax = axes[row_idx, ai]
+                            mat = corr_dict.get(area)
+                            if mat is None:
+                                ax.set_visible(False)
+                                continue
+                            # Scale on off-diagonal only so the diagonal (=1) doesn't dominate
+                            off_diag = mat[~np.eye(mat.shape[0], dtype=bool)]
+                            abs_max = np.nanmax(np.abs(off_diag)) if off_diag.size else 1.0
+                            im = ax.imshow(mat, cmap='RdBu_r',
+                                           vmin=-abs_max, vmax=abs_max,
+                                           aspect='equal',
+                                           interpolation='nearest')
+                            ax.set_xticks([])
+                            ax.set_yticks([])
+                            n_trials = mat.shape[0]
+                            if row_idx == 0:
+                                ax.set_title(f'{area}\n(n={n_neu} neu, {n_trials} trials)',
+                                             fontsize=8, color=color, fontweight='bold')
+                            else:
+                                ax.set_xlabel(f'{n_trials} trials', fontsize=7)
+                            if ai == 0:
+                                ax.set_ylabel(label_row, fontsize=8)
+                            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='r')
+
+                    title_parts = [p for p in [group_label, pair_name, trial_label,
+                                               rg_label, mouse_id] if p]
+                    fig.suptitle('  |  '.join(title_parts), fontsize=9)
+                    fig.tight_layout()
+                    putils.save_figure_with_options(
+                        fig, file_formats=['png', 'pdf'],
+                        filename=f'{mouse_id}_{trial_label}', output_dir=rg_folder)
+                    plt.close(fig)
+
+    # ── all_neurons: independent of kernel pair ───────────────────────────────
+    all_neu_ids = cons_lookup[['mouse_id', 'neuron_id']].drop_duplicates()
+    _run_corr_group(all_neu_ids, 'all_neurons',
+                    os.path.join(output_folder, 'all_neurons'))
+
+    for pair_name in sorted(cons_lookup['kernel_pair'].dropna().unique()):
+        pair_cons = cons_lookup[cons_lookup['kernel_pair'] == pair_name]
+
+        is_cons = pair_cons['is_consistent'].fillna(False).astype(bool)
+        score   = pair_cons['consistency_score'].fillna(0)
+
+        groups = {
+            'consistent_up':   pair_cons.loc[is_cons & (score > 0),  ['mouse_id', 'neuron_id']],
+            'consistent_down': pair_cons.loc[is_cons & (score < 0),  ['mouse_id', 'neuron_id']],
+            'non_consistent':  pair_cons.loc[~is_cons,               ['mouse_id', 'neuron_id']],
+        }
+
+        for group_label, group_ids in groups.items():
+            _run_corr_group(group_ids, group_label,
+                            os.path.join(output_folder,
+                                         pair_name.replace(' ', '_'), group_label),
+                            pair_name=pair_name)

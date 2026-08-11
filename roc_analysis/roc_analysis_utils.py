@@ -45,6 +45,8 @@ def load_roc_results(root_path, max_workers=20):
 
     return pd.concat(dfs, ignore_index=True)
 
+
+
 def load_roc_results_serial(root_path):
     files = glob.glob(os.path.join(root_path, '**', '*_roc_results_new.csv'), recursive=True)
     print(f"  Found {len(files)} files in: {root_path}")
@@ -102,7 +104,7 @@ def fdr_bh(pvals, fdr=0.05):
     return reject, pvals_corrected
 
 
-def filter_process_data(data_df, n_units_min=20, n_mice_per_area_min=3, keep_shared=True):
+def filter_process_data(data_df, n_units_min=20, n_mice_per_area_min=3, n_units_per_mouse_min=3, keep_shared=True):
     data_df = data_df.copy()
 
     group_cols = ['analysis_type', 'area_acronym_custom']
@@ -113,7 +115,14 @@ def filter_process_data(data_df, n_units_min=20, n_mice_per_area_min=3, keep_sha
     data_df = data_df.merge(valid, on=group_cols)
     print(f"After unit count filter: {len(data_df)} rows")
 
-    # Step 2: filter by number of mice per (analysis_type, area)
+    # Step 2: filter by minimum units per mouse per (analysis_type, area) —
+    #         keep only mice that meet the threshold, then re-apply mice-per-area filter
+    per_mouse_counts = data_df.groupby(group_cols + ['mouse_id']).size().rename('n_units_mouse').reset_index()
+    valid_mice = per_mouse_counts[per_mouse_counts['n_units_mouse'] >= n_units_per_mouse_min][group_cols + ['mouse_id']]
+    data_df = data_df.merge(valid_mice, on=group_cols + ['mouse_id'])
+    print(f"After units-per-mouse filter: {len(data_df)} rows")
+
+    # Step 3: filter by number of mice per (analysis_type, area)
     mouse_counts = data_df.groupby(group_cols)['mouse_id'].nunique().rename('n_mice')
     valid = mouse_counts[mouse_counts >= n_mice_per_area_min].reset_index()[group_cols]
     data_df = data_df.merge(valid, on=group_cols)
@@ -148,7 +157,7 @@ def filter_process_data_old(data_df, n_units_min=20, n_mice_per_area_min=3, keep
     :param n_mice_per_area_min: minimum number of mice per area to keep
     :param keep_shared: if True, only keep areas that are present in both reward groups
     """
-    print(len(data_df))
+
     data_df['selectivity_abs'] = data_df['selectivity'].abs()
 
     # Step 1: Add custom area column

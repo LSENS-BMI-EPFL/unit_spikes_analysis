@@ -260,13 +260,22 @@ def shift_test(
 
 def _summarize(scores: np.ndarray, N: int, bigger_is_more_associated: bool, sign_at_shift0: float = None):
     s0 = scores[N]
-    if bigger_is_more_associated:
-        m = int((scores >= s0).sum())
+    if np.isnan(s0):
+        # A NaN score (e.g. zero-variance window -> 0/0 in pearson_corr) means
+        # this test is undefined, not maximally significant. NaN comparisons
+        # are always False in numpy, so `scores >= s0`/`scores <= s0` would
+        # otherwise silently give m=0 -> p=0.0, i.e. a false "most significant
+        # result possible" instead of "no result".
+        m = 0
+        p_cons = p_appx = 1.0
     else:
-        m = int((scores <= s0).sum())
+        if bigger_is_more_associated:
+            m = int((scores >= s0).sum())
+        else:
+            m = int((scores <= s0).sum())
 
-    p_cons = min(m / (N + 1), 1.0)
-    p_appx = min(m / (2 * N + 1), 1.0)
+        p_cons = min(m / (N + 1), 1.0)
+        p_appx = min(m / (2 * N + 1), 1.0)
     out = {
         "m": m,
         "p_conservative": p_cons,
@@ -278,6 +287,7 @@ def _summarize(scores: np.ndarray, N: int, bigger_is_more_associated: bool, sign
     if sign_at_shift0 is not None:
         out["sign_at_shift0"] = sign_at_shift0
     return out
+
 
 
 # --------------------------------------------------------------------------
