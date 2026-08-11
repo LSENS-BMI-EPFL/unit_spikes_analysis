@@ -6,92 +6,73 @@ Loads the already-computed per-session score-change results (the
 if present) -- never touches raw CCG/.npy data, so this is fast and safe to
 re-run as often as you like.
 
+SIMPLIFIED SCORE-CHANGE DESIGN (see CONDITIONS below):
+Every score-change figure is one of three types, each a 2x2 grid over the
+four (sign, comparison) conditions -- E/inflection, E/passive, I/inflection,
+I/passive (CONDITIONS, fixed order/layout: row=sign, col=comparison) -- and
+each produced 3x: pooled (all areas), within-area only, across-area only.
+  1. plot_delta_histogram   -- raw pair-level score_diff histogram, R+ vs R-
+  2. plot_delta_boxplot     -- session-level mean score_diff boxplot, R+ vs R-
+  3. plot_delta_by_area     -- per-area mean+/-SEM bars, R+ vs R-, with
+                                omnibus PERMANOVA + conditional per-area
+                                Mann-Whitney post-hoc (only run if the
+                                omnibus is significant)
+E and I are NEVER combined or tested against each other -- different
+underlying models (different SCORE_TAG versions), not comparable on the
+same scale.
+
 STATISTICAL APPROACH -- read before interpreting p-values:
 - Raw pair-level rows are heavily pseudo-replicated: thousands of pairs from
   the same session are not independent observations. Every statistical test
-  here is therefore run on SESSION-LEVEL MEANS (one value per session, per
-  area, per group), never on raw per-pair rows.
+  is run on SESSION-LEVEL MEANS (one value per session, per area, per
+  group), never on raw per-pair rows -- even in plot_delta_histogram, whose
+  histogram itself DOES show raw pair-level values (that's the plot), but
+  whose p-value annotation is computed on session-level aggregates.
 - "PERMANOVA" here means a permutation-based ANOVA (pseudo-F computed via
   permutation of group labels). For a single continuous response this is
   the exact univariate case of PERMANOVA (Euclidean-distance pseudo-F on
   one variable == classic ANOVA F-statistic) -- verified against scipy's
-  f_oneway during development. It is not a multivariate scikit-bio PERMANOVA,
-  since there's no multivariate response here to justify one.
-- Post-hoc: for every omnibus group comparison, the same permutation-ANOVA
-  is re-run independently within each area (area_source -> area_target),
-  and p-values are Benjamini-Hochberg FDR-corrected across areas (verified
-  against statsmodels.stats.multitest during development). Areas with fewer
-  than MIN_N_PER_GROUP sessions in any group are excluded and flagged.
-- E and I connections are NEVER combined or tested against each other --
-  different underlying models (different SCORE_TAG versions), not
-  comparable on the same scale. They appear side-by-side in shared-axis
-  panels for visual comparison only.
-
-MARGINALIZATION IN "_alone" FIGURES -- read before interpreting these:
-- "E alone" / "I alone" figures fix sign and POOL across both comparisons
-  (passive + inflection averaged together per session). This never mixes E
-  and I, but it can mask a real effect if passive and inflection push in
-  opposite directions -- see the non-pooled, comparison-resolved figures
-  (by_condition/, by_reward_group/*_passive.png, *_inflection.png) for the
-  unpooled view.
-- "passive alone" / "inflection alone" figures fix comparison and keep E
-  and I as separate sub-panels (never pooled).
+  f_oneway during development.
+- Post-hoc (plot_delta_by_area only): per-area Mann-Whitney U, BH-FDR
+  corrected across areas, run ONLY IF the omnibus PERMANOVA for that panel
+  is significant (alpha=ALPHA) -- avoids fishing for area-level differences
+  without an overall effect to explain. Areas with fewer than
+  MIN_N_PER_GROUP sessions in either group are excluded and flagged.
 
 SCORE-DIFF VALIDITY FILTER:
 - score_pre/score_post can individually be the -7788 sentinel (unscoreable
   in that specific epoch) even when the pair passed the WHOLE-SESSION
-  threshold used to mark it "connected" -- whole-session scoreability does
-  not guarantee per-epoch scoreability. Every score_diff-based figure here
-  filters to rows where BOTH score_pre > CONNECTED_THRESH AND
+  threshold used to mark it "connected". Every score-change figure filters
+  to rows where BOTH score_pre > CONNECTED_THRESH AND
   score_post > CONNECTED_THRESH first (see _valid_score_diff). Connectivity
   /composition figures (which count pairs, not score_diff magnitude) are
   NOT filtered this way -- a pair's connected status only ever depends on
   the whole-session score.
 
+WITHIN vs ACROSS AREA:
+- Every score-change figure is produced 3x via _filter_area_relation:
+  pooled (all pairs), within-area only (area_source == area_target), and
+  across-area only. Filenames get a _within / _across suffix (none for
+  pooled).
+
 TRUE CONNECTIVITY RATES vs COMPOSITION -- two different denominators:
 - plot_connectivity_by_reward_group uses combined_connectivity_summary.csv
   (written by dyad_pipeline.py's session_connectivity_summary()), which has
   REAL total-candidate-pair denominators -- these are true connectivity
-  RATES (connected / all candidates), session-level, not broken down by
-  specific area.
+  RATES, session-level, not broken down by specific area.
 - plot_connectivity_by_area_and_reward_group breaks the SAME three
   categories (global/within/across) down by specific area, but the
   pipeline only saves within/across totals aggregated over ALL areas, not
   per individual area -- so no true per-area denominator exists. This
-  figure instead shows COMPOSITION: of the connected pairs (or the
-  within-only / across-only connected subset), what % falls in each area.
-  These are proportions of the connected set, not rates against a
-  candidate-pair denominator -- don't conflate the two.
-
-STRICT_SCORE_DIFF_FILTER -- two mutually exclusive analysis modes:
-- True (default): every score_diff-based figure filters to pairs where
-  BOTH score_pre and score_post individually exceed CONNECTED_THRESH (see
-  _valid_score_diff). Delta-score magnitude is meaningful and safe to plot.
-- False: no score_pre/post filtering -- ALL whole-session-connected pairs
-  are kept (this pipeline never includes anything else; see
-  dyad_pipeline.py's process_session, which filters on the whole-session
-  score before anything reaches this script). But score_pre/score_post can
-  then individually be the -7788 sentinel, which makes score_diff
-  (post - pre) arithmetic meaningless -- a sentinel isn't a real score, so
-  subtracting it produces a huge, uninterpretable delta, not a real signal.
-  In this mode, delta-score figures are skipped entirely and replaced with
-  connection-TRANSITION fractions instead: each pair's score_pre and
-  score_post are independently compared to CONNECTED_THRESH (never
-  subtracted), classifying it as newly connected, newly disconnected,
-  stayed connected, or stayed disconnected. This sidesteps the sentinel
-  problem completely -- comparing a sentinel to a threshold is well-defined
-  (it's below threshold, i.e. "disconnected"), unlike subtracting it.
+  figure instead shows COMPOSITION: of the connected pairs, what % falls
+  in each area. Proportions of the connected set, not rates -- don't
+  conflate the two.
 """
-import sys
 import pickle
 import warnings
 from pathlib import Path
 
 import matplotlib
-
-sys.path.append(r"M:\analysis\Axel_Bisi\Github\allen_utils")
-from allen_utils import get_excluded_areas
-
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
@@ -100,13 +81,12 @@ import seaborn as sns
 from scipy.stats import mannwhitneyu
 
 sns.set_theme()  # seaborn's default aesthetic (darkgrid style, deep palette), applied globally
-sns.set_style('ticks')
 
 # ============================== CONFIG ======================================
 OUTPUT_ROOT = Path(r"M:\analysis\Axel_Bisi\combined_results")
+COMBINED_CSV = OUTPUT_ROOT / "combined_score_changes.csv"
+COMBINED_CONNECTIVITY_CSV = OUTPUT_ROOT / "combined_connectivity_summary.csv"
 SUMMARY_DIR = OUTPUT_ROOT / "dyad"
-COMBINED_CSV = SUMMARY_DIR / "combined_score_changes.csv"
-COMBINED_CONNECTIVITY_CSV = SUMMARY_DIR / "combined_connectivity_summary.csv"
 # Raw per-session data root -- ONLY pairs_light.pkl is read from here (small
 # per-pair metadata, not the CCG arrays). Everything else in this script
 # stays CSV-only by design; this is a deliberate, narrow exception for the
@@ -124,9 +104,6 @@ LEARNING_CATEGORY_COL = "learning_category"
 BAD_LEARNING_VALUES = {"bad"}     # case-insensitive match; add more labels if needed
 
 CONNECTED_THRESH = -7.5  # must match dyad_pipeline.py
-# See module docstring: True = delta-score figures (strict pre/post
-# validity filter); False = connection-transition figures instead.
-STRICT_SCORE_DIFF_FILTER = True
 N_PERM = 999
 SEED = 0
 MIN_N_PER_GROUP = 3   # minimum sessions per group for a per-area post-hoc test to run
@@ -137,6 +114,11 @@ SIGNS = ("E", "I")
 SIGN_COLORS = {"E": "tab:orange", "I": "tab:purple"}
 # EDIT if your reward_group values differ from these
 REWARD_COLORS = {"R+": "forestgreen", "R-": "crimson"}
+
+# Fixed 2x2 layout for every score-change figure: row=sign, col=comparison,
+# in this exact order (top-left to bottom-right): E/inflection, E/passive,
+# I/inflection, I/passive.
+CONDITIONS = [("E", "inflection"), ("E", "passive"), ("I", "inflection"), ("I", "passive")]
 
 SAVE_DPI = 300
 # Only font-size/DPI overrides needed for our many small, dense subplots --
@@ -282,7 +264,7 @@ def _filter_area_relation(df, area_relation):
     pairs. Uses the area_relation column if present (written by the
     updated dyad_pipeline.py's process_session), else derives it from
     area_source/area_target directly. area_relation=None returns df
-    unchanged (pooled, existing behavior)."""
+    unchanged (pooled)."""
     if area_relation is None:
         return df
     if "area_relation" in df.columns:
@@ -297,8 +279,8 @@ def _tag_suffix(area_relation):
 
 
 def _tag_title(area_relation):
-    """Title annotation for a given area_relation split ('' for pooled)."""
-    return f" [{area_relation}-area]" if area_relation else ""
+    """Title annotation for a given area_relation split."""
+    return f" [{area_relation}-area]" if area_relation else " [pooled: within+across]"
 
 
 # ============================== STATISTICS ===================================
@@ -414,10 +396,6 @@ def omnibus_and_conditional_posthoc(session_df, area_df, group_col="reward_group
     group_col is always exactly two groups here -- R+ vs R-), BH-FDR
     corrected across areas.
 
-    Skipping the post-hoc when the omnibus isn't significant avoids fishing
-    for area-level differences that wouldn't mean anything without an
-    overall effect to explain.
-
     Returns (F, p, posthoc_df_or_None). posthoc_df is None when the omnibus
     isn't significant (or can't be computed) -- callers should handle that.
     """
@@ -442,7 +420,10 @@ def _style_ax(ax, xlabel="", ylabel="Mean CCG score change", zero_line=True, ver
 
 
 def _boxplot_with_points(ax, groups_data, labels, colors, jitter=0.06, seed=SEED):
-    """Boxplot + jittered individual points, consistent style throughout."""
+    """Boxplot + jittered individual points. showmeans=True already draws
+    BOTH mean (triangle marker) and median (the box's center line) --
+    satisfies 'show mean and median' without extra work for any boxplot
+    figure."""
     rng = np.random.default_rng(seed)
     bp = ax.boxplot(groups_data, tick_labels=labels, showmeans=True,
                      patch_artist=True, widths=0.6, zorder=2,
@@ -478,6 +459,37 @@ def _sig_stars(p):
     return "n.s."
 
 
+def _add_mean_median_lines(ax, values, color):
+    """Vertical lines marking mean (dashed) and median (dotted) of values,
+    in the given color. Used on histogram panels to satisfy 'show mean and
+    median' there too."""
+    values = np.asarray(values, dtype=float)
+    values = values[~np.isnan(values)]
+    if len(values) == 0:
+        return
+    ax.axvline(np.mean(values), color=color, linestyle="--", linewidth=1.4, alpha=0.95, zorder=4)
+    ax.axvline(np.median(values), color=color, linestyle=":", linewidth=1.6, alpha=0.95, zorder=4)
+
+
+def _condition_grid(figsize_per_panel=3.2, sharex=True, sharey=True):
+    """2x2 figure, one panel per (sign, comparison) in CONDITIONS, fixed
+    layout (row=sign, col=comparison). Axes shared for direct visual
+    comparison (per request), but EVERY panel still shows its own tick
+    labels (overriding matplotlib's default hiding of inner labels under
+    sharex/sharey), and every panel is forced square via set_box_aspect.
+    Returns (fig, axes, ax_map) where ax_map[(sign, comparison)] -> Axes."""
+    fig, axes = plt.subplots(2, 2, figsize=(figsize_per_panel * 2, figsize_per_panel * 2),
+                              sharex=sharex, sharey=sharey, squeeze=False)
+    ax_map = {}
+    for idx, (sign, comparison) in enumerate(CONDITIONS):
+        i, j = idx // 2, idx % 2
+        ax = axes[i][j]
+        ax.set_box_aspect(1)
+        ax.tick_params(labelbottom=True, labelleft=True)
+        ax_map[(sign, comparison)] = ax
+    return fig, axes, ax_map
+
+
 def _area_barh(ax, cell, area_col="area_pair", mean_col="mean", err_col="sem",
                color="tab:blue", max_areas=MAX_AREAS_SHOWN, sig_col=None):
     """Horizontal bar chart of mean +/- error per area, capped to the
@@ -509,21 +521,24 @@ def _area_barh(ax, cell, area_col="area_pair", mean_col="mean", err_col="sem",
             err = err if pd.notna(err) else 0
             xpos = (val + err + pad) if val >= 0 else (val - err - pad)
             ax.text(xpos, yi, stars, va="center", ha="left" if val >= 0 else "right",
-                    fontsize=7, fontweight="normal")
+                    fontsize=7, fontweight="bold")
 
     return n_total, len(cell)
 
 
 def _area_barh_grouped(ax, table, area_col="area_pair", value_col="pct", group_col="reward_group",
-                        colors=REWARD_COLORS, max_areas=MAX_AREAS_SHOWN, sig_map=None):
+                        colors=REWARD_COLORS, max_areas=MAX_AREAS_SHOWN, sig_map=None,
+                        err_col=None, median_col=None):
     """Grouped horizontal bars: one bar per group_col value, per area.
-    Each group's percentages are computed against ITS OWN total (see
-    caller), so this is a fair composition comparison regardless of
-    different R+/R- sample sizes. Capped to the max_areas areas with the
-    largest combined value. If sig_map is given (dict area -> stars
-    string), each area's row gets one stars annotation past its tallest
-    bar (significance is a property of the area-level comparison, not of
-    one group's bar specifically). Returns (n_total_areas, n_shown)."""
+    Capped to the max_areas areas with the largest combined value.
+
+    err_col: optional column for xerr (error bars).
+    median_col: optional column of median values -- drawn as a small black
+    diamond marker at the median position for each bar (the bar length IS
+    the mean, so this satisfies 'show mean and median' for bar figures).
+    sig_map: optional dict area -> stars string, one annotation per area
+    row past its tallest bar (+error).
+    Returns (n_total_areas, n_shown)."""
     pivot = table.pivot_table(index=area_col, columns=group_col, values=value_col, fill_value=0)
     n_total = len(pivot)
     if n_total == 0:
@@ -535,27 +550,43 @@ def _area_barh_grouped(ax, table, area_col="area_pair", value_col="pct", group_c
         pivot = pivot.loc[top_idx]
     pivot = pivot.loc[pivot.sum(axis=1).sort_values().index]
 
+    err_pivot = None
+    if err_col:
+        err_pivot = table.pivot_table(index=area_col, columns=group_col, values=err_col, fill_value=0)
+        err_pivot = err_pivot.reindex(index=pivot.index, columns=pivot.columns, fill_value=0)
+    med_pivot = None
+    if median_col:
+        med_pivot = table.pivot_table(index=area_col, columns=group_col, values=median_col, fill_value=0)
+        med_pivot = med_pivot.reindex(index=pivot.index, columns=pivot.columns, fill_value=0)
+
     groups = list(pivot.columns)
     n_groups = len(groups)
     y = np.arange(len(pivot))
     bar_h = 0.8 / max(n_groups, 1)
     for i, g in enumerate(groups):
         offset = (i - (n_groups - 1) / 2) * bar_h
-        ax.barh(y + offset, pivot[g], height=bar_h * 0.9, color=colors.get(g, "tab:gray"),
-                 label=g, edgecolor="black", linewidth=0.3)
+        xerr = err_pivot[g] if err_pivot is not None else None
+        ax.barh(y + offset, pivot[g], xerr=xerr, height=bar_h * 0.9, color=colors.get(g, "tab:gray"),
+                 label=g, edgecolor="black", linewidth=0.3, capsize=1.5,
+                 error_kw=dict(linewidth=0.6))
+        if med_pivot is not None:
+            ax.scatter(med_pivot[g], y + offset, marker="D", color="black", s=10,
+                       zorder=5, label="median" if i == 0 else None)
     ax.set_yticks(y)
     ax.set_yticklabels(pivot.index)
     ax.margins(y=0.02)
 
     if sig_map:
-        max_val = pivot.values.max() if pivot.size else 1
+        err_max = err_pivot.values.max() if err_pivot is not None and err_pivot.size else 0
+        max_val = pivot.values.max() + err_max if pivot.size else 1
         pad = 0.03 * max_val if max_val else 0.1
         for yi, area in enumerate(pivot.index):
             stars = sig_map.get(area, "")
             if not stars or stars == "n.s.":
                 continue
-            row_max = pivot.loc[area].max()
-            ax.text(row_max + pad, yi, stars, va="center", ha="left", fontsize=7, fontweight="normal")
+            row_err = err_pivot.loc[area].max() if err_pivot is not None else 0
+            row_max = pivot.loc[area].max() + row_err
+            ax.text(row_max + pad, yi, stars, va="center", ha="left", fontsize=7, fontweight="bold")
 
     return n_total, len(pivot)
 
@@ -564,439 +595,153 @@ def _barh_height(n_bars, per_bar=0.22, base=0.9):
     return max(base, per_bar * n_bars + 0.6)
 
 
-# ============================== FIGURE: by-mouse area breakdown =============
-def plot_area_by_mouse(df, out_dir):
-    """One figure per mouse: rows = comparison, cols = sign, horizontal bars
-    = mean score change per area (source->target). df must already be
-    filtered via _valid_score_diff()."""
-    fig_dir = out_dir / "by_mouse"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    agg = (df.groupby(["mouse", "sign", "comparison", "area_pair"])["score_diff"]
-             .agg(mean="mean", sem=lambda x: x.std(ddof=1) / np.sqrt(len(x)) if len(x) > 1 else 0.0,
-                  n="size")
-             .reset_index())
-
-    for mouse, sub in agg.groupby("mouse"):
-        comparisons = sorted(sub["comparison"].unique())
-        signs_present = [s for s in SIGNS if s in sub["sign"].unique()]
-        if not comparisons or not signs_present:
-            continue
-
-        max_n = sub.groupby(["comparison", "sign"]).size().max()
-        height = _barh_height(min(max_n, MAX_AREAS_SHOWN))
-        fig, axes = plt.subplots(len(comparisons), len(signs_present),
-                                  figsize=(3.6 * len(signs_present), height * len(comparisons)),
-                                  squeeze=False, sharex=True)
-
-        for i, comparison in enumerate(comparisons):
-            for j, sign in enumerate(signs_present):
-                ax = axes[i][j]
-                cell = sub[(sub["comparison"] == comparison) & (sub["sign"] == sign)]
-                n_total, n_shown = _area_barh(ax, cell, color=SIGN_COLORS[sign])
-                cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
-                ax.set_title(f"{sign} \u2014 {comparison}{cap_note}", fontweight="normal")
-                _style_ax(ax, xlabel="Mean score change \u00b1 SEM" if i == len(comparisons) - 1 else "",
-                          ylabel="", vertical_zero=True, zero_line=False)
-
-        fig.suptitle(f"{mouse}: mean CCG score change by area", fontweight="normal")
-        fig.tight_layout(rect=[0, 0, 1, 0.95])
-        fig.savefig(fig_dir / f"{mouse}_area_score_change.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-
-# ============================== FIGURE: score change per mouse, 4 rows =====
-def plot_score_change_by_mouse(df, out_dir, area_relation=None):
-    """Single figure, one row per (sign, comparison) combination -- E
-    passive, E inflection, I passive, I inflection (never pooling E/I or
-    passive/inflection). x-axis = mouse_id (all mice, same order in every
-    row: R+ block first, then R- block, alphabetical within each block).
-    Bars colored by reward_group. df must already be filtered via
-    _valid_score_diff().
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
+# ============================== FIGURE 1: delta-score histogram =============
+def plot_delta_histogram(df, out_dir, stats_dir, area_relation=None):
+    """Raw pair-level score_diff histogram, all pairs (within+across, or
+    within-only / across-only per area_relation). 2x2 grid over CONDITIONS,
+    R+ vs R- overlaid, mean (dashed) + median (dotted) lines. p-value
+    annotation uses session-level means (avoids pseudoreplication) even
+    though the histogram itself shows raw pair-level values.
+    df must already be filtered via _valid_score_diff()."""
     df = _filter_area_relation(df, area_relation)
     tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
 
-    mouse_rg = df[["mouse", "reward_group"]].drop_duplicates().set_index("mouse")["reward_group"]
-    rg_rank = {"R+": 0, "R-": 1}
-    mice_sorted = sorted(mouse_rg.index, key=lambda m: (rg_rank.get(mouse_rg[m], 2), m))
-    if not mice_sorted:
-        warnings.warn(f"plot_score_change_by_mouse{tag}: no data to plot")
-        return
+    fig, axes, ax_map = _condition_grid()
+    stats_rows = []
 
-    combos = [(sign, comparison) for sign in SIGNS for comparison in ("passive", "inflection")
-              if ((df["sign"] == sign) & (df["comparison"] == comparison)).any()]
-    if not combos:
-        warnings.warn(f"plot_score_change_by_mouse{tag}: no sign/comparison combinations present")
-        return
-
-    fig, axes = plt.subplots(len(combos), 1, figsize=(max(8, 0.3 * len(mice_sorted)), 2.6 * len(combos)),
-                              squeeze=False, sharex=True)
-
-    for i, (sign, comparison) in enumerate(combos):
-        ax = axes[i][0]
+    for sign, comparison in CONDITIONS:
+        ax = ax_map[(sign, comparison)]
         sub = df[(df["sign"] == sign) & (df["comparison"] == comparison)]
-        agg = (sub.groupby("mouse")["score_diff"]
-                  .agg(mean="mean", sem=lambda x: x.std(ddof=1) / np.sqrt(len(x)) if len(x) > 1 else 0.0)
-                  .reindex(mice_sorted))
-        colors = [REWARD_COLORS.get(mouse_rg.get(m), "tab:gray") for m in mice_sorted]
+        groups = sorted(sub["reward_group"].dropna().unique())
+        if not groups:
+            ax.axis("off")
+            continue
 
-        ax.bar(range(len(mice_sorted)), agg["mean"], yerr=agg["sem"], color=colors,
-               edgecolor="black", linewidth=0.4, capsize=2)
-        ax.set_xticks(range(len(mice_sorted)))
-        ax.set_xticklabels(mice_sorted if i == len(combos) - 1 else [], rotation=90, fontsize=6)
-        _style_ax(ax, ylabel=f"{sign} \u2014 {comparison}\nmean \u0394score")
+        all_vals = sub["score_diff"].to_numpy()
+        bins = np.linspace(all_vals.min(), all_vals.max(), 30) if len(all_vals) else 30
+        for g in groups:
+            d = sub.loc[sub["reward_group"] == g, "score_diff"].to_numpy()
+            color = REWARD_COLORS.get(g, "tab:gray")
+            ax.hist(d, bins=bins, alpha=0.45, color=color, label=f"{g} (n={len(d)})", density=True)
+            _add_mean_median_lines(ax, d, color)
 
-    present_groups = [g for g in ("R+", "R-") if g in set(mouse_rg.values)]
-    handles = [plt.Rectangle((0, 0), 1, 1, color=REWARD_COLORS[g]) for g in present_groups]
-    axes[0][0].legend(handles, present_groups, frameon=False, loc="upper right", fontsize=8)
+        session_agg = sub.groupby(["mouse", "session_id", "reward_group"])["score_diff"].mean().reset_index()
+        F, p = permanova_oneway(session_agg["score_diff"], session_agg["reward_group"])
+        stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
+                                F=F, p=p, n_sessions=len(session_agg)))
 
-    fig.suptitle(f"Mean score change per mouse (R+ then R-){ttag}", fontweight="normal")
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
-    fig.savefig(out_dir / f"score_change_by_mouse{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
+        ax.legend(fontsize=6, frameon=False, loc="upper right")
+        ax.set_title(f"{sign} \u2014 {comparison}\n{_p_str(p)} {_sig_stars(p)}", fontsize=8, fontweight="bold")
+        _style_ax(ax, xlabel="Score change (raw pairs)", ylabel="Density", zero_line=True)
+
+    fig.suptitle(f"Histogram of score change{ttag}\n(dashed=mean, dotted=median; per reward group)",
+                 fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    fig.savefig(out_dir / f"delta_histogram{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
     plt.close(fig)
+    pd.DataFrame(stats_rows).to_csv(stats_dir / f"delta_histogram_stats{tag}.csv", index=False)
 
 
-# ============================== FIGURE: area breakdown, "E alone"/"I alone" =
-def plot_area_by_sign(df, out_dir, stats_dir):
-    """'E alone' / 'I alone': fix sign, pool across both comparisons,
-    facet by reward_group. See module docstring re: pooling caveat.
-    df must already be filtered via _valid_score_diff().
-
-    Reports the omnibus PERMANOVA (reward_group effect, pooled across
-    areas) in the suptitle, and annotates each area's bar with
-    significance stars from the conditional per-area Mann-Whitney
-    post-hoc -- reuses the exact same test as
-    plot_reward_group_single_sign, just visualized per area here."""
-    fig_dir = out_dir / "by_area"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    for sign in [s for s in SIGNS if s in df["sign"].unique()]:
-        sub_sign = df[df["sign"] == sign]
-        agg = (sub_sign.groupby(["reward_group", "area_pair"])["score_diff"]
-                 .agg(mean="mean", sem=lambda x: x.std(ddof=1) / np.sqrt(len(x)) if len(x) > 1 else 0.0,
-                      n="size")
-                 .reset_index())
-        reward_groups = sorted(agg["reward_group"].dropna().unique())
-        if not reward_groups:
-            continue
-
-        session_agg = (sub_sign.groupby(["mouse", "session_id", "reward_group"])["score_diff"]
-                         .mean().reset_index())
-        area_session_agg = (sub_sign.groupby(["mouse", "session_id", "reward_group", "area_pair"])["score_diff"]
-                              .mean().reset_index())
-        F, p, posthoc = omnibus_and_conditional_posthoc(session_agg, area_session_agg)
-        if posthoc is not None:
-            posthoc.to_csv(stats_dir / f"posthoc_area_rewardgroup_{sign}_pooled_onbar.csv", index=False)
-            sig_lookup = dict(zip(posthoc["area"], posthoc["p_adj"].apply(_sig_stars)))
-        else:
-            sig_lookup = {}
-        agg["sig"] = agg["area_pair"].map(sig_lookup).fillna("")
-
-        max_n = agg.groupby("reward_group").size().max()
-        height = _barh_height(min(max_n, MAX_AREAS_SHOWN))
-        fig, axes = plt.subplots(1, len(reward_groups), figsize=(3.6 * len(reward_groups), height),
-                                  squeeze=False, sharex=True)
-
-        for j, rg in enumerate(reward_groups):
-            ax = axes[0][j]
-            cell = agg[agg["reward_group"] == rg]
-            n_total, n_shown = _area_barh(ax, cell, color=SIGN_COLORS[sign], sig_col="sig")
-            cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
-            ax.set_title(f"{rg}{cap_note}", fontweight="normal")
-            _style_ax(ax, xlabel="Mean score change \u00b1 SEM", ylabel="",
-                      vertical_zero=True, zero_line=False)
-
-        posthoc_note = "stars: per-area Mann-Whitney U, BH-FDR" if posthoc is not None else "omnibus n.s. -- no per-area post-hoc"
-        fig.suptitle(f"{sign} connections \u2014 score change by area\n"
-                     "(passive + inflection pooled -- see by_area/area_change_passive.png / "
-                     "_inflection.png for the unpooled view)\n"
-                     f"Omnibus PERMANOVA (reward_group): {_p_str(p)} {_sig_stars(p)}  |  {posthoc_note}",
-                     fontsize=9, fontweight="normal")
-        fig.tight_layout(rect=[0, 0, 1, 0.83])
-        fig.savefig(fig_dir / f"area_change_{sign}.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-
-# ==================== FIGURE: area breakdown, "passive alone"/"inflection alone"
-def plot_area_by_comparison(df, out_dir, stats_dir):
-    """'passive alone' / 'inflection alone': fix comparison, keep sign as
-    separate sub-panels (never pooled), facet by reward_group.
-    df must already be filtered via _valid_score_diff().
-
-    Reports the omnibus PERMANOVA (reward_group effect) per sign in each
-    panel's title, and annotates area bars with significance stars from
-    the conditional per-area Mann-Whitney post-hoc -- reuses the exact
-    same test as plot_reward_group_single_comparison, visualized per area."""
-    fig_dir = out_dir / "by_area"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    for comparison in sorted(df["comparison"].unique()):
-        sub_comp = df[df["comparison"] == comparison]
-        agg = (sub_comp.groupby(["sign", "reward_group", "area_pair"])["score_diff"]
-                 .agg(mean="mean", sem=lambda x: x.std(ddof=1) / np.sqrt(len(x)) if len(x) > 1 else 0.0,
-                      n="size")
-                 .reset_index())
-        signs_present = [s for s in SIGNS if s in agg["sign"].unique()]
-        reward_groups = sorted(agg["reward_group"].dropna().unique())
-        if not signs_present or not reward_groups:
-            continue
-
-        omnibus_by_sign = {}
-        sig_lookup_by_sign = {}
-        for sign in signs_present:
-            sub_sign_comp = sub_comp[sub_comp["sign"] == sign]
-            session_agg = (sub_sign_comp.groupby(["mouse", "session_id", "reward_group"])["score_diff"]
-                             .mean().reset_index())
-            area_session_agg = (sub_sign_comp.groupby(["mouse", "session_id", "reward_group", "area_pair"])
-                                  ["score_diff"].mean().reset_index())
-            F, p, posthoc = omnibus_and_conditional_posthoc(session_agg, area_session_agg)
-            omnibus_by_sign[sign] = (F, p, posthoc is not None)
-            if posthoc is not None:
-                posthoc.to_csv(stats_dir / f"posthoc_area_rewardgroup_{sign}_{comparison}_onbar.csv", index=False)
-                sig_lookup_by_sign[sign] = dict(zip(posthoc["area"], posthoc["p_adj"].apply(_sig_stars)))
-            else:
-                sig_lookup_by_sign[sign] = {}
-        agg["sig"] = agg.apply(lambda r: sig_lookup_by_sign[r["sign"]].get(r["area_pair"], ""), axis=1)
-
-        max_n = agg.groupby(["sign", "reward_group"]).size().max()
-        height = _barh_height(min(max_n, MAX_AREAS_SHOWN))
-        fig, axes = plt.subplots(len(signs_present), len(reward_groups),
-                                  figsize=(3.6 * len(reward_groups), height * len(signs_present)),
-                                  squeeze=False, sharex=True)
-
-        for i, sign in enumerate(signs_present):
-            _, p, posthoc_ran = omnibus_by_sign[sign]
-            for j, rg in enumerate(reward_groups):
-                ax = axes[i][j]
-                cell = agg[(agg["sign"] == sign) & (agg["reward_group"] == rg)]
-                n_total, n_shown = _area_barh(ax, cell, color=SIGN_COLORS[sign], sig_col="sig")
-                cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
-                title = f"{sign} \u2014 {rg}{cap_note}"
-                if j == 0:
-                    title += f"\nomnibus {_p_str(p)} {_sig_stars(p)}"
-                ax.set_title(title, fontweight="normal", fontsize=8)
-                _style_ax(ax, xlabel="Mean score change \u00b1 SEM" if i == len(signs_present) - 1 else "",
-                          ylabel="", vertical_zero=True, zero_line=False)
-
-        fig.suptitle(f"{comparison}: score change by area (E and I shown separately)\n"
-                     "stars: per-area Mann-Whitney U post-hoc (BH-FDR), shown only where omnibus is significant",
-                     fontweight="normal", fontsize=9)
-        fig.tight_layout(rect=[0, 0, 1, 0.90])
-        fig.savefig(fig_dir / f"area_change_{comparison}.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-
-# ============================== FIGURE: overall by condition ================
-def plot_overall_by_condition(df, out_dir, stats_dir, area_relation=None):
-    """Session-level mean score change per comparison, one panel per sign
-    (never combined). Omnibus permutation-ANOVA (comparison effect) +
-    per-area post-hoc, saved as CSV alongside the figure.
-    df must already be filtered via _valid_score_diff().
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
+# ============================== FIGURE 2: delta-score boxplot ===============
+def plot_delta_boxplot(df, out_dir, stats_dir, area_relation=None):
+    """Session-level mean score_diff, boxplot, all pairs (within+across, or
+    within-only / across-only per area_relation). 2x2 grid over CONDITIONS,
+    R+ vs R-. Boxplot already shows both mean (triangle) and median (box
+    line) -- see _boxplot_with_points. df must already be filtered via
+    _valid_score_diff()."""
     df = _filter_area_relation(df, area_relation)
     tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
 
-    session_agg = (df.groupby(["mouse", "session_id", "sign", "comparison"])["score_diff"]
-                     .mean().reset_index())
-    area_agg = (df.groupby(["mouse", "session_id", "sign", "comparison", "area_pair"])["score_diff"]
-                  .mean().reset_index())
-
-    signs_present = [s for s in SIGNS if s in session_agg["sign"].unique()]
-    if not signs_present:
-        warnings.warn(f"plot_overall_by_condition{tag}: no data to plot")
-        return
-    fig, axes = plt.subplots(1, len(signs_present), figsize=(3.0 * len(signs_present), 3.6),
-                              squeeze=False, sharey=True)
+    fig, axes, ax_map = _condition_grid()
     stats_rows = []
 
-    for j, sign in enumerate(signs_present):
-        ax = axes[0][j]
-        sub = session_agg[session_agg["sign"] == sign]
-        comparisons = sorted(sub["comparison"].unique())
-        data = [sub.loc[sub["comparison"] == c, "score_diff"].to_numpy() for c in comparisons]
-        _boxplot_with_points(ax, data, comparisons, [SIGN_COLORS[sign]] * len(comparisons))
-        _style_ax(ax, xlabel="Comparison", ylabel="Mean score change / session" if j == 0 else "")
-
-        F, p = permanova_oneway(sub["score_diff"], sub["comparison"])
-        posthoc = posthoc_per_area(area_agg[area_agg["sign"] == sign], group_col="comparison")
-        posthoc.to_csv(stats_dir / f"posthoc_area_comparison_effect_{sign}{tag}.csv", index=False)
-        stats_rows.append(dict(sign=sign, area_relation=area_relation or "pooled",
-                                test="comparison_effect", F=F, p=p, n_sessions=len(sub)))
-
-        ax.set_title(f"{sign}\n{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
-
-    fig.suptitle(f"Overall score change by condition{ttag}", fontweight="normal")
-    fig.tight_layout(rect=[0, 0, 1, 0.88])
-    fig.savefig(out_dir / f"overall_score_change_by_condition{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
-    plt.close(fig)
-
-    pd.DataFrame(stats_rows).to_csv(stats_dir / f"overall_by_condition_stats{tag}.csv", index=False)
-
-
-# =============== FIGURE: reward-group comparison, "E alone"/"I alone" =======
-def plot_reward_group_single_sign(df, out_dir, stats_dir, area_relation=None):
-    """'E alone' / 'I alone': R+ vs R- comparison, pooled across both
-    comparisons (passive + inflection). See module docstring re: pooling.
-    df must already be filtered via _valid_score_diff(). Per-area post-hoc
-    (Mann-Whitney U) only runs if the omnibus PERMANOVA is significant --
-    see omnibus_and_conditional_posthoc.
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation. (Note: 'pooled' in filenames here refers to
-    comparison-pooling, unrelated to this within/across split.)"""
-    df = _filter_area_relation(df, area_relation)
-    tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
-
-    fig_dir = out_dir / "by_reward_group"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    stats_rows = []
-
-    signs_present = [s for s in SIGNS if s in df["sign"].unique()]
-    for sign in signs_present:
-        sub_sign = df[df["sign"] == sign]
-        session_agg = (sub_sign.groupby(["mouse", "session_id", "reward_group"])["score_diff"]
-                         .mean().reset_index())
-        area_agg = (sub_sign.groupby(["mouse", "session_id", "reward_group", "area_pair"])["score_diff"]
-                      .mean().reset_index())
-
+    for sign, comparison in CONDITIONS:
+        ax = ax_map[(sign, comparison)]
+        sub = df[(df["sign"] == sign) & (df["comparison"] == comparison)]
+        session_agg = sub.groupby(["mouse", "session_id", "reward_group"])["score_diff"].mean().reset_index()
         groups = sorted(session_agg["reward_group"].dropna().unique())
-        if len(groups) < 2:
+        if not groups:
+            ax.axis("off")
             continue
         data = [session_agg.loc[session_agg["reward_group"] == g, "score_diff"].to_numpy() for g in groups]
         colors = [REWARD_COLORS.get(g, "tab:gray") for g in groups]
-
-        fig, ax = plt.subplots(figsize=(2.8, 3.6))
         _boxplot_with_points(ax, data, groups, colors)
-        _style_ax(ax, xlabel="Reward group", ylabel="Mean score change / session\n(passive + inflection pooled)")
 
-        F, p, posthoc = omnibus_and_conditional_posthoc(session_agg, area_agg)
-        if posthoc is not None:
-            posthoc.to_csv(fig_dir.parent / "stats" / f"posthoc_area_rewardgroup_{sign}_pooled{tag}.csv", index=False)
-        stats_rows.append(dict(sign=sign, comparison="pooled", area_relation=area_relation or "pooled",
-                                test="reward_group_effect",
-                                F=F, p=p, posthoc_ran=posthoc is not None, n_sessions=len(session_agg)))
+        F, p = permanova_oneway(session_agg["score_diff"], session_agg["reward_group"])
+        stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
+                                F=F, p=p, n_sessions=len(session_agg)))
+        ax.set_title(f"{sign} \u2014 {comparison}\n{_p_str(p)} {_sig_stars(p)}", fontsize=8, fontweight="bold")
+        _style_ax(ax, xlabel="Reward group", ylabel="Mean score change / session")
 
-        title_suffix = "" if posthoc is not None else ("" if p is None or np.isnan(p) else "\n(n.s. -- no per-area post-hoc)")
-        ax.set_title(f"{sign} connections{ttag}\n{_p_str(p)} {_sig_stars(p)}{title_suffix}", fontweight="normal")
-        fig.tight_layout()
-        fig.savefig(fig_dir / f"reward_group_comparison_{sign}{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-    if stats_rows:
-        pd.DataFrame(stats_rows).to_csv(stats_dir / f"reward_group_by_sign_pooled_stats{tag}.csv", index=False)
+    fig.suptitle(f"Boxplot of session-level mean score change{ttag}\n(\u25b3=mean, line=median)",
+                 fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.90])
+    fig.savefig(out_dir / f"delta_boxplot{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
+    plt.close(fig)
+    pd.DataFrame(stats_rows).to_csv(stats_dir / f"delta_boxplot_stats{tag}.csv", index=False)
 
 
-# ======== FIGURE: reward-group comparison, "passive alone"/"inflection alone"
-def plot_reward_group_single_comparison(df, out_dir, stats_dir, area_relation=None):
-    """'passive alone' / 'inflection alone': R+ vs R- comparison, E and I
-    as separate sub-panels (never pooled). df must already be filtered via
-    _valid_score_diff(). Per-area post-hoc (Mann-Whitney U) only runs if
-    the omnibus PERMANOVA is significant -- see
-    omnibus_and_conditional_posthoc.
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
+# ============================== FIGURE 3: delta-score by area ===============
+def plot_delta_by_area(df, out_dir, stats_dir, area_relation=None):
+    """Per-area version of the histogram/boxplot above: mean +/- SEM score
+    change per area (median also marked, black diamond), R+ vs R- grouped
+    bars, 2x2 grid over CONDITIONS. Omnibus PERMANOVA (session-level,
+    pooled across areas) + conditional per-area Mann-Whitney post-hoc
+    (stars), post-hoc only run if that panel's omnibus is significant --
+    see omnibus_and_conditional_posthoc. df must already be filtered via
+    _valid_score_diff().
+
+    Only the x-axis (score-change magnitude) is shared across panels --
+    the y-axis (which areas appear) is NOT shared, since the top-N areas
+    shown can legitimately differ per condition; sharing categorical labels
+    that differ per panel would be misleading, not just cosmetic."""
     df = _filter_area_relation(df, area_relation)
     tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
-
-    fig_dir = out_dir / "by_reward_group"
+    fig_dir = out_dir / "by_area"
     fig_dir.mkdir(parents=True, exist_ok=True)
+
+    fig, axes, ax_map = _condition_grid(figsize_per_panel=4.2, sharex=True, sharey=False)
     stats_rows = []
 
-    for comparison in sorted(df["comparison"].unique()):
-        sub_comp = df[df["comparison"] == comparison]
-        session_agg = (sub_comp.groupby(["mouse", "session_id", "reward_group", "sign"])["score_diff"]
-                         .mean().reset_index())
-        area_agg = (sub_comp.groupby(["mouse", "session_id", "reward_group", "sign", "area_pair"])["score_diff"]
-                      .mean().reset_index())
-
-        signs_present = [s for s in SIGNS if s in session_agg["sign"].unique()]
-        if not signs_present:
+    for sign, comparison in CONDITIONS:
+        ax = ax_map[(sign, comparison)]
+        sub = df[(df["sign"] == sign) & (df["comparison"] == comparison)]
+        if sub.empty:
+            ax.axis("off")
             continue
 
-        fig, axes = plt.subplots(1, len(signs_present), figsize=(2.8 * len(signs_present), 3.6),
-                                  squeeze=False, sharey=True)
+        session_agg = sub.groupby(["mouse", "session_id", "reward_group"])["score_diff"].mean().reset_index()
+        area_agg = (sub.groupby(["mouse", "session_id", "reward_group", "area_pair"])["score_diff"]
+                      .mean().reset_index())
 
-        for j, sign in enumerate(signs_present):
-            ax = axes[0][j]
-            sub = session_agg[session_agg["sign"] == sign]
-            groups = sorted(sub["reward_group"].dropna().unique())
-            data = [sub.loc[sub["reward_group"] == g, "score_diff"].to_numpy() for g in groups]
-            colors = [REWARD_COLORS.get(g, "tab:gray") for g in groups]
-            _boxplot_with_points(ax, data, groups, colors)
-            _style_ax(ax, xlabel="Reward group", ylabel="Mean score change / session" if j == 0 else "")
+        F, p, posthoc = omnibus_and_conditional_posthoc(session_agg, area_agg)
+        sig_map = {}
+        if posthoc is not None:
+            posthoc.to_csv(stats_dir / f"posthoc_area_delta_{sign}_{comparison}{tag}.csv", index=False)
+            sig_map = dict(zip(posthoc["area"], posthoc["p_adj"].apply(_sig_stars)))
+        stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
+                                F=F, p=p, posthoc_ran=posthoc is not None, n_sessions=len(session_agg)))
 
-            F, p, posthoc = omnibus_and_conditional_posthoc(sub, area_agg[area_agg["sign"] == sign])
-            if posthoc is not None:
-                posthoc.to_csv(stats_dir / f"posthoc_area_rewardgroup_{sign}_{comparison}{tag}.csv", index=False)
-            stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
-                                    test="reward_group_effect",
-                                    F=F, p=p, posthoc_ran=posthoc is not None, n_sessions=len(sub)))
+        table = (area_agg.groupby(["reward_group", "area_pair"])["score_diff"]
+                   .agg(mean="mean",
+                        sem=lambda x: x.std(ddof=1) / np.sqrt(len(x)) if len(x) > 1 else 0.0,
+                        median="median")
+                   .reset_index())
+        n_total, n_shown = _area_barh_grouped(ax, table, value_col="mean", err_col="sem",
+                                               median_col="median", sig_map=sig_map)
+        cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
+        ax.set_title(f"{sign} \u2014 {comparison}{cap_note}\nomnibus {_p_str(p)} {_sig_stars(p)}",
+                     fontsize=7, fontweight="bold")
+        _style_ax(ax, xlabel="Mean score change \u00b1 SEM", ylabel="", vertical_zero=True, zero_line=False)
+        if (sign, comparison) == CONDITIONS[0]:
+            ax.legend(fontsize=6, frameon=False, loc="lower right")
 
-            ax.set_title(f"{sign}\n{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
-
-        fig.suptitle(f"{comparison}: score change by reward group{ttag}", fontweight="normal")
-        fig.tight_layout(rect=[0, 0, 1, 0.88])
-        fig.savefig(fig_dir / f"reward_group_comparison_{comparison}{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-    if stats_rows:
-        pd.DataFrame(stats_rows).to_csv(stats_dir / f"reward_group_by_comparison_stats{tag}.csv", index=False)
-
-
-# ============================== FIGURE: sign of change =======================
-def plot_sign_of_change(df, out_dir, stats_dir, area_relation=None):
-    """% of pairs with increased score, session level, by reward group --
-    one grid cell per (comparison, sign). df must already be filtered via
-    _valid_score_diff().
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
-    df = _filter_area_relation(df, area_relation)
-    tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
-
-    def _pct_increase(g):
-        return (g > 0).mean() * 100
-
-    session_pct = (df.groupby(["mouse", "session_id", "reward_group", "sign", "comparison"])["score_diff"]
-                     .agg(pct_increase=_pct_increase, n="size").reset_index())
-
-    comparisons = sorted(session_pct["comparison"].unique())
-    signs_present = [s for s in SIGNS if s in session_pct["sign"].unique()]
-    if not comparisons or not signs_present:
-        warnings.warn(f"plot_sign_of_change{tag}: no data to plot")
-        return
-
-    fig, axes = plt.subplots(len(comparisons), len(signs_present),
-                              figsize=(2.8 * len(signs_present), 3.4 * len(comparisons)),
-                              squeeze=False, sharey=True)
-    stats_rows = []
-
-    for i, comparison in enumerate(comparisons):
-        for j, sign in enumerate(signs_present):
-            ax = axes[i][j]
-            sub = session_pct[(session_pct["comparison"] == comparison) & (session_pct["sign"] == sign)]
-            groups = sorted(sub["reward_group"].dropna().unique())
-            data = [sub.loc[sub["reward_group"] == g, "pct_increase"].to_numpy() for g in groups]
-            colors = [REWARD_COLORS.get(g, "tab:gray") for g in groups]
-            _boxplot_with_points(ax, data, groups, colors)
-            ax.axhline(50, color="black", lw=0.8, linestyle=":", zorder=0)
-            ax.set_ylim(0, 100)
-            _style_ax(ax, xlabel="Reward group",
-                      ylabel="% pairs increased / session" if j == 0 else "", zero_line=False)
-
-            F, p = permanova_oneway(sub["pct_increase"], sub["reward_group"])
-            stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
-                                    test="pct_increase_by_rewardgroup",
-                                    F=F, p=p, n_sessions=len(sub)))
-            ax.set_title(f"{sign} \u2014 {comparison}\n{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
-
-    fig.suptitle(f"Direction of score change (% pairs increasing){ttag}", fontweight="normal")
-    fig.tight_layout(rect=[0, 0, 1, 0.92])
-    fig.savefig(out_dir / f"sign_of_change_by_reward_group{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
+    fig.suptitle(f"Score change by area{ttag}\n(\u2666=median; stars: per-area Mann-Whitney "
+                 "post-hoc, only shown if omnibus PERMANOVA significant)", fontsize=9, fontweight="bold")
+    fig.tight_layout(rect=[0, 0, 1, 0.88])
+    fig.savefig(fig_dir / f"delta_by_area{tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
     plt.close(fig)
-
-    pd.DataFrame(stats_rows).to_csv(stats_dir / f"sign_of_change_stats{tag}.csv", index=False)
+    pd.DataFrame(stats_rows).to_csv(stats_dir / f"delta_by_area_stats{tag}.csv", index=False)
 
 
 # ============================== FIGURE: where connected pairs are found =====
@@ -1028,10 +773,10 @@ def plot_connected_pairs_by_area(df, out_dir):
         cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (all {n_shown})"
         ax.set_xlim(left=0)
         _style_ax(ax, xlabel="% of all connected pairs", ylabel="", zero_line=False)
-        ax.set_title(f"{sign} connections{cap_note}", fontweight="normal")
+        ax.set_title(f"{sign} connections{cap_note}", fontweight="bold")
         fig.suptitle("Where connected pairs are found\n"
                      "(pooled: all mice, sessions, reward groups, comparisons)",
-                     fontsize=10, fontweight="normal")
+                     fontsize=10, fontweight="bold")
         fig.tight_layout(rect=[0, 0, 1, 0.88])
         fig.savefig(fig_dir / f"connected_pairs_by_area_{sign}.png", dpi=SAVE_DPI, bbox_inches="tight")
         plt.close(fig)
@@ -1068,7 +813,7 @@ def plot_within_vs_across_area(df, out_dir):
         ax.set_ylim(0, max(pct.values.max() * 1.3, 10))
         _style_ax(ax, xlabel="", ylabel="% of connected pairs" if j == 0 else "", zero_line=False)
         ax.tick_params(axis="x", rotation=15)
-        ax.set_title(sign, fontweight="normal")
+        ax.set_title(sign, fontweight="bold")
 
         rows_out.append(dict(sign=sign,
                               within_pct=pct.get("Within-area", 0.0), across_pct=pct.get("Across-area", 0.0),
@@ -1076,7 +821,7 @@ def plot_within_vs_across_area(df, out_dir):
 
     fig.suptitle("Connected pairs: within-area vs across-area\n"
                  "(pooled: all mice, sessions, reward groups, comparisons)",
-                 fontsize=10, fontweight="normal")
+                 fontsize=10, fontweight="bold")
     fig.tight_layout(rect=[0, 0, 1, 0.84])
     fig.savefig(fig_dir / "connected_pairs_within_vs_across_area.png", dpi=SAVE_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -1140,10 +885,10 @@ def plot_connected_pairs_by_mouse(df, out_dir):
         ax.invert_yaxis()
         _style_ax(ax, xlabel="% of mouse's connected pairs",
                   ylabel="Mouse" if j == 0 else "", zero_line=False)
-        ax.set_title(f"{sign}  (top {len(top_areas)} areas + Other)", fontweight="normal")
+        ax.set_title(f"{sign}  (top {len(top_areas)} areas + Other)", fontweight="bold")
         ax.legend(bbox_to_anchor=(1.02, 1), loc="upper left", frameon=False)
 
-    fig.suptitle("Proportion of connected pairs by area, per mouse", fontweight="normal")
+    fig.suptitle("Proportion of connected pairs by area, per mouse", fontweight="bold")
     fig.tight_layout(rect=[0, 0, 0.97, 0.95])
     fig.savefig(fig_dir / "connected_pairs_by_mouse.png", dpi=SAVE_DPI, bbox_inches="tight")
     plt.close(fig)
@@ -1193,12 +938,12 @@ def plot_connectivity_by_reward_group(connectivity_df, out_dir, stats_dir):
 
             all_stats_rows.append(dict(metric=tag, sign=sign, test_type=test_type,
                                         stat_name=stat_name, stat=stat, p=p, n_sessions=len(sub)))
-            ax.set_title(f"{sign}\n{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
+            ax.set_title(f"{sign}\n{_p_str(p)} {_sig_stars(p)}", fontweight="bold")
 
         titles = {"global": "TRUE connectivity rate (overall) by reward group\n(Mann-Whitney U, unpaired)",
                   "within": "TRUE within-area connectivity rate by reward group",
                   "across": "TRUE across-area connectivity rate by reward group"}
-        fig.suptitle(titles[tag], fontweight="normal")
+        fig.suptitle(titles[tag], fontweight="bold")
         fig.tight_layout(rect=[0, 0, 1, 0.85])
         fig.savefig(fig_dir / f"connectivity_rate_{tag}_by_reward_group.png", dpi=SAVE_DPI, bbox_inches="tight")
         plt.close(fig)
@@ -1296,7 +1041,7 @@ def plot_connectivity_by_area_and_reward_group(df, out_dir, stats_dir):
             n_total, n_shown = _area_barh(ax, table, color=SIGN_COLORS[sign])
             cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
             ax.set_xlim(left=0)
-            ax.set_title(f"{cat} \u2014 pooled{cap_note}", fontweight="normal")
+            ax.set_title(f"{cat} \u2014 pooled{cap_note}", fontweight="bold")
             _style_ax(ax, xlabel="% of connected pairs" if col == 0 else "", ylabel="", zero_line=False)
 
         # Row 1: split by reward group (grouped bars, each group normalized to its own total)
@@ -1315,7 +1060,7 @@ def plot_connectivity_by_area_and_reward_group(df, out_dir, stats_dir):
             n_total, n_shown = _area_barh_grouped(ax, counts, sig_map=sig_map_by_cat[cat])
             cap_note = f" (top {n_shown}/{n_total})" if n_shown < n_total else f" (n={n_shown})"
             ax.set_xlim(left=0)
-            ax.set_title(f"{cat} \u2014 R+ vs R-{cap_note}", fontweight="normal")
+            ax.set_title(f"{cat} \u2014 R+ vs R-{cap_note}", fontweight="bold")
             _style_ax(ax, xlabel="% of connected pairs (within own group)", ylabel="", zero_line=False)
             if col == len(categories) - 1:
                 ax.legend(fontsize=7, frameon=False, loc="lower right")
@@ -1324,95 +1069,10 @@ def plot_connectivity_by_area_and_reward_group(df, out_dir, stats_dir):
                      "(composition of the connected set -- not a true rate; "
                      "see connectivity_rate_*_by_reward_group.png for true rates)\n"
                      "stars (bottom row): per-area Mann-Whitney U post-hoc, BH-FDR (not omnibus-gated -- see docstring)",
-                     fontsize=9, fontweight="normal")
+                     fontsize=9, fontweight="bold")
         fig.tight_layout(rect=[0, 0, 1, 0.86])
         fig.savefig(fig_dir / f"connectivity_by_area_{sign}.png", dpi=SAVE_DPI, bbox_inches="tight")
         plt.close(fig)
-
-
-# ============ FIGURE: delta-score distributions, area-aggregated, R+ vs R- =
-def plot_delta_score_distribution_by_reward_group(df, out_dir, stats_dir, area_relation=None):
-    """Area-aggregated (mean per mouse/session/area FIRST, avoiding
-    pseudoreplication) score_diff distributions, R+ vs R-. Histogram +
-    annotated barplot side by side. One figure per (sign, comparison) --
-    never pooling E/I or passive/inflection. df must already be filtered
-    via _valid_score_diff().
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
-    df = _filter_area_relation(df, area_relation)
-    tag, ttag = _tag_suffix(area_relation), _tag_title(area_relation)
-
-    fig_dir = out_dir / "delta_score_distributions"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-    stats_rows = []
-
-    signs_present = [s for s in SIGNS if s in df["sign"].unique()]
-    comparisons_present = sorted(df["comparison"].unique())
-
-    for sign in signs_present:
-        for comparison in comparisons_present:
-            sub = df[(df["sign"] == sign) & (df["comparison"] == comparison)]
-            if sub.empty:
-                continue
-
-            area_agg = (sub.groupby(["mouse", "session_id", "reward_group", "area_pair"])["score_diff"]
-                          .mean().reset_index())
-            groups = sorted(area_agg["reward_group"].dropna().unique())
-            if len(groups) < 1:
-                continue
-            data = [area_agg.loc[area_agg["reward_group"] == g, "score_diff"].to_numpy() for g in groups]
-            colors = [REWARD_COLORS.get(g, "tab:gray") for g in groups]
-
-            fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.6))
-
-            # Panel 1: histogram overlay
-            ax_hist = axes[0]
-            all_vals = np.concatenate(data) if data else np.array([])
-            if len(all_vals):
-                bins = np.linspace(all_vals.min(), all_vals.max(), 30)
-            else:
-                bins = 30
-            for g, color, d in zip(groups, colors, data):
-                if len(d) == 0:
-                    continue
-                ax_hist.hist(d, bins=bins, alpha=0.5, color=color, label=f"{g} (n={len(d)})", density=True)
-            ax_hist.legend(frameon=False, fontsize=7)
-            _style_ax(ax_hist, xlabel="Mean score change (area-level)", ylabel="Density")
-            ax_hist.set_title("Distribution", fontsize=9)
-
-            # Panel 2: annotated barplot (mean +/- SEM, stats annotated)
-            ax_bar = axes[1]
-            means = [np.mean(d) if len(d) else np.nan for d in data]
-            sems = [np.std(d, ddof=1) / np.sqrt(len(d)) if len(d) > 1 else 0.0 for d in data]
-            ax_bar.bar(groups, means, yerr=sems, color=colors, capsize=3,
-                       edgecolor="black", linewidth=0.6)
-            for x, (m, n) in enumerate(zip(means, [len(d) for d in data])):
-                if np.isnan(m):
-                    continue
-                ax_bar.text(x, m + (sems[x] if not np.isnan(sems[x]) else 0) * np.sign(m if m else 1) + 0.02 * max(abs(np.nanmax(means)), 1),
-                            f"n={n}", ha="center", va="bottom" if m >= 0 else "top", fontsize=7)
-
-            F, p, posthoc = omnibus_and_conditional_posthoc(area_agg, area_agg)
-            ax_bar.set_title(f"{_p_str(p)} {_sig_stars(p)}", fontsize=9, fontweight="normal")
-            _style_ax(ax_bar, xlabel="Reward group", ylabel="Mean score change \u00b1 SEM")
-
-            stats_rows.append(dict(sign=sign, comparison=comparison, area_relation=area_relation or "pooled",
-                                    test="reward_group_effect",
-                                    F=F, p=p, posthoc_ran=posthoc is not None, n_area_session_rows=len(area_agg)))
-
-            fig.suptitle(f"{sign} \u2014 {comparison}: distribution of area-level score change, R+ vs R-{ttag}",
-                         fontsize=10, fontweight="normal")
-            fig.tight_layout(rect=[0, 0, 1, 0.88])
-            fig.savefig(fig_dir / f"delta_score_distribution_{sign}_{comparison}{tag}.png",
-                        dpi=SAVE_DPI, bbox_inches="tight")
-            plt.close(fig)
-
-            # Per-area post-hoc (Mann-Whitney U), only if the omnibus above was significant
-            if posthoc is not None:
-                posthoc.to_csv(stats_dir / f"posthoc_area_delta_score_{sign}_{comparison}{tag}.csv", index=False)
-
-    if stats_rows:
-        pd.DataFrame(stats_rows).to_csv(stats_dir / "delta_score_distribution_stats.csv", index=False)
 
 
 # ============ CONFOUND CHECK: firing rate / spike count by reward group ====
@@ -1500,117 +1160,15 @@ def plot_firing_rate_confound(df, out_dir, stats_dir):
         U, p = mannwhitney_twogroup(firing_stats[value_col], firing_stats["reward_group"])
         stats_rows.append(dict(metric=value_col, test_type="mannwhitney", stat_name="U",
                                 stat=U, p=p, n_sessions=len(firing_stats)))
-        ax.set_title(f"{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
+        ax.set_title(f"{_p_str(p)} {_sig_stars(p)}", fontweight="bold")
 
     fig.suptitle("Confound check: firing rate / spike count by reward group\n(Mann-Whitney U, unpaired)",
-                 fontweight="normal")
+                 fontweight="bold")
     fig.tight_layout(rect=[0, 0, 1, 0.85])
     fig.savefig(fig_dir / "firing_rate_by_reward_group.png", dpi=SAVE_DPI, bbox_inches="tight")
     plt.close(fig)
 
     pd.DataFrame(stats_rows).to_csv(stats_dir / "firing_rate_confound_stats.csv", index=False)
-
-
-# ======== FIGURE: connection transitions (permissive mode, replaces delta-score)
-def _add_transition_labels(df):
-    """Classify each (already whole-session-connected) pair by whether its
-    score_pre/score_post individually clear CONNECTED_THRESH. Only used in
-    permissive mode (STRICT_SCORE_DIFF_FILTER=False) -- see module
-    docstring for why comparing each score to the threshold independently
-    sidesteps the -7788 sentinel problem that score_diff arithmetic hits."""
-    df = df.copy()
-    df["pre_connected"] = df["score_pre"] > CONNECTED_THRESH
-    df["post_connected"] = df["score_post"] > CONNECTED_THRESH
-    conditions = [
-        df["pre_connected"] & df["post_connected"],
-        df["pre_connected"] & ~df["post_connected"],
-        ~df["pre_connected"] & df["post_connected"],
-        ~df["pre_connected"] & ~df["post_connected"],
-    ]
-    choices = ["stayed_connected", "became_disconnected", "became_connected", "stayed_disconnected"]
-    df["transition"] = np.select(conditions, choices, default="unknown")
-    return df
-
-
-def plot_connection_transitions_by_reward_group(df, out_dir, stats_dir, area_relation=None):
-    """Permissive-mode replacement for delta-score figures (see
-    STRICT_SCORE_DIFF_FILTER in module docstring): fraction of pairs that
-    changed connection status between conditions, R+ vs R-. Two metrics --
-    % newly connected (disconnected pre -> connected post), % newly
-    disconnected (connected pre -> disconnected post) -- each its own
-    figure, grid = comparison x sign (E/I always separate, never pooled).
-    Omnibus permutation-ANOVA, session-level (avoids pseudoreplication).
-    Per-area post-hoc (Mann-Whitney U) only runs if the omnibus for that
-    (metric, sign, comparison) is significant -- see
-    omnibus_and_conditional_posthoc.
-    area_relation: None (pooled), 'within', or 'across' -- see
-    _filter_area_relation."""
-    df = _filter_area_relation(df, area_relation)
-    ar_tag, ar_ttag = _tag_suffix(area_relation), _tag_title(area_relation)
-
-    fig_dir = out_dir / "connection_transitions"
-    fig_dir.mkdir(parents=True, exist_ok=True)
-
-    labeled = _add_transition_labels(df)
-    session_stats = (labeled.groupby(["mouse", "session_id", "reward_group", "sign", "comparison"])["transition"]
-                        .agg(n_total="size",
-                             n_became_connected=lambda s: (s == "became_connected").sum(),
-                             n_became_disconnected=lambda s: (s == "became_disconnected").sum())
-                        .reset_index())
-    session_stats["pct_became_connected"] = session_stats["n_became_connected"] / session_stats["n_total"] * 100
-    session_stats["pct_became_disconnected"] = session_stats["n_became_disconnected"] / session_stats["n_total"] * 100
-
-    # Same aggregation, but keeping area_pair -- the unit for per-area post-hoc
-    area_stats = (labeled.groupby(["mouse", "session_id", "reward_group", "sign", "comparison", "area_pair"])["transition"]
-                    .agg(n_total="size",
-                         n_became_connected=lambda s: (s == "became_connected").sum(),
-                         n_became_disconnected=lambda s: (s == "became_disconnected").sum())
-                    .reset_index())
-    area_stats["pct_became_connected"] = area_stats["n_became_connected"] / area_stats["n_total"] * 100
-    area_stats["pct_became_disconnected"] = area_stats["n_became_disconnected"] / area_stats["n_total"] * 100
-
-    comparisons = sorted(session_stats["comparison"].unique())
-    signs_present = [s for s in SIGNS if s in session_stats["sign"].unique()]
-    if not comparisons or not signs_present:
-        warnings.warn(f"plot_connection_transitions_by_reward_group{ar_tag}: no data to plot")
-        return
-
-    metrics = [("became_connected", "pct_became_connected", "% pairs newly connected / session"),
-               ("became_disconnected", "pct_became_disconnected", "% pairs newly disconnected / session")]
-    all_stats_rows = []
-
-    for tag, value_col, ylabel in metrics:
-        fig, axes = plt.subplots(len(comparisons), len(signs_present),
-                                  figsize=(2.8 * len(signs_present), 3.4 * len(comparisons)),
-                                  squeeze=False, sharey=True)
-        for i, comparison in enumerate(comparisons):
-            for j, sign in enumerate(signs_present):
-                ax = axes[i][j]
-                sub = session_stats[(session_stats["comparison"] == comparison) & (session_stats["sign"] == sign)]
-                groups = sorted(sub["reward_group"].dropna().unique())
-                data = [sub.loc[sub["reward_group"] == g, value_col].to_numpy() for g in groups]
-                colors = [REWARD_COLORS.get(g, "tab:gray") for g in groups]
-                _boxplot_with_points(ax, data, groups, colors)
-                _style_ax(ax, xlabel="Reward group", ylabel=ylabel if j == 0 else "", zero_line=False)
-
-                area_sub = area_stats[(area_stats["comparison"] == comparison) & (area_stats["sign"] == sign)]
-                F, p, posthoc = omnibus_and_conditional_posthoc(sub, area_sub, value_col=value_col)
-                if posthoc is not None:
-                    posthoc.to_csv(stats_dir / f"posthoc_area_transitions_{tag}_{sign}_{comparison}{ar_tag}.csv",
-                                    index=False)
-                all_stats_rows.append(dict(metric=tag, sign=sign, comparison=comparison,
-                                            area_relation=area_relation or "pooled",
-                                            F=F, p=p, posthoc_ran=posthoc is not None, n_sessions=len(sub)))
-                ax.set_title(f"{sign} \u2014 {comparison}\n{_p_str(p)} {_sig_stars(p)}", fontweight="normal")
-
-        fig.suptitle(f"Fraction of pairs that {tag.replace('_', ' ')}{ar_ttag} (permissive mode: "
-                     "no score_pre/post filtering, sentinel-safe via threshold comparison)",
-                     fontsize=10, fontweight="normal")
-        fig.tight_layout(rect=[0, 0, 1, 0.90])
-        fig.savefig(fig_dir / f"transitions_{tag}_by_reward_group{ar_tag}.png", dpi=SAVE_DPI, bbox_inches="tight")
-        plt.close(fig)
-
-    pd.DataFrame(all_stats_rows).to_csv(stats_dir / f"connection_transitions_stats{ar_tag}.csv", index=False)
 
 
 # ============================== MAIN =========================================
@@ -1620,62 +1178,25 @@ def main():
     stats_dir.mkdir(parents=True, exist_ok=True)
 
     df = load_all_session_results()
-    # Filter out some areas
-    excluded_areas = get_excluded_areas() #todo: aggregate area label from layer to area
-    df = df[~(df["area_source"].isin(excluded_areas) | df["area_target"].isin(excluded_areas))]
-    # Filter out non-learners
     excluded_mice = load_excluded_mice()
     df = _filter_excluded_mice(df, excluded_mice)
+    df_valid = _valid_score_diff(df)
 
-    if STRICT_SCORE_DIFF_FILTER:
-        print("STRICT_SCORE_DIFF_FILTER=True: filtering to pairs with valid "
-              "score_pre AND score_post, running delta-score figures...")
-        df_valid = _valid_score_diff(df)
+    for area_relation in (None, "within", "across"):
+        label = area_relation or "pooled"
 
-        print("Per-mouse area summaries...")
-        plot_area_by_mouse(df_valid, SUMMARY_DIR)
+        print(f"Delta-score histogram [{label}]...")
+        plot_delta_histogram(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
 
-        print("Area breakdown, E alone / I alone...")
-        plot_area_by_sign(df_valid, SUMMARY_DIR, stats_dir)
+        print(f"Delta-score boxplot [{label}]...")
+        plot_delta_boxplot(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
 
-        print("Area breakdown, passive alone / inflection alone...")
-        plot_area_by_comparison(df_valid, SUMMARY_DIR, stats_dir)
+        print(f"Delta-score by area [{label}]...")
+        plot_delta_by_area(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
 
-        # Everything below: pooled (all areas together, existing behavior)
-        # PLUS separate within-area-only and across-area-only versions of
-        # the same figure, per the area-relation breakdown request.
-        for area_relation in (None, "within", "across"):
-            label = area_relation or "pooled"
-
-            print(f"Score change per mouse (E/I x passive/inflection) [{label}]...")
-            plot_score_change_by_mouse(df_valid, SUMMARY_DIR, area_relation=area_relation)
-
-            print(f"Overall by condition [{label}]...")
-            plot_overall_by_condition(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-
-            print(f"Reward group comparison, E alone / I alone (pooled) [{label}]...")
-            plot_reward_group_single_sign(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-
-            print(f"Reward group comparison, passive alone / inflection alone [{label}]...")
-            plot_reward_group_single_comparison(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-
-            print(f"Sign of change by reward group [{label}]...")
-            plot_sign_of_change(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-
-            print(f"Delta-score distributions by reward group [{label}]...")
-            plot_delta_score_distribution_by_reward_group(df_valid, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-    else:
-        print("STRICT_SCORE_DIFF_FILTER=False: score_pre/post may include the -7788 "
-              "sentinel, so delta-score figures are skipped; computing connection-"
-              "transition fractions instead...")
-        for area_relation in (None, "within", "across"):
-            label = area_relation or "pooled"
-            print(f"Connection transitions by reward group [{label}]...")
-            plot_connection_transitions_by_reward_group(df, SUMMARY_DIR, stats_dir, area_relation=area_relation)
-
-    # Connectivity/composition figures use the UNFILTERED df either way --
-    # 'connected' status depends only on the whole-session score, not
-    # score_pre/post, so STRICT_SCORE_DIFF_FILTER doesn't apply to these.
+    # Connectivity/composition figures -- NOT related to score change, kept
+    # as-is. Use the UNFILTERED df: 'connected' status depends only on the
+    # whole-session score, not score_pre/post.
     print("Where connected pairs are found, by area...")
     plot_connected_pairs_by_area(df, SUMMARY_DIR)
 
@@ -1697,7 +1218,7 @@ def main():
         warnings.warn(f"Skipping true connectivity-rate figures: {e}")
 
     print("Confound check: firing rate / spike count by reward group...")
-    #plot_firing_rate_confound(df, SUMMARY_DIR, stats_dir)
+    plot_firing_rate_confound(df, SUMMARY_DIR, stats_dir)
 
     print(f"Done. Figures + stats saved under {SUMMARY_DIR}")
 

@@ -284,7 +284,7 @@ def plot_single_neuron_atlas_old(data, params=None, saving_path=None):
         # vmin, vmax = np.nanmin(vals), np.nanmax(vals)
     elif mode == 'delta_test_corr':
         vmin, vmax = np.nanmin(vals), np.nanmax(vals)
-        vmin, vmax = -0.15,0.05
+        vmin, vmax = -0.2,0.05
         print("Delta test_corr value range:", vmin, vmax)
 
     # Create linear normalizer
@@ -772,7 +772,7 @@ if __name__ == '__main__':
         if not os.path.exists(focality_path):
             os.makedirs(focality_path)
 
-        run_focality=False
+        run_focality=True
         plot_focality=True
         if run_focality:
             #results_df = analyze_focality(data_df=data_df, saving_path=focality_path)
@@ -966,7 +966,7 @@ if __name__ == '__main__':
         # PLOT DISTRIBUTION OF ALL UNITS TEST SCORE ON TOP OF DISTRIBUTION OF SIGNIFICANT UNITS FOR WHISKER ENCODING
         #--------------------------------------------------
 
-        plot_dist=True
+        plot_dist=False
         if plot_dist:
             fig, ax = plt.subplots(figsize=(4,4), dpi=400)
             data_subset = data_df[data_df['model_name']=='whisker_encoding']
@@ -1010,7 +1010,7 @@ if __name__ == '__main__':
             #                    'prev_success', 'block_perf_type', 'whisker_reward_rate_5'
             #                    ]
 
-            plot_dist=True
+            plot_dist=False
             # For testing, show distributions of test_corr and delta_test_corr
             if plot_dist:
                 fig, ax = plt.subplots(figsize=(6,4), dpi=200)

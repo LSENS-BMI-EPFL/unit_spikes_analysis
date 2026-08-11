@@ -1,0 +1,122 @@
+# ══════════════════════════════════════════════════════════════════════════════
+# config.yaml  —  shared configuration for build_feature_matrix.py and
+#                 run_clustering.py
+#
+# Loaded by both scripts via:
+#     import yaml
+#     with open("config.yaml") as f:
+#         cfg = yaml.safe_load(f)
+#
+# Keys used only by build_feature_matrix are in section [feature_matrix].
+# Keys used only by run_clustering are in section [clustering].
+# All other keys are shared and used by both scripts.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+# ── paths ─────────────────────────────────────────────────────────────────────
+# Set in code (hostname-dependent), not here.
+# out_root is passed as argument to each script's entry point.
+
+
+# ── data / column names ───────────────────────────────────────────────────────
+mouse_id_col:    "mouse_id"
+session_id_col:  "session_id"
+context_col:     "context"
+trial_type_col:  "trial_type"
+reward_group_col: "reward_group"
+area_col:        "area_acronym_custom"
+
+
+# ── experiment / condition selection ─────────────────────────────────────────
+period:    "active"          # "passive" | "active" | "both"
+modality:  "whisker_auditory"   # "whisker" | "auditory" | "whisker_auditory"
+reward_filter: "combined"  # "R+" | "R-" | "combined"
+
+
+# ── PSTH time windows ─────────────────────────────────────────────────────────
+t_pre_passive:  0.2    # pre-stimulus window for passive conditions (s)
+t_post_passive: 0.5    # post-stimulus window for passive conditions (s)
+t_pre_active:   0.2    # pre-stimulus window for active conditions (s)
+t_post_active:  0.5    # post-stimulus window for active conditions (s)
+t_pre_jaw:      0.35   # pre-jaw-onset window (s)
+t_post_jaw:     0.35   # post-jaw-onset window (s)
+
+
+# ── binning / smoothing ───────────────────────────────────────────────────────
+bin_ms:    10
+stride_ms: 5
+sigma_ms:  5
+
+
+# ── trial type labels ─────────────────────────────────────────────────────────
+whisker_trial_label: "whisker_trial"
+artifact_win_s: [-0.005, 0.005]
+
+
+# ── lick conditions ───────────────────────────────────────────────────────────
+include_lick_conditions: true
+lick_quiet_window_s: 0.2   # quiet baseline window before nearest trial start_time (s)
+
+
+# ── normalisation ─────────────────────────────────────────────────────────────
+normalize:        "zscore"   # "zscore" | "baseline"
+zscore_full:      true
+baseline_removal: true      # per-trial pre-window mean subtraction
+square_fr:        false
+
+
+# ── waveform classification ───────────────────────────────────────────────────
+use_wf_classification_csv: true
+
+
+# ── anatomical axis columns (null disables) ───────────────────────────────────
+# Maps standard name → actual column name in units table.
+anatomy_score_cols:
+  avg_ipsi:                   "avg_ipsi"
+  cc_tc_ct_iterated:          "cc_tc_ct_iterated"
+  cc_hierarchy_score_columns: "cc_hierarchy_score_columns"
+
+
+# ── visualisation ─────────────────────────────────────────────────────────────
+vmax_pct:        75
+
+
+# ═════════════════════════════════════════════════════r═════════════════════════
+# FEATURE MATRIX SCRIPT (build_feature_matrix.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+recompute_feature_matrix: true
+global_fr_hz:              0.01   # session-level FR pre-filter (Hz)
+fr_threshold_hz:           0.2    # per-condition FR threshold (Hz)
+n_min_trial_per_condition: 5      # minimum odd-trial count per mouse×condition
+min_odd_even_r:            0.2    # minimum Pearson r between odd/even PSTH vectors (reliability filter)
+waveform_type:             both    # compute on rsu only
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CLUSTERING SCRIPT (run_clustering.py)
+# ══════════════════════════════════════════════════════════════════════════════
+
+do_global:            false   # fit methods on all trials; data matrix on all trials is also computed
+cross_validate:       true   # fit on odd trials, evaluate on even
+cv_zscore_independent: true  # z-score odd and even splits independently
+
+# rastermap
+n_rastermap_clusters: 101
+locality:             0.75
+time_lag_window:      20
+grid_upsample:        0
+
+# k-means
+k_means_k:     100
+k_elbow_min:   2     # range(k_elbow_min, k_elbow_max) for elbow plot
+k_elbow_max:   250
+
+# UMAP
+umap_n_neighbors: 20
+umap_min_dist:    0.15
+
+# sample neurons figure
+n_sample_neurons: 24
+n_example_neurons: 30
+example_alpha:     0.5

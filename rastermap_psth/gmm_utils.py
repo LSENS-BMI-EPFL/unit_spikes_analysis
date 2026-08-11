@@ -428,7 +428,7 @@ def figGMM_pca_variance(X: np.ndarray, n_pca: int, out_dir: Path) -> None:
 def figGMM_bic_curve(
         k_range: np.ndarray, bic_vals: np.ndarray, best_k: int, out_dir: Path
 ) -> None:
-    fig, ax = plt.subplots(figsize=(6, 4))
+    fig, ax = plt.subplots(figsize=(4, 4))
     ax.plot(k_range, bic_vals, "o-", ms=4, lw=1.5, color="steelblue")
     ax.axvline(best_k, color="crimson", ls="--", lw=1.5, label=f"Best K = {best_k}")
     ax.set_xlabel("Number of clusters K")

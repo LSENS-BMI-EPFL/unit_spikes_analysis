@@ -82,13 +82,11 @@ import matplotlib.patches as mpatches
 import plotting_utils
 
 # ── config ─────────────────────────────────────────────────────────────────────
-# TODO: rmeove far? or add spont- lick events...
 # TODO: Implement trad spectral emb/GMM approach and compare clustering / have it in different script for all the methods
 # TODO: order of clustering kmeans/GMMs applied on ordered rastermap_psth cmatrix
 # TODO: fix missing jaw onset files / missing pre / missing post data
 # TODO: make axon cmap logscale too? or data as logscale? not mean over neurons? but areas?
 # TODO: average of neurons, mice, areas,geometric mean for anatomical axes?
-#TODO: Gao et al, check module-base range of scores... only green so far
 
 
 hostname = socket.gethostname()
@@ -107,8 +105,8 @@ WAVEFORM_ANALYSIS_ROOT = os.path.join(ANALYSIS_ROOT_PATH, 'Axel_Bisi', 'combined
 
 DEFAULT_CFG: dict[str, Any] = dict(
     recompute_feature_matrix = True,
-    n_min_trial_per_condition = 6,
-    period                = 'both', #"active_passive", "passive"', "active"
+    n_min_trial_per_condition = 5, # trial count for spit-trials
+    period                = 'both', # "active_passive", "passive"', "active"
     t_pre_passive        = 0.2,    # pre-stimulus window for passive conditions (s)
     t_post_passive       = 0.5,    # post-stimulus window for passive conditions (s)
     t_pre_active         = 0.2,    # pre-stimulus window for active conditions (s)
@@ -119,11 +117,12 @@ DEFAULT_CFG: dict[str, Any] = dict(
     sigma_ms             = 5,
     artifact_win_s       = (-0.005, 0.005),
     whisker_trial_label  = "whisker_trial",
-    global_fr_hz         = 0.0,
-    fr_threshold_hz      = 1.0,
+    global_fr_hz         = 0.01,
+    fr_threshold_hz      = 0.2,
     square_fr            = False,
-    baseline_removal     = True,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
+    baseline_removal     = False,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
     include_lick_conditions = True,  # if True: add spontaneous_lick + reward_lick conditions (requires lick_df passed to run_rastermap_psth)
+    lick_quiet_window_s     = 0.2,   # duration (s) of quiet baseline window ending at closest preceding trial start_time, for lick_time conditions
     reward_group_col     = "reward_group",
     area_col             = "area_acronym_custom",
     normalize            = "zscore", #"zscore" or "baseline"
@@ -132,7 +131,9 @@ DEFAULT_CFG: dict[str, Any] = dict(
     trial_type_col       = "trial_type",
     mouse_id_col         = "mouse_id",
     session_id_col       = "session_id",
-    n_rastermap_clusters = 199,
+    n_rastermap_clusters = 20,
+    locality             = 0.75,
+    time_lag_window      = 20,
     grid_upsample        = 0,
     k_means_k            = 25,
     k_elbow_range        = range(2, 30),
@@ -175,17 +176,17 @@ def get_conditions(cfg):
 
     passive_all = [
         ("whisker_trial",  "passive_pre",    "Whisker pre",        "#32a852", "start_time"),
-        ("whisker_trial",  "passive_post",   "Whisker post",       "#085c1f", "start_time"),
-        ("auditory_trial", "passive_pre",    "Auditory pre",       "#4158d9", "start_time"),
-        ("auditory_trial", "passive_post",   "Auditory post",      "#0f2187", "start_time"),
+        #("whisker_trial",  "passive_post",   "Whisker post",       "#085c1f", "start_time"),
+        #("auditory_trial", "passive_pre",    "Auditory pre",       "#4158d9", "start_time"),
+        #("auditory_trial", "passive_post",   "Auditory post",      "#0f2187", "start_time"),
     ]
     # Active conditions: trial_type × lick context (active_lick / active_nolick)
     # whisker hit/miss, auditory hit, false alarm, correct rejection
     # Jaw-aligned: same trial subsets but aligned to jaw_onset_time instead of start_time
     active_all = [
-        ("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
-        ("whisker_trial",  "active_nolick",  "Whisker miss",       "#d6371e", "start_time"),
-        ("auditory_trial", "active_lick",    "Auditory hit",       "#7c0082", "start_time"),
+        #("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
+        #("whisker_trial",  "active_nolick",  "Whisker miss",       "#d6371e", "start_time"),
+        #("auditory_trial", "active_lick",    "Auditory hit",       "#7c0082", "start_time"),
         #("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"), #TODO: use spontaneous licks for this
         #("no_stim_trial",  "active_nolick",  "Correct rej.",       "#a6a4a1", "start_time"),
         # Jaw-aligned conditions (lighter shades of the start_time counterparts)
@@ -226,7 +227,7 @@ def get_conditions(cfg):
 
 
 def get_t_window(cfg, context: str, align_col: str = "start_time"):
-    if align_col == "jaw_onset_time" or align_col == "lick_time":
+    if align_col == "jaw_onset_time":# or align_col == "lick_time":
         return cfg["t_pre_jaw"], cfg["t_post_jaw"]
     if context.startswith("passive"):
         return cfg["t_pre_passive"], cfg["t_post_passive"]
@@ -625,34 +626,33 @@ def _neuron_vector(st, mouse_id, session_id, event_map, bins, t_ctr, base_mask, 
 
 def _neuron_vector_strided(st, mouse_id, session_id, event_map, cond_infos, cfg, conds,
                            cond_align_cols=None,
-                           norm_params=None, return_norm=False):
+                           norm_params=None, return_norm=False,
+                           start_times_map=None):
     """
     Pipeline order (per condition), per neuron:
 
     1. Raw per-trial smoothed rates (Hz).
 
     2. [Optional] Per-trial baseline subtraction (cfg["baseline_removal"], default True):
-         • start_time-aligned conditions: subtract each trial's own pre-window
-           mean (base_mask = t_ctr < 0).
-         • jaw_onset_time-aligned conditions: borrow the mean baseline from the
-           matched start_time-aligned sibling condition (same trial_type/context),
-           pooled across that sibling's trials, and subtract it as a scalar from
-           every bin of every jaw trial. The pre-jaw-onset window is not a clean
-           baseline (activity is already elevated), so the sibling mean is used.
-       When False: raw trial-averaged rates are used with no subtraction.
+         • start_time-aligned: subtract each trial's own pre-window mean (t_ctr < 0).
+         • jaw_onset_time-aligned: borrow pooled mean from the matched start_time
+           sibling (same trial_type/context).
+         • lick_time-aligned: per-event quiet-window baseline — for each lick event,
+           find the most recent preceding trial start_time in this session, compute
+           mean spikes/s in [start_time - 0.5 s, start_time] from the raw spike
+           train, and subtract that scalar from every bin of that lick event.
+           Falls back to the earliest trial if no preceding trial exists.
+           Multiple lick events sharing the same nearest preceding trial get the
+           same baseline scalar.
+       When False: raw rates, no subtraction.
 
     3. Average across trials → mean PSTH per condition.
+    4. [Optional] Signed-square (cfg["square_fr"]).
+    5. Z-score on full concatenated trace (single mean/std across all conditions).
 
-    4. [Optional] Square: signed-square if cfg["square_fr"] is True.
-
-    5. Z-score the full concatenated vector (all conditions) with a single
-       mean/std computed from the concatenated mean PSTHs — not per-condition,
-       not baseline-bins-only. This is always full-trace normalization.
-       When cfg["normalize"] == "baseline", std=1 (mean-only centering).
-
-    norm_params : pre-fitted (mean, std) tuple from the training split (odd
-                  trials); when provided, the fitted norms are applied as-is
-                  instead of being computed from data (CV even-trial path).
+    start_times_map : {(mouse_id, session_id): sorted start_time array} — required
+                      for lick_time baseline estimation.
+    norm_params     : pre-fitted (mean, std) from training split (CV even path).
     """
     if cond_align_cols is None:
         cond_align_cols = ["start_time"] * len(conds)
@@ -697,28 +697,35 @@ def _neuron_vector_strided(st, mouse_id, session_id, event_map, cond_infos, cfg,
                 # pre-stimulus activity before averaging.
                 rates = rates - rates[:, base_mask].mean(axis=1, keepdims=True)
             elif acol == "lick_time":
-                # Lick-aligned: borrow baseline mean from a pool of trial-based
-                # start_time conditions (whisker hit, whisker miss, auditory hit).
-                # These give a stable, multi-condition estimate of resting FR for
-                # this neuron/session. Available siblings are used; missing ones
-                # are skipped. Falls back to 0.0 if none are present.
-                LICK_BASELINE_SIBLINGS = [
-                    ("whisker_trial",  "active_lick",   "start_time"),
-                    ("whisker_trial",  "active_nolick", "start_time"),
-                    ("auditory_trial", "active_lick",   "start_time"),
-                ]
-                bl_vals = []
-                for sib_key in LICK_BASELINE_SIBLINGS:
-                    sib_idx = cond_index.get(sib_key)
-                    if sib_idx is None:
-                        continue
-                    sib_rates = _get_rates(sib_idx)
-                    if sib_rates is None:
-                        continue
-                    sib_base_mask = cond_infos[sib_idx][4]
-                    bl_vals.append(sib_rates[:, sib_base_mask].mean())
-                borrowed_mean = float(np.mean(bl_vals)) if bl_vals else 0.0
-                rates = rates - borrowed_mean
+                # Per-event quiet-window baseline: for each lick event, find
+                # the most recent preceding trial start_time in this session,
+                # compute mean spikes/s in [start_time - 0.5 s, start_time]
+                # from the raw spike train, and subtract as a per-event scalar.
+                # Falls back to the earliest trial if no preceding trial exists.
+                BL_WIN = cfg.get("lick_quiet_window_s", 0.5)
+                session_starts = (start_times_map or {}).get(
+                    (mouse_id, session_id), np.array([]))
+
+                if len(session_starts) == 0:
+                    # No trial info available — fall back to zero
+                    rates = rates - 0.0
+                else:
+                    events = _get_events(
+                        event_map, mouse_id, session_id, ctx, tt, acol)
+                    per_event_bl = np.empty(len(events))
+                    for ei, t_lick in enumerate(events):
+                        # Most recent start_time before this lick
+                        idx_prec = np.searchsorted(session_starts, t_lick, side="left") - 1
+                        if idx_prec < 0:
+                            # No preceding trial — use earliest trial
+                            idx_prec = 0
+                        t_ref = session_starts[idx_prec]
+                        # Count spikes in [t_ref - BL_WIN, t_ref]
+                        n_spk = np.searchsorted(st, t_ref, side="left") - \
+                                np.searchsorted(st, t_ref - BL_WIN, side="left")
+                        per_event_bl[ei] = n_spk / BL_WIN  # Hz
+                    # per_event_bl shape: (n_events,) → (n_events, 1) for broadcast
+                    rates = rates - per_event_bl[:, np.newaxis]
             else:
                 # Jaw-aligned: borrow baseline mean from the matched
                 # start_time sibling (same trial_type, same context).
@@ -891,7 +898,8 @@ def build_feature_matrix(unit_ids, st_map, mouse_map, session_map, event_map, cf
 def build_feature_matrix_strided(unit_ids, st_map, mouse_map, session_map, event_map, cfg,
                          conds, cond_labels, cond_colors, cond_labels_matrix,
                          cond_align_cols=None,
-                         norm_params_list=None, return_norms=False):
+                         norm_params_list=None, return_norms=False,
+                         start_times_map=None):
     """Build (n_neurons, sum(n_bins_per_cond)) z-scored PSTH matrix.
 
     Each condition may have a different window (passive vs active), so the
@@ -902,6 +910,8 @@ def build_feature_matrix_strided(unit_ids, st_map, mouse_map, session_map, event
     norm_params_list : per-neuron norm tuples fitted on another split (odd trials).
                        When None, norms are computed from the data.
     return_norms     : if True, also return the list of per-neuron norms.
+    start_times_map  : dict {(mouse_id, session_id): sorted start_time array},
+                       used for lick-aligned quiet-window baseline estimation.
 
     Returns
     -------
@@ -925,6 +935,7 @@ def build_feature_matrix_strided(unit_ids, st_map, mouse_map, session_map, event
             cond_align_cols = cond_align_cols,
             norm_params = norm_params_list[i] if norm_params_list is not None else None,
             return_norm = return_norms,
+            start_times_map = start_times_map,
         )
         for i, uid in enumerate(unit_ids)
     )
@@ -940,10 +951,10 @@ def build_feature_matrix_strided(unit_ids, st_map, mouse_map, session_map, event
 
 def fit_rastermap(X, n_clusters):
     n_pcs  = min(200, X.shape[0] - 1, X.shape[1] - 1)
-    model  = Rastermap(n_clusters=n_clusters,
+    model  = Rastermap(n_clusters=n_clusters, #clusters for initial k_means
                        n_PCs=n_pcs,
-                       locality=0.75,
-                       time_lag_window=15,
+                       locality=DEFAULT_CFG['locality'],
+                       time_lag_window=DEFAULT_CFG['time_lag_window'],
                        grid_upsample=DEFAULT_CFG['grid_upsample'],
                     verbose =False).fit(X)
     isort  = model.isort
@@ -2603,8 +2614,13 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     print("Unit selection (bc_label == )...")
     units_good = units[units.bc_label.isin(["good"])]
-    all_ids    = units_good.index.tolist()
     print(f"  {len(units_raw)} → {len(units_good)} units")
+    all_ids    = units_good.index.tolist()
+
+    print("Unit selection (area_acronym_custom == )...")
+    units_good = units_good[units_good.area_acronym_custom.isin(["DLS", "DMS","VS","TS","VTA"])]
+    all_ids    = units_good.index.tolist()
+    print(f"  {len(units_good)} → {len(units_good)} units")
 
     # Pre-extract into plain dicts — avoids repeated DataFrame .loc in workers
     print("Pre-extracting spike times and metadata...")
@@ -2620,6 +2636,16 @@ def run_rastermap_psth(units: pd.DataFrame,
 
     if lick_df is not None and cfg.get("include_lick_conditions", False):
         add_lick_event_map(lick_df, event_map, cfg)
+
+    # Pre-group all trial start_times per (mouse_id, session_id) — used by
+    # _neuron_vector_strided to find the closest quiet-window baseline for
+    # lick-aligned conditions (500 ms pre-start_time of nearest preceding trial).
+    mid_col = cfg["mouse_id_col"]
+    sid_col = cfg["session_id_col"]
+    start_times_map = {
+        (mid, sid): np.sort(grp["start_time"].dropna().to_numpy())
+        for (mid, sid), grp in trials.groupby([mid_col, sid_col])
+    }
 
     # Drop mice that have no valid jaw_onset_time events at all (across all sessions)
     if "jaw_onset_time" in COND_ALIGN_COLS:
@@ -2739,7 +2765,8 @@ def run_rastermap_psth(units: pd.DataFrame,
             X, t_ctrs, n_bins_list = build_feature_matrix_strided(
                 unit_ids, st_map, mouse_map, session_map, event_map, cfg,
                 CONDITIONS, COND_LABELS, COND_COLORS, COND_LABELS_MATRIX,
-                cond_align_cols=COND_ALIGN_COLS)
+                cond_align_cols=COND_ALIGN_COLS,
+                start_times_map=start_times_map)
 
             for c, (t_ctr_c, nb) in enumerate(zip(t_ctrs, n_bins_list)):
                 onset_idx = np.argmin(np.abs(t_ctr_c))
@@ -2836,6 +2863,10 @@ def run_rastermap_psth(units: pd.DataFrame,
         inertias  = Parallel(n_jobs=cfg["n_jobs"])(
             delayed(_kmeans_inertia)(X, ki) for ki in cfg["k_elbow_range"]
         )
+
+        # ── save kmeans results ─────────────────────────────────────────────
+        emb_path = out_folder / "kmeans_results.npz" #TODO: but also cross-validate
+
         fig9_kmeans(emb, km_labels, k, cfg["k_elbow_range"], inertias, out_folder)
         fig10_kmeans_profiles(X, t_ctrs, n_bins_list, km_labels, k, out_folder)
         fig5b_kmeans_matrix(X, n_bins_list, km_labels, k, vmax, cfg,
@@ -2866,7 +2897,8 @@ def run_rastermap_psth(units: pd.DataFrame,
             unit_ids, st_map, mouse_map, session_map, event_map_odd, cfg,
             CONDITIONS, COND_LABELS, COND_COLORS, COND_LABELS_MATRIX,
             cond_align_cols=COND_ALIGN_COLS,
-            return_norms=True)
+            return_norms=True,
+            start_times_map=start_times_map)
 
         print("  Building X_even (apply/create normaliser)...")
         X_even, t_ctrs, n_bins_list = build_feature_matrix_strided(
@@ -2874,7 +2906,8 @@ def run_rastermap_psth(units: pd.DataFrame,
             CONDITIONS, COND_LABELS, COND_COLORS, COND_LABELS_MATRIX,
             cond_align_cols=COND_ALIGN_COLS,
             #norm_params_list = None if cfg.get("cv_zscore_independent", False) else norms_list
-            norm_params_list = None
+            norm_params_list = None,
+            start_times_map=start_times_map
         )
 
         print(f"  X_odd shape: {X_odd.shape}  X_even shape: {X_even.shape}")

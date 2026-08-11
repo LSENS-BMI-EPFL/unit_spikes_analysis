@@ -10,11 +10,19 @@
 # Imports
 import socket
 import pathlib
-
+import os
 import sys
+import pandas as pd
+import numpy as np
+
+import load_helpers
+from noise_correlations import allen_utils
+from plot_gao_assignment_diagnostics import plot_column_assignment_diagnostics
+
 sys.path.insert(0, r"M:\analysis\Axel_Bisi\NWB_reader")
 sys.path.insert(0, r"M:\analysis\Axel_Bisi\Github\allen_utils")
-
+import neural_utils
+import allen_utils
 from load_helpers import load_jaw_onset_data
 from roc_analysis.roc_analysis_utils import load_roc_results
 #import NWB_reader_functions as nwb_reader
@@ -22,19 +30,21 @@ from roc_analysis.roc_analysis_utils import load_roc_results
 from raster_utils import plot_rasters
 from noise_unit_detection import identify_noise_units
 from unit_spike_report import generate_unit_spike_report
-from roc_utils import roc_analysis
-from task_modulation_utils import task_modulation_analysis
-from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
+#from roc_utils import roc_analysis
+#from task_modulation_utils import task_modulation_analysis
+#from waveform_utils import classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
 
 #from glm_utils import run_unit_glm_pipeline_with_pool
 from noise_correl_utils import noise_correlation_analysis
 
-from passive_psth_utils import run_passive_psths
-#from rastermap_psth.rastermap_clustering_psth import run_rastermap_psth
+#from passive_psth_utils import run_passive_psths
+from rastermap_psth.rastermap_clustering_psth import run_rastermap_psth, run_stats_only
+from rastermap_psth.rastermap_cluster_analyses import run_rastermap_analyses
+from rastermap_psth.area_latency_rastermap import run_area_latency_rastermap
+
 from single_neuron_shift_test.single_neuron_shift_test_figs_test_new import run_shift_test_analysis
 #from neural_inflection.neural_inflection_analysis_figs import load_shift_test_results, get_learning_df, run_analysis, run_figures_only
-from rastermap_psth.area_latency_rastermap import run_area_latency_rastermap
 
 if __name__ == '__main__':
 
@@ -49,9 +59,12 @@ if __name__ == '__main__':
 
     hostname = socket.gethostname()
     if 'haas' in hostname:
-        N_WORKERS = 120
+        N_WORKERS = 100
+
+        ROOT = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/unit_spikes_analysis')
         ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
         ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/NWB')
+        ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/NWB_combined')
         INFO_PATH = pathlib.Path('/mnt/share_internal/Axel_Bisi_Share/dataset_info')  # temp before mounted
         OUTPUT_PATH = pathlib.Path(f'/mnt/lsens-analysis/{experimenter}/combined_results')
 
@@ -59,14 +72,18 @@ if __name__ == '__main__':
         sys.path.insert(0, "/home/bisi/code/NWB_reader")
 
     else:
-        N_WORKERS=30
-        ROOT_PATH_AXEL = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWB_combined')
-        ROOT_PATH_MYRIAM = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                        'NWB')
-        INFO_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'share_internal', f'Axel_Bisi_Share',
-                                 'dataset_info')
+        N_WORKERS=15
+        ROOT = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch') / 'Petersen-Lab' / 'analysis' / 'Axel_Bisi' / 'unit_spikes_analysis'
+        ROOT_PATH_AXEL = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch') / 'Petersen-Lab' / 'analysis' / 'Axel_Bisi' / 'NWB_combined'
+        ROOT_PATH_MYRIAM = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch') / 'Petersen-Lab' / 'analysis' / 'Myriam_Hamon' / 'NWB'
+        INFO_PATH = pathlib.Path(r'\\sv-nas1.rcp.epfl.ch') / 'Petersen-Lab' / 'share_internal' / f'Axel_Bisi_Share' / 'dataset_info'
         OUTPUT_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter,
                                    'combined_results')
+
+   # # Check if ROOT_PATH_AXEL contains 'ks4' subtring
+   # if 'ks4' in str(ROOT_PATH_AXEL):
+   #     OUTPUT_PATH = pathlib.Path(str(OUTPUT_PATH).replace('combined', 'combined_ks4'))
+   #     OUTPUT_PATH.mkdir(parents=True, exist_ok=True)
 
     #proc_data_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'data', 'processed_data')
     if experimenter == 'Axel_Bisi':
@@ -113,19 +130,19 @@ if __name__ == '__main__':
     # Exclude specific mice
     excluded_mice = ['AB077', 'AB080','AB082','AB085', 'AB092','AB093', 'AB095', 'AB144'] #invalid NWB file 006, 038 ephys_exclude
     excluded_mice = ['AB068', 'AB077','AB144'] #Ab144 ccf labels with Nans
+   # excluded_mice = ['AB068', 'AB077'] #Ab144 ccf labels with Nans
     done_mice = ['AB082','AB086', 'AB120', 'AB162', 'AB134', 'AB141'] #Ab144 ccf labels with Nans
     subject_ids = [s for s in subject_ids if s not in excluded_mice]
     #subject_ids = ['AB144']
     #subject_ids = ['MH062', 'MH064', 'MH065', 'MH068', 'MH069', 'MH070']
 
     #subject_ids = ['AB131', 'AB133', 'AB082', 'AB151']
-    #subject_ids = ['AB162', 'AB131', 'AB164']
-    #subject_ids = ['AB162']
+
     #subject_ids = subject_ids[::15]
 
     print(f"Subject IDs to do: {subject_ids}")
 
-    #subject_ids = ['AB131']
+    #subject_ids = ['AB131', 'AB132', 'AB133', 'AB134', 'AB135']
 
     ### --------------------
     # Define analyses to do
@@ -148,11 +165,12 @@ if __name__ == '__main__':
     # Analyses to do
     analyses_to_do_single = ['roc_analysis']
     analyses_to_do_multi = ['noise_unit_detection']
-    analyses_to_do_multi = ['rastermap_psth']
     #analyses_to_do_multi = ['noise_classification']
     analyses_to_do_multi = ['single_neuron_shift_test']
     #analyses_to_do_multi = ['neural_inflection']
     analyses_to_do_multi = ['area_latency_rastermap']
+    analyses_to_do_multi = ['rastermap_psth']
+    analyses_to_do_multi = ['unit_labels_processing']
 
 
     # --------------
@@ -160,18 +178,51 @@ if __name__ == '__main__':
     # --------------
 
     nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
-    nwb_list.extend([os.path.join(ROOT_PATH_MYRIAM, name) for name in all_nwb_names if name.startswith('MH')])
+    nwb_list.extend([os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('MH')])
     nwb_list = [nwb for nwb in nwb_list if any(subj in nwb for subj in subject_ids)]
 
     #nwb_list = nwb_list[::10]
-    #mice = ("AB119", "AB131", "AB132", "AB133")
+    #mice = ('AB131', 'AB162','AB132', 'AB134', 'AB135', 'AB116', 'AB117', 'AB119', 'AB164')
+    #mice = ('AB144',)
     #nwb_list = [n for n in nwb_list if any(m in n for m in mice)]
 
     if load_tables:
-        trial_table, unit_table, nwb_neural_files = nutils.combine_ephys_nwb(nwb_list, day_to_analyze=0, max_workers=N_WORKERS)
+        trial_table, unit_table, nwb_neural_files = neural_utils.combine_ephys_nwb(nwb_list, day_to_analyze=0, max_workers=N_WORKERS)
         unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
 
+        # Merge anatomical information
+        unit_table = allen_utils.merge_liu_avg_ipsi(unit_table)
+        unit_table = allen_utils.merge_hierarchy_columns_from_gao(unit_table)
+        hierarchy_df = allen_utils.load_process_hierarchy_columns_from_gao()
+        #fig = plot_column_assignment_diagnostics(unit_table, hierarchy_df, merge_key='ccf_atlas_acronym_no_layer')
+        #fig.savefig('column_assignment_diagnostics.png', dpi=300)
+        unit_table = allen_utils.merge_hierarchy_from_harris(unit_table)
+
+        print( 'Unique mice after anat. merging:', unit_table.mouse_id.unique())
         #subject_ids = [s for s in subject_ids if 'AB13' in s]
+
+        # Load spontaneous/reward licks
+        lick_times_df = load_helpers.load_spontaneous_reward_lick_times(nwb_neural_files, N_WORKERS, load_summary=False)
+
+        # Load ROC
+        #roc_df = load_roc_results(OUTPUT_PATH, max_workers=N_WORKERS)
+        #unit_table_mice = unit_table.mouse_id.unique()
+        #roc_df = roc_df[roc_df.mouse_id.isin(unit_table_mice)]
+
+        # Fix: correct for choice the direction, positive and negative are inverted
+        #choice_analyses = [type for type in roc_df.analysis_type if 'choice' in type]
+        #choice_mask = roc_df['analysis_type'].isin(choice_analyses)
+        # Invert direction for these rows (positive becomes negative and vice versa)
+        #roc_df.loc[choice_mask, 'direction'] = roc_df.loc[choice_mask, 'direction'].replace(
+        #    {'positive': 'negative', 'negative': 'positive'})
+
+
+        # Merge on mouse_id,session_id,,neuron_id
+        #roc_cols_to_keep = ['mouse_id', 'session_id', 'target_region', 'cluster_id', 'analysis_type', 'selectivity', 'direction',
+        #                    'p_value_to_show', 'significant']
+        #unit_table['cluster_id'] = unit_table['cluster_id'].astype(int)
+        #unit_table = unit_table.merge(roc_df[roc_cols_to_keep],
+        #                              on=['mouse_id', 'session_id', 'target_region', 'cluster_id'], how='left')
 
         ## Load jaw onset times, then join onto trial table
         jaw_onset_table = load_jaw_onset_data(nwb_neural_files)
@@ -180,8 +231,13 @@ if __name__ == '__main__':
                 jaw_onset_table[['mouse_id', 'session_id', 'trial_id', 'jaw_dlc_onset', 'piezo_lick_time']],
                 on=['mouse_id', 'session_id', 'trial_id'], how='left')
             trial_table['jaw_onset_time'] = trial_table['start_time'] + trial_table['jaw_dlc_onset']
+            print(' Unique mice after jaw onset merge:', trial_table.mouse_id.unique())
 
         # ----------------------------------------
+    else:
+        unit_table = None
+        trial_table = None
+
     # Perform analyses for each mouse NWB file
     # ----------------------------------------
 
@@ -279,8 +335,31 @@ if __name__ == '__main__':
             run_passive_psths(unit_table, trial_table, OUTPUT_PATH)
 
         if 'rastermap_psth' in analyses_to_do_multi:
-            run_rastermap_psth(unit_table, trial_table, OUTPUT_PATH)
-            #results = run_stats_only(r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_new\n_clusters_100\both\zscore_full\whisker_auditory\combined") # give path is here
+            # Run rastermap
+            #run_rastermap_psth(unit_table, trial_table, lick_df=lick_times_df, out_root=OUTPUT_PATH)
+
+            # Clustering pipeline
+            # -----------------------
+            from rastermap_psth.build_feature_matrix import run_build_feature_matrix
+            path_to_config = pathlib.Path(ROOT, 'rastermap_psth', 'config.yaml')
+            result = run_build_feature_matrix(unit_table, trial_table, lick_df=lick_times_df, config_path=path_to_config, out_root=OUTPUT_PATH)
+            from rastermap_psth.run_clustering_new import run_rastermap, run_gmm
+            rastermap_result = run_rastermap(data_folder=result["data_folder"], config_path=path_to_config)
+            gmm_result = run_gmm(data_folder=result["data_folder"], config_path=path_to_config)
+
+            #from rastermap_psth.run_clustering_new import run_clustering
+            #print(result["data_folder"])
+            #cluster_result = run_clustering(data_folder=result["data_folder"], config_path=path_to_config)
+            from rastermap_psth.cluster_comparison_new import run_cluster_comparison
+            run_cluster_comparison(gmm_result["out_folder"], method_a="rastermap", method_b="gmm", cv=True)
+
+            #run_cluster_comparison(cluster_result["out_folder"], cv=True)
+
+            # Stat / additional analyses
+            # ---------------------------
+            #rastermap_out_dir = r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_test_test_anat\n_clusters_100\both\zscore\whisker_auditory\combined\baseline"
+            #results = run_stats_only(rastermap_out_dir) # give path is here
+            #run_rastermap_analyses(rastermap_out_dir, unit_table, trial_table)
 
         if 'area_latency_rastermap' in analyses_to_do_multi:
             run_area_latency_rastermap(unit_table, trial_table, OUTPUT_PATH)
@@ -303,7 +382,7 @@ if __name__ == '__main__':
 
         #if 'noise_classification' in analyses_to_do_multi:
         #    from noise_classification import label_gui, train_classifier, apply_classifier
-#
+
         #    output = os.path.join(OUTPUT_PATH, 'noise_classification', 'labels.csv')
         #    #label_gui.run_labeling_gui(unit_table, trial_table, output)
         #    #train_classifier.train(labels_csv = os.path.join(OUTPUT_PATH, 'noise_classification', 'labels.csv'),unit_table = unit_table,trial_table = trial_table,model_dir = os.path.join(OUTPUT_PATH, 'noise_classification', 'model'))

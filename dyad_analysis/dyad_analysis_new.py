@@ -28,6 +28,8 @@ LOAD_CCGS toggle:
 import os
 import sys
 
+import neural_utils
+
 sys.path.append(r"M:\analysis\Axel_Bisi\Github\allen_utils")
 import allen_utils
 sys.path.append(r"M:\analysis\Axel_Bisi\NWB_reader")
@@ -41,6 +43,7 @@ os.environ.setdefault("MKL_NUM_THREADS", "1")
 import gc
 import pickle
 import traceback
+import warnings
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from types import SimpleNamespace
@@ -80,13 +83,33 @@ COMPARISONS = {"passive": ("naive0", "learned0"), "inflection": ("naive1", "lear
 N_WORKERS = min(8, os.cpu_count() or 4)  # EDIT: tune for your machine / drive
 LOAD_CCGS = True  # EDIT: True to also read CCG files and produce figures
 
+# NWB-derived Allen-CCF labels, merged onto neurons.pkl (see
+# merge_nwb_allen_labels). EDIT NWB_DIR / column names to match your setup.
+NWB_DIR = Path(r"M:\analysis\Axel_Bisi\NWB_combined") # one {session_id}.nwb file per session
+NEURONS_FIRING_RATE_COL = "pre_firing_rate"  # column in neurons.pkl
+NWB_FIRING_RATE_COL = "firing_rate"      # column in the NWB unit table
+FR_ROUND_DECIMALS = 15  # precision for the fuzzy firing-rate match key
+# Column that allen_utils.process_allen_labels(subdivide_areas=True) is
+# expected to ADD to the merged neurons+unit_table data (this is NOT a
+# pre-existing neurons.pkl column) -- EDIT if the real output column name
+# differs. merge_nwb_allen_labels checks this column actually appears and
+# warns loudly if not, since AREA_SRC_CANDIDATES/AREA_TGT_CANDIDATES below
+# rely on it to override area_relation.
+CUSTOM_AREA_COL = "area_acronym_custom"
+
 # EDIT these to match your actual Excel column headers
 WEIGHT_COLS = dict(mouse="mouse_id", reward_group="reward_group")
 PROBE_COLS = dict(mouse="mouse_name", date="date", day_of_recording="day_of_recording")
 
-# pairs_light.pkl area columns (pre = source, post = target)
-AREA_SRC_CANDIDATES = ("pre_acronym", "area_source", "source_area", "area_1")
-AREA_TGT_CANDIDATES = ("post_acronym", "area_target", "target_area", "area_2")
+# Area columns used for area_source/area_target throughout (within/across
+# classification, area-pair grouping, figure titles, etc). Checked in
+# order -- pre_/post_{CUSTOM_AREA_COL} come from neurons.pkl+NWB+Allen
+# processing (merged in load_session, see merge_nwb_allen_labels and
+# _merge_neuron_metadata) and take priority when present, OVERRIDING
+# area_relation to be computed from them instead of the pairs_light.pkl-
+# native pre_acronym/post_acronym (used as fallback when unavailable).
+AREA_SRC_CANDIDATES = (f"pre_{CUSTOM_AREA_COL}", "pre_acronym", "area_source", "source_area", "area_1")
+AREA_TGT_CANDIDATES = (f"post_{CUSTOM_AREA_COL}", "post_acronym", "area_target", "target_area", "area_2")
 
 # Within/across-area classification ignores layer info in the area acronym
 # (e.g. Allen CCF style 'SSp-bfd4'/'SSp-bfd5' both count as area 'SSp-bfd').
@@ -247,16 +270,201 @@ def build_manifest():
 
 
 # ============================== LOADING =====================================
+def load_neurons(session_dir):
+    """Load neurons.pkl: one row per recorded unit, indexed positionally
+    (row i = unit i) -- the SAME index space that pairs_light.pkl's
+    preIdx/postIdx columns already reference. Returns None if the file
+    doesn't exist for this session (e.g. older sessions predating it)."""
+    neurons_path = session_dir / "neurons.pkl"
+    if not neurons_path.exists():
+        return None
+    with open(neurons_path, "rb") as f:
+        neurons = pickle.load(f)
+    return neurons if isinstance(neurons, pd.DataFrame) else pd.DataFrame(neurons)
+
+
+def _merge_neuron_metadata(pairs, neurons):
+    """Merge neurons.pkl metadata onto pairs BY ROW INDEXING: neurons.pkl
+    row i = unit i, the same index space pairs['preIdx']/['postIdx']
+    already reference -- a positional .iloc lookup, NOT a column-based
+    merge/join. Adds pre_{col}/post_{col} for every neurons.pkl column;
+    any column already present in pairs (e.g. pre_acronym/pre_firing_rate,
+    already there from pairs_light.pkl itself) is left untouched rather
+    than silently overwritten by the neurons.pkl version.
+
+    Raises if preIdx/postIdx reference a unit index beyond neurons.pkl's
+    length -- that means the 'row i = unit i' assumption doesn't hold for
+    this session, and silently proceeding would merge WRONG per-unit data
+    onto pairs rather than fail loudly."""
+    if neurons is None:
+        return pairs
+
+    max_idx = int(max(pairs["preIdx"].max(), pairs["postIdx"].max()))
+    if max_idx >= len(neurons):
+        raise ValueError(
+            f"pairs_light.pkl references unit index {max_idx}, but neurons.pkl "
+            f"only has {len(neurons)} rows -- the row-indexed merge assumption "
+            f"('they match') doesn't hold for this session."
+        )
+
+    pairs = pairs.reset_index(drop=True)
+    pre_meta = neurons.iloc[pairs["preIdx"].to_numpy()].reset_index(drop=True)
+    post_meta = neurons.iloc[pairs["postIdx"].to_numpy()].reset_index(drop=True)
+
+    for col in neurons.columns:
+        pre_col, post_col = f"pre_{col}", f"post_{col}"
+        if pre_col not in pairs.columns:
+            pairs[pre_col] = pre_meta[col].to_numpy()
+        if post_col not in pairs.columns:
+            pairs[post_col] = post_meta[col].to_numpy()
+
+    return pairs
+
+
+def merge_nwb_allen_labels(neurons, session_id):
+    """Steps 2+3 of the pipeline: (2) merge neurons.pkl onto the session's
+    NWB unit table using firing rate, (3) run allen_utils.process_allen_
+    labels on that merged result, which is expected to ADD the
+    CUSTOM_AREA_COL column. Returns the enriched neurons DataFrame, still
+    one row per unit in the SAME row order pairs_light.pkl's preIdx/postIdx
+    index into (see _merge_neuron_metadata) -- this row alignment must
+    survive both the merge and the allen_utils call, or every downstream
+    preIdx/postIdx lookup silently breaks.
+
+    There's no shared unit ID between neurons.pkl and the NWB unit table,
+    so units are matched by ROUNDED firing rate (FR_ROUND_DECIMALS) as an
+    imperfect proxy key. This is fragile -- ties/near-ties in firing rate
+    can cause wrong or duplicate matches -- so two invariants are enforced
+    rather than assumed:
+      - the NWB unit table is de-duplicated on the rounded key first
+        (keep='first'), so the merge can never inflate row count.
+      - neurons.merge(unit_table, how='left') -- LEFT, with neurons as the
+        base -- keeps every unit even when unmatched (NaN for the new
+        columns) and preserves neurons' row order exactly.
+    Row count is asserted unchanged after both the merge and the
+    allen_utils call (defensive -- process_allen_labels is an external
+    function whose row-dropping behavior, if any, isn't controlled here).
+
+    Also checks that CUSTOM_AREA_COL actually appears in allen_utils'
+    output -- step 5 (overriding area_relation) silently does nothing if
+    this column never shows up, so that failure mode is made loud instead.
+
+    Returns neurons unchanged (no NWB/Allen columns added) if no NWB file
+    exists for this session."""
+    nwb_file = NWB_DIR / f"{session_id}.nwb"
+    if not nwb_file.exists():
+        return neurons
+
+    # Step 2: load neurons, merge onto the NWB unit table using firing rate
+    unit_table = NWB_reader_functions.get_unit_table(nwb_file)
+    unit_table = neural_utils.convert_electrode_group_object_to_columns(unit_table)
+    neurons = neurons.copy()
+    neurons['cluster_id'] = neurons.index
+    neurons["cluster_id"] = neurons["cluster_id"].astype(str)
+    neurons["fr_round"] = neurons["firing_rate"].round(FR_ROUND_DECIMALS).astype(str)
+    neurons["ccf_atlas_acronym"] = neurons["structure_acronym"]
+    neurons["waveformDuration_peakTrough"] = neurons["waveform_duration"].astype(str)
+    neurons["fr_round"] = neurons["fr_round"].astype(str)
+    neurons["waveformDuration_peakTrough"] = neurons["waveformDuration_peakTrough"].astype(str)
+
+    unit_table = unit_table.copy()
+    unit_table["fr_round"] = unit_table[NWB_FIRING_RATE_COL].round(FR_ROUND_DECIMALS).astype(str)
+    unit_table["nspikes"] = unit_table["spike_times"].apply(lambda x: len(x))
+    unit_table["waveformDuration_peakTrough"] = unit_table["waveformDuration_peakTrough"].astype(str)
+    unit_table['cluster_id']  = unit_table['cluster_id'].astype(str)
+    #n_dupe_keys = int(unit_table["fr_round"].duplicated().sum())
+    #if n_dupe_keys:
+    #    warnings.warn(f"{session_id}: {n_dupe_keys} duplicate rounded-firing-rate values in the "
+    #                   f"NWB unit table -- keeping only the first match per value to avoid "
+    #                   f"inflating neurons' row count (would break preIdx/postIdx alignment).")
+    #unit_table = unit_table.drop_duplicates(subset="fr_round", keep="first")
+
+    n_before = len(neurons)
+    merged = neurons.merge(unit_table,
+                           on=["cluster_id", "fr_round", "waveformDuration_peakTrough", "ccf_atlas_acronym"],
+                           #on=["cluster_id"],
+                           how="left",
+                           suffixes=("", "_nwb"), indicator=True)
+    if len(merged) != n_before:
+        raise RuntimeError(
+            f"{session_id}: NWB merge changed neurons row count ({n_before} -> {len(merged)}) -- "
+            f"this must never happen (breaks preIdx/postIdx row-index alignment)."
+        )
+
+    n_matched = int((merged["_merge"] == "both").sum())
+    match_rate = n_matched / n_before if n_before else 0.0
+    print(f"{session_id}: NWB firing-rate match {n_matched}/{n_before} units ({match_rate:.0%})")
+    if match_rate < 1.0:
+        warnings.warn(f"{session_id}: only {match_rate:.0%} of units matched an NWB unit by rounded "
+                       f"firing rate -- unmatched units keep NaN for NWB-derived columns.")
+    merged = merged.drop(columns=["_merge", "fr_round"])
+
+    # Step 3: process_allen_labels on the merged (neurons + NWB) data
+    merged = allen_utils.process_allen_labels(merged, subdivide_areas=True)
+    if len(merged) != n_before:
+        raise RuntimeError(
+            f"{session_id}: allen_utils.process_allen_labels changed row count "
+            f"({n_before} -> {len(merged)}) -- this must never happen "
+            f"(breaks preIdx/postIdx row-index alignment)."
+        )
+    if CUSTOM_AREA_COL not in merged.columns:
+        warnings.warn(
+            f"{session_id}: allen_utils.process_allen_labels did not produce a "
+            f"'{CUSTOM_AREA_COL}' column (columns present: {list(merged.columns)}) -- "
+            f"area_relation will NOT be overridden for this session; it will silently "
+            f"fall back to pre_acronym/post_acronym instead. Check CUSTOM_AREA_COL "
+            f"matches the actual output column name."
+        )
+    return merged
+
+
 def load_session(session_dir):
-    """Loads pairs metadata and score arrays for ALL FOUR conditions
-    (naive0, naive1, learned0, learned1) plus the whole-session score --
-    whichever files exist for this session. CCG arrays are NOT loaded here,
-    only their paths recorded; make_session_figures() pulls specific rows
-    via NpyRowReader once it knows which pair_ids it needs (skipped
-    entirely when LOAD_CCGS=False)."""
+    """
+    1. load pairs (pairs_light.pkl)
+    2. load neurons.pkl, merge onto the NWB unit table using firing rate
+    3. run allen_utils.process_allen_labels on that merged result
+       (steps 2+3: merge_nwb_allen_labels)
+    4. merge the enriched neurons data -- including CUSTOM_AREA_COL from
+       step 3 -- onto pairs by row index (preIdx/postIdx), alongside every
+       other neurons.pkl/NWB column (_merge_neuron_metadata)
+    5. area_relation is overridden to use CUSTOM_AREA_COL instead of
+       pre_acronym/post_acronym: this isn't a separate step here, it
+       happens automatically downstream in process_session() via
+       _get_area_columns(), which checks pre_/post_{CUSTOM_AREA_COL}
+       FIRST (see AREA_SRC_CANDIDATES/AREA_TGT_CANDIDATES), falling back
+       to pre_acronym/post_acronym only if step 3 didn't produce it for
+       this session.
+
+    Also loads score arrays for ALL FOUR conditions (naive0, naive1,
+    learned0, learned1) plus the whole-session score -- whichever files
+    exist for this session. CCG arrays are NOT loaded here, only their
+    paths recorded; make_session_figures() pulls specific rows via
+    NpyRowReader once it knows which pair_ids it needs (skipped entirely
+    when LOAD_CCGS=False)."""
+    # Step 1: load pairs
     with open(session_dir / "pairs_light.pkl", "rb") as f:
         pairs = pickle.load(f)
     pairs = pairs if isinstance(pairs, pd.DataFrame) else pd.DataFrame(pairs)
+
+
+    # Merge
+    # Steps 2-3: load neurons, merge onto NWB unit table by firing rate,
+    # then run allen_utils processing on the merged result
+    neurons = load_neurons(session_dir)
+
+    #pairs = _merge_neuron_metadata(pairs, neurons) #merge neurons and pairs before allen info?
+    #mask = pairs.preIdx == pairs.postIdx
+    #neurons = pairs[mask]
+
+    if neurons is not None:
+        neurons = merge_nwb_allen_labels(neurons, session_dir.name)
+
+    # Step 4: merge the enriched neuron metadata (incl. CUSTOM_AREA_COL)
+    # onto pairs by row index
+    pairs = _merge_neuron_metadata(pairs, neurons)
+
+    # Step 5 (area_relation override) happens automatically downstream --
+    # see AREA_SRC_CANDIDATES/AREA_TGT_CANDIDATES and _get_area_columns().
 
     # Score files are (3, N_pairs) and small (~25 MB) -- safe to fully load,
     # then reduce 3 rows -> 1 score per pair. See _reduce_score_rows.
@@ -563,29 +771,6 @@ def run_pipeline(manifest, n_workers=N_WORKERS):
         futures = {pool.submit(_process_one_session, row): row.session_id for row in rows}
         for fut in as_completed(futures):
             session_id, df, connectivity_df, err = fut.result()
-            print(session_id)
-            print('df', df.head(), df.columns)
-            print('con', connectivity_df.head(), connectivity_df.columns)
-
-            # Load correponsding NWB, merge on firing rate...
-            nwb_file = Path(OUTPUT_ROOT) / 'NWB_combined' / f"{session_id}.nwb"
-            if nwb_file.exists():
-                print('NWB exists')
-                unit_table = NWB_reader_functions.get_unit_table(nwb_file)
-            # Merge
-            df["fr_round"] = df["firing_rate"].round(5)
-            print(df.head())
-            unit_table["fr_round"] = unit_table["firing_rate"].round(5)
-            print(unit_table.head())
-
-            df = df.merge(unit_table, on="fr_round")
-            df = allen_utils.process_allen_labels(df, subdivide_areas=True)
-            print('processed')
-
-            # Check the acronym is correct - area acronym
-            # Override area relation
-
-
 
             if err is not None:
                 print(f"FAILED {session_id}:\n{err}")

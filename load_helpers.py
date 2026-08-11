@@ -20,7 +20,7 @@ import multiprocessing as mp
 
 hostname = socket.gethostname()
 if 'haas' in hostname:
-    N_WORKERS = 120
+    N_WORKERS = 80
     ROOT_PATH_AXEL = pathlib.Path('/mnt/lsens-analysis/Axel_Bisi/combined_results')
     ROOT_PATH_MYRIAM = pathlib.Path('/mnt/lsens-analysis/Myriam_Hamon/combined_results')
 
@@ -292,14 +292,16 @@ def load_spontaneous_reward_lick_times(nwb_files, n_workers=8, load_summary=Fals
         mouse_id = nwb_reader.get_mouse_id(nwb_file)
         session_id = nwb_reader.get_session_id(nwb_file)  # adjust if named differently
         beh, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+
         if 'whisker' not in beh:
             return {"status": "skipped", "mouse_id": mouse_id, "session_id": session_id}
+
         experimenter = 'AB' if mouse_id.startswith('AB') else 'MH'  # adjust rule if needed
         if experimenter == 'AB':
             data_path = ROOT_PATH_AXEL
         elif experimenter == 'MH':
             data_path = ROOT_PATH_AXEL
-        file_path = os.path.join(data_path, mouse_id, 'whisker_0', 'spontaneous_licks',
+        file_path = os.path.join(data_path, mouse_id, f'{beh}_{day}', 'spontaneous_licks',
                                  f'{session_id}_spontaneous_licks.csv')
         if not os.path.exists(file_path):
             return {"status": "missing", "mouse_id": mouse_id, "session_id": session_id, "file_path": file_path}
