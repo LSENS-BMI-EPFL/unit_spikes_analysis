@@ -1,9 +1,8 @@
 import os
 import time
-import pathlib
 import numpy as np
 import pandas as pd
-import roc_utils as ru 
+from roc_analysis import roc_utils as ru
 import allen_utils as allen
 import NWB_reader_functions as nwb_reader
 

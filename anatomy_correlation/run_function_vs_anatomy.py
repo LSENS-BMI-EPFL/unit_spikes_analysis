@@ -50,9 +50,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy import stats, ndimage
 
-import allen_utils as allen
-import neural_utils as nutils
-import plotting_utils
+import ephys_utilities.allen_utils.allen_utils as allen
+import ephys_utilities.neural_utils.neural_utils as nutils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
 from roc_analysis.roc_analysis_utils import load_roc_results, compute_prop_significant
 
 # ── anatomical column names ───────────────────────────────────────────────────
@@ -798,7 +798,7 @@ if __name__ == '__main__':
 
     # ── unit table: filter + enrich ───────────────────────────────────────────
     unit_table = unit_table[unit_table['bc_label'] == 'good']
-    unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
+    unit_table = allen.process_allen_labels(unit_table, split_merge_areas=True)
     unit_table = add_cell_type(unit_table)    # uses 'duration', threshold 0.35 ms
     unit_table = add_layer_group(unit_table)  # uses 'layer_number' from process_allen_labels
     print(f'  {len(unit_table)} good units | {unit_table["mouse_id"].nunique()} mice')

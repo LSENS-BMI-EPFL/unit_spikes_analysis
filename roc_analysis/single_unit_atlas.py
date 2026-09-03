@@ -20,7 +20,7 @@ import cmasher as cmr
 import allen_utils
 # Brainrender and settings
 import brainrender
-import neural_utils
+import neural_utils_old
 from brainrender import Scene
 from brainrender.actors import Points, Point, PointsDensity
 
@@ -31,10 +31,10 @@ brainrender.settings.SHADER_STYLE = 'cartoon'
 brainrender.settings.SCREENSHOT_TRANSPARENT_BACKGROUND = True
 
 # Custom imports
-import plotting_utils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
 import NWB_reader_functions
-import neural_utils as nutils
-import allen_utils as allen
+import ephys_utilities.neural_utils.neural_utils as nutils
+import ephys_utilities.allen_utils.allen_utils as allen
 
 from roc_analysis_utils import load_roc_results
 
@@ -716,14 +716,14 @@ if __name__ == '__main__':
         if debug:
           unit_table = NWB_reader_functions.get_unit_table(r"M:\analysis\Axel_Bisi\NWBFull_bis\AB164_20250422_115457.nwb")
           unit_table = nutils.convert_electrode_group_object_to_columns(unit_table)
-          unit_table = allen.process_allen_labels(unit_table, subdivide_areas=False)
+          unit_table = allen.process_allen_labels(unit_table, split_merge_areas=False)
 
         # Filter and process units
         # -------------------------------
         unit_table = unit_table[unit_table['bc_label']=='good']
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen.get_excluded_areas())]
         #unit_table = nutils.convert_electrode_group_object_to_columns(unit_table)
-        unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
+        unit_table = allen.process_allen_labels(unit_table, split_merge_areas=True)
 
         # Merge unit table onto metric table
         cols_to_keep = ['mouse_id', 'neuron_id', 'unit_id', 'bc_label', 'ccf_ap', 'ccf_dv', 'ccf_ml', 'area_acronym_custom']

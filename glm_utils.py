@@ -39,8 +39,8 @@ matplotlib.use('Agg')
 
 # Custom imports
 import NWB_reader_functions as nwbreader
-import allen_utils
-import plotting_utils as putils
+import ephys_utilities.allen_utils.allen_utils
+import ephys_utilities.plotting_utils.plotting_utils as putils
 
 # Set global variables
 BIN_SIZE = 0.1 # in seconds

@@ -579,7 +579,7 @@ def run_pipeline(manifest, n_workers=N_WORKERS):
             print(unit_table.head())
 
             df = df.merge(unit_table, on="fr_round")
-            df = allen_utils.process_allen_labels(df, subdivide_areas=True)
+            df = allen_utils.process_allen_labels(df, split_merge_areas=True)
             print('processed')
 
             # Check the acronym is correct - area acronym

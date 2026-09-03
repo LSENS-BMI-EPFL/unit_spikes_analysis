@@ -7,19 +7,17 @@
 """
 
 # Imports
-import os
 import pathlib
 import numpy as np
 import pandas as pd
-import multiprocessing
 import seaborn
 import matplotlib.pyplot as plt
 from matplotlib import gridspec
 
 import NWB_reader_functions as nwb_reader
 
-from plotting_utils import remove_top_right_frame, remove_bottom_right_frame, save_figure_with_options
-from roc_utils import filter_lick_times
+from ephys_utilities.plotting_utils.plotting_utils import remove_bottom_right_frame
+from roc_analysis.roc_utils import filter_lick_times
 
 def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
     """
@@ -142,7 +140,7 @@ def plot_unit_raster(unit_data, event_times_dict, align_event, results_path):
         file_name = f'{mouse_id}_unit{unit_id}_raster_trial_starts'
     elif align_event == 'piezo_lick_times':
         file_name = f'{mouse_id}_unit{unit_id}_raster_piezo_lick_times'
-    #save_figure_with_options(fig, ['png','svg'], file_name,  results_path, dark_background=False)
+    #save_figure_with_options(fig, ['png','svg'], file_name,  folder_results_path, dark_background=False)
 
 
     return

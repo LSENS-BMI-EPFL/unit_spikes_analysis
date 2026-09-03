@@ -40,7 +40,7 @@ New in v3
 * Parallelised per-session computation via ProcessPoolExecutor
 """
 from __future__ import annotations
-
+import socket
 import json
 import pickle
 import re
@@ -2167,6 +2167,7 @@ def run_shift_test_analysis(unit_table, trial_table, output_path,
         cfg.update(config)
     if output_path:
         cfg["combined_results_root"] = output_path
+    print(cfg['data_root'])
 
     # ── FIGURES-ONLY ────────────────────────────────────────────────────────
     if figures_only:

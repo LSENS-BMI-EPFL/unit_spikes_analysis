@@ -11,13 +11,12 @@ sys.path.append(str(project_root / "allen_utils"))
 import re
 import matplotlib.pyplot as plt
 import seaborn as sns
-import allen_utils
 import NWB_reader_functions as nwb_reader
 import numpy as np
 import pathlib
-import allen_utils as allen
+import ephys_utilities.allen_utils.allen_utils as allen
 import pickle
-import plotting_utils as putils
+import ephys_utilities.plotting_utils.plotting_utils as putils
 import ast
 import math
 from scipy.stats import chi2
@@ -6552,7 +6551,7 @@ def process_single_nwb(nwb, day_to_analyze = 0, git_version = None):
         unit_table = convert_electrode_group_object_to_columns(unit_table)
 
         # Only keep the neurons fitted for the glms
-        unit_table = allen.process_allen_labels(unit_table, subdivide_areas=False)
+        unit_table = allen.process_allen_labels(unit_table, split_merge_areas=False)
         unit_table = unit_table[unit_table['bc_label'] == 'good']
         unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
         unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
@@ -6571,7 +6570,6 @@ def process_single_nwb(nwb, day_to_analyze = 0, git_version = None):
         return None
 
 
-import plotting_utils as putils
 def plot_trial_grid_predictions(results_df, trial_table, neuron_id, bin_size, output_folder):
     """
     Plot predictions for a single neuron across trials in a grid format.

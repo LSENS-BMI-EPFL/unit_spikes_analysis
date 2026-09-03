@@ -255,7 +255,7 @@ def fig7_row_coloring(X, labels_a, labels_b, ids_a, ids_b,
     B assigns differently, revealing exactly where the two methods disagree.
     """
     from matplotlib.colors import BoundaryNorm
-    from matplotlib.cm import get_cmap
+    import matplotlib as mpl
 
     # Sort neurons by A's cluster order
     isort_a = np.argsort(labels_a, kind="stable")
@@ -266,8 +266,8 @@ def fig7_row_coloring(X, labels_a, labels_b, ids_a, ids_b,
     k_b = len(ids_b)
 
     # Discrete colormaps — one color per cluster index
-    cmap_a = get_cmap("tab20", k_a)
-    cmap_b = get_cmap("tab20b", k_b)
+    cmap_a = mpl.colormaps["tab20"].resampled(k_a)
+    cmap_b = mpl.colormaps["tab20b"].resampled(k_b)
 
     # Color strips: shape (n_neurons, 1) with integer cluster index
     strip_a = sorted_labels_a[:, np.newaxis]   # A labels in A-sorted order
@@ -319,7 +319,8 @@ def fig7_row_coloring(X, labels_a, labels_b, ids_a, ids_b,
     # B strip — same neuron order, B's label per neuron
     # noise neurons (label -1) shown in grey
     strip_b_plot = np.where(strip_b >= 0, strip_b, k_b)   # remap -1 to last slot
-    cmap_b_ext   = get_cmap("tab20b", k_b + 1)             # +1 for noise slot
+
+    cmap_b_ext = plt.get_cmap("tab20b", k_b + 1)
     ax_b.imshow(strip_b_plot, aspect="auto", interpolation="none",
                 cmap=cmap_b_ext, vmin=-0.5, vmax=k_b + 0.5,
                 extent=[0, 1, n_neurons, 0])

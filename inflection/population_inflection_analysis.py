@@ -36,7 +36,7 @@ from collections import defaultdict
 
 # Custome imports
 import NWB_reader_functions
-import neural_utils
+import neural_utils_old
 import allen_utils
 
 # Try to import optional dependencies
@@ -267,7 +267,7 @@ def load_nwb_session_all_units(nwb_path: Path, config: PopulationAnalysisConfig)
         #units_table = nwbfile.units
         units_table = NWB_reader_functions.get_unit_table(nwb_path)
         #units_table = neural_utils.convert_electrode_group_object_to_columns(units_table)
-        units_table = allen_utils.process_allen_labels(units_table, subdivide_areas=True)
+        units_table = allen_utils.process_allen_labels(units_table, split_merge_areas=True)
 
         if units_table is None:
             raise ValueError(f"No units table found in {nwb_path}")
@@ -1348,7 +1348,7 @@ if __name__ == "__main__":
             print(err)
         mouse_id = NWB_reader_functions.get_mouse_id(nwb_file)
 
-        unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+        unit_table = allen_utils.process_allen_labels(unit_table, split_merge_areas=True)
         print(len(unit_table))
 
         # Load NWB (includes all units)

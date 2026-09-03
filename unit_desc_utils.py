@@ -14,36 +14,22 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly.io as pio
-pio.orca.config.use_xvfb = True
-pio.orca.config.save()  # optional: save for future sessions
+#pio.orca.config.use_xvfb = True
+#pio.orca.config.save()  # optional: save for future sessions
 import plotly.graph_objects as go
 from itertools import combinations, combinations_with_replacement
 import matplotlib.colors as mcolors
 
-import neural_utils
+import unit_spike_report_new
+from ephys_utilities.neural_utils import neural_utils
+from ephys_utilities.allen_utils import allen_utils
+from ephys_utilities.plotting_utils import plotting_utils
 # Import custom modules
-import neural_utils as nutils
 import NWB_reader_functions as nwb_reader
-import allen_utils as allen_utils
 from matplotlib.font_manager import font_scalings
-
-import plotting_utils
-from plotting_utils import save_figure_with_options, adjust_lightness
 
 COLORS = {'good': 'mediumvioletred', 'mua': 'orchid', 'non-soma': 'slateblue', 'noise': 'dimgrey'}
 ORDER = ['good', 'mua', 'non-soma', 'noise']
-
-THRESHOLDS = {
-    "nSpikes": (300, None), "percentageSpikesMissing_gaussian": (None, 20),
-    "percentageSpikesMissing_symmetric": (None, 20), "fractionRPVs_estimatedTauR": (None, 0.1),
-    "presenceRatio": (0.7, None), "isolationDistance": (None, None), "Lratio": (None, None),
-    "coverageRatio": (None, None), "driftIndependence": (None, None),
-}
-# 'noise' = unit dropped entirely; 'mua' = good->mua downgrade, stays active
-ROUTE = {"nSpikes": "noise", "percentageSpikesMissing_gaussian": "noise",
-         "percentageSpikesMissing_symmetric": "noise", "fractionRPVs_estimatedTauR": "mua",
-         "presenceRatio": "mua", "isolationDistance": "mua", "Lratio": "mua",
-         "coverageRatio": "mua", "driftIndependence": "mua"}
 
 
 def _pct(n, total):
@@ -55,8 +41,19 @@ def _rgba(name, a=0.45):
     return f"rgba({int(r * 255)},{int(g * 255)},{int(b * 255)},{a})"
 
 
-def _sankey(levels, names, output_path, file_name, caption=None, formats=('png', 'pdf', 'eps')):
-    """levels: list of pd.Series (same index) = class label per unit per stage."""
+def _wrap(text, sep=" &rarr; ", per_line=4):
+    parts = text.split(sep)
+    lines = [sep.join(parts[i:i + per_line]) for i in range(0, len(parts), per_line)]
+    return "<br>".join(lines)
+
+
+def _sankey(levels, names, output_path, file_name, caption=None, step_labels=None,
+            formats=('png', 'pdf', 'svg')):
+    """levels: list of pd.Series (same index) = class label per unit per stage.
+    names: internal per-stage ids (used to key nodes). step_labels: human-readable
+    header shown above each column (defaults to names) - typically the metric applied."""
+    n_stages = len(levels)
+    step_labels = step_labels or names
     n_tot = len(levels[0])
     nid, nodes, colors = {}, [], []
     for s, name in zip(levels, names):
@@ -64,7 +61,7 @@ def _sankey(levels, names, output_path, file_name, caption=None, formats=('png',
         for cls in [c for c in ORDER if c in counts.index]:
             nid[f"{name}::{cls}"] = len(nodes)
             n = counts[cls]
-            nodes.append(f"{cls}<br>n={n} ({_pct(n, n_tot):.1f}%)")
+            nodes.append(f"{cls} (n={n}, {_pct(n, n_tot):.1f}%)")
             colors.append(COLORS[cls])
 
     src, tgt, val, lcol, llab = [], [], [], [], []
@@ -80,75 +77,141 @@ def _sankey(levels, names, output_path, file_name, caption=None, formats=('png',
 
     fig = go.Figure(go.Sankey(
         arrangement="snap",
-        node=dict(pad=28, thickness=18, line=dict(color='black', width=0.7), label=nodes, color=colors),
+        textfont=dict(size=12, color='black'),
+        node=dict(pad=35, thickness=16, line=dict(color='black', width=0.7), label=nodes, color=colors),
         link=dict(source=src, target=tgt, value=val, color=lcol, label=llab,
                   hovertemplate='%{label}<extra></extra>')))
+
+    # column headers: metric (or stage) applied to reach that column, aligned above it
+    for i, lbl in enumerate(step_labels):
+        x = i / (n_stages - 1) if n_stages > 1 else 0.5
+        fig.add_annotation(text=f"<b>{lbl}</b>", x=x, y=1.08, xref='paper', yref='paper',
+                           showarrow=False, font=dict(size=13), align='center')
 
     changed = int((levels[0].values != levels[-1].values).sum())
     text = f"n={n_tot} total | {changed} changed label ({_pct(changed, n_tot):.1f}%)"
     if caption:
-        text += f"<br>{caption}"
-    fig.add_annotation(text=text, showarrow=False, x=0.5, y=-0.14, xref='paper', yref='paper', font_size=12)
-    fig.update_layout(margin=dict(t=40, b=90, l=10, r=10), font_size=13)
+        text += f"<br>{_wrap(caption)}"
+    fig.add_annotation(text=text, showarrow=False, x=0.5, y=-0.16, xref='paper', yref='paper', font_size=12)
+    fig.update_layout(width=max(1100, 260 * n_stages), height=750,
+                      margin=dict(t=70, b=140, l=10, r=10), font_size=13)
 
     save_dir = os.path.join(output_path, file_name)
     os.makedirs(save_dir, exist_ok=True)
     for fmt in formats:
-        fig.write_image(os.path.join(save_dir, f"{file_name}.{fmt}"), engine='orca', scale=5)
+        fig.write_image(os.path.join(save_dir, f"{file_name}.{fmt}"), scale=5)
     return fig
 
 
 def unit_label_describe(unit_data, output_path, file_name='unit_label_sankey_diagram'):
-    """Fig 1: ks_label -> bc_label (includes non-soma)."""
+    """Fig 1: ks_label -> quality_label (includes non-soma)."""
     df = unit_data
-    print('Good after KS:', (df.ks_label == 'good').sum(), '| Good after BC:', (df.bc_label == 'good').sum())
-    return _sankey([df.ks_label, df.bc_label], ['KS', 'BC'], output_path, file_name)
+    print('Good after KS:', (df.ks_label == 'good').sum(), '| Good after quality_label:',
+          (df.quality_label == 'good').sum())
+    return _sankey([df.ks_label, df.quality_label], ['KS', 'QL'], output_path, file_name,
+                   step_labels=['Kilosort', 'Quality label (final)'])
 
 
-def unit_label_metric_sankey(unit_data, output_path, thresholds=THRESHOLDS, route=ROUTE,
-                             file_name='unit_label_metric_sankey_diagram'):
-    """Fig 2: metric-by-metric funnel from ks_label in {good,mua}, ordered by severity
-    (largest % of active pool reclassified goes first). No non-soma stage here."""
-    df = unit_data[unit_data.ks_label.isin(['good', 'mua'])]
+JOINT_METRICS = ("drift_abs_r", "drift_shift_test_pval")
+JOINT_NAME = "drift_abs_r & drift_shift_test_pval"
+
+
+def unit_label_metric_sankey(unit_data, output_path, thresholds=None,
+                              exclude=['Lratio', 'isolationDistance', 'presenceRatio', 'maxDriftEstimate'],
+                              file_name='unit_label_metric_sankey_diagram'):
+    """Fig 2: metric-by-metric funnel from ks_label in {good,mua} plus
+    quality_label=='non-soma' units, ordered by severity (metric reclassifying the most
+    units first). Metrics only ever move good -> mua; non-soma units are carried through
+    unchanged at every stage (never dropped, never touched by a metric). ks_label itself
+    never contains 'non-soma' (Kilosort only outputs good/mua) - that class comes from
+    quality_label. exclude: metric names to skip from the funnel entirely
+    (e.g. exclude=['isolationDistance','Lratio']).
+
+    drift_abs_r and drift_shift_test_pval are checked ONCE, TOGETHER, as a single
+    funnel step - a unit only fails this step if BOTH are simultaneously out of range;
+    passing either alone is enough to survive the step. Excluding either name in
+    `exclude` drops the whole joint step (not just one half of it)."""
+    exclude = set(exclude or [])
+    if thresholds is None:
+        thresholds = neural_utils.DEFAULT_METRIC_THRESHOLDS
+
+    start_mask = unit_data.ks_label.isin(['good', 'mua']) | (unit_data.quality_label == 'non-soma')
+    df = unit_data[start_mask]
+    n_tot = len(df)
+
     cls = df.ks_label.copy()
-    active = pd.Series(True, index=df.index)
     levels, names = [cls.copy()], ['KS']
 
-    remaining = {}
+    nonsoma_mask = (df.quality_label == 'non-soma')
+    cls = cls.copy()
+    cls[nonsoma_mask] = 'non-soma'
+    levels.append(cls.copy()); names.append('non-soma')
+
+    # base_fail: step name -> NaN-safe boolean Series (True = fails that step's
+    # criterion), computed once up front; cls=='good' gating happens dynamically
+    # in fail_mask() below since cls changes as the funnel progresses.
+    base_fail = {}
+
     for m, (lo, hi) in thresholds.items():
+        if m in exclude or m in JOINT_METRICS:
+            continue
         if m not in df.columns:
-            warnings.warn(f"'{m}' not in unit_data - skipping");
-            continue
+            warnings.warn(f"'{m}' not in unit_data - skipping"); continue
         if lo is None and hi is None:
-            warnings.warn(f"'{m}' has no threshold - skipping");
-            continue
-        remaining[m] = (lo, hi)
+            warnings.warn(f"'{m}' has no threshold - skipping"); continue
+        col = pd.to_numeric(df[m], errors='coerce')
+        n_bad = int(col.isna().sum() - df[m].isna().sum())
+        if n_bad:
+            warnings.warn(f"'{m}': {n_bad} non-numeric values coerced to NaN (excluded from checks)")
+        f = pd.Series(False, index=df.index)
+        if lo is not None: f |= col < lo
+        if hi is not None: f |= col > hi
+        base_fail[m] = f & col.notna()
+
+    if not exclude.intersection(JOINT_METRICS):
+        present = [m for m in JOINT_METRICS if m in df.columns]
+        if len(present) == 2:
+            subfail, skip = {}, False
+            for m in JOINT_METRICS:
+                lo, hi = thresholds.get(m, (None, None))
+                if lo is None and hi is None:
+                    warnings.warn(f"'{m}' has no threshold - skipping joint drift step")
+                    skip = True
+                    break
+                col = pd.to_numeric(df[m], errors='coerce')
+                n_bad = int(col.isna().sum() - df[m].isna().sum())
+                if n_bad:
+                    warnings.warn(f"'{m}': {n_bad} non-numeric values coerced to NaN (excluded from checks)")
+                f = pd.Series(False, index=df.index)
+                if lo is not None: f |= col < lo
+                if hi is not None: f |= col > hi
+                subfail[m] = f & col.notna()
+            if not skip:
+                # jointly checked as ONE step: fail only if BOTH sub-metrics fail together
+                base_fail[JOINT_NAME] = subfail[JOINT_METRICS[0]] & subfail[JOINT_METRICS[1]]
+        elif present:
+            missing = [m for m in JOINT_METRICS if m not in df.columns]
+            warnings.warn(f"joint drift step needs both {JOINT_METRICS}; missing {missing} - skipping")
+
+    remaining = set(base_fail.keys())
 
     def fail_mask(m):
-        lo, hi = remaining[m]
-        f = pd.Series(False, index=df.index)
-        if lo is not None: f |= df[m] < lo
-        if hi is not None: f |= df[m] > hi
-        return f & active
+        return base_fail[m] & (cls == 'good')
 
     applied = []
     while remaining:
-        n_active = active.sum()
         best = max(remaining, key=lambda m: fail_mask(m).sum())
         fail = fail_mask(best)
-        applied.append((best, _pct(fail.sum(), n_active), int(fail.sum())))
-        remaining.pop(best)
-        if route.get(best, 'mua') == 'noise':
-            cls[fail] = 'noise';
-            active[fail] = False
-        else:
-            cls[fail & (cls == 'good')] = 'mua'
-        levels.append(cls.copy());
-        names.append(best)
+        applied.append((best, _pct(fail.sum(), n_tot), int(fail.sum())))
+        remaining.discard(best)
+        cls[fail] = 'mua'
+        levels.append(cls.copy()); names.append(best)
 
     print("Order (severity):", [(m, round(p, 1)) for m, p, _ in applied])
-    caption = "Order: " + " &rarr; ".join(f"{m} ({p:.1f}%)" for m, p, _ in applied)
-    return _sankey(levels, names, output_path, file_name, caption=caption)
+    step_labels = ['Kilosort\n(start)', 'non-soma\n(quality_label)'] + [f"{i + 1}. {m}" for i, (m, _, _) in
+                                                                        enumerate(applied)]
+    caption = "Step impact: " + " &bull; ".join(f"{i + 1}) {p:.1f}%" for i, (_, p, _) in enumerate(applied))
+    return _sankey(levels, names, output_path, file_name, caption=caption, step_labels=step_labels)
 
 def unit_label_describe_old(unit_data, output_path):
     """
@@ -239,14 +302,14 @@ def unit_label_describe_old(unit_data, output_path):
 
     # Save figure
     file_name = 'unit_label_sankey_diagram'
-    file_formats = ['png', 'pdf', 'eps']
+    file_formats = ['png', 'pdf', 'svg']
     save_path = os.path.join(output_path, file_name)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     # Save plotly Figure object
     for format in file_formats:
-        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), engine='orca', scale=5)
+        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), scale=5)
 
     return
 
@@ -345,14 +408,14 @@ def unit_anat_describe(unit_data, output_path):
 
     # Save figure
     file_name = 'unit_anat_sankey_diagram'
-    file_formats = ['png', 'pdf', 'eps']
+    file_formats = ['png', 'pdf', 'svg']
     save_path = os.path.join(output_path, file_name)
     if not os.path.exists(save_path):
         os.makedirs(save_path)
 
     # Save plotly Figure object
     for format in file_formats:
-        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), engine='orca', scale=5)
+        fig.write_image(os.path.join(save_path, f"{file_name}.{format}"), scale=5)
 
     return
 
@@ -363,7 +426,7 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
 
     # Load neural data
     #trial_table, unit_table, _ = nutils.combine_ephys_nwb(nwb_files, max_workers=24)
-    unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+    unit_table = allen_utils.process_allen_labels(unit_table)
     unit_table = unit_table[~unit_table['area_acronym_custom'].isin(allen_utils.get_excluded_areas())]
 
     # Add reward group info from trial table onto mouse_id
@@ -456,7 +519,7 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
 
     plotting_utils.save_figure_with_options(
                     figure=fig,
-                    file_formats=['png', 'pdf', 'eps'],
+                    file_formats=['png', 'pdf', 'svg'],
                     filename=figname,
         output_dir=save_path,
                     dark_background=False
@@ -506,7 +569,7 @@ def plot_number_area_pairs_heatmap(trial_table, unit_table, output_path):
     #ax.set_yticklabels(all_areas_valid, rotation=0, fontsize=5)
     plotting_utils.save_figure_with_options(
                     figure=fig,
-                    file_formats=['png', 'pdf', 'eps'],
+                    file_formats=['png', 'pdf', 'svg'],
                     filename=figname+'_min3mice', output_dir=save_path,
                     dark_background=False
     )

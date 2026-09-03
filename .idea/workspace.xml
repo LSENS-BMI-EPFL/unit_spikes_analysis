@@ -1,0 +1,1017 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="AutoImportSettings">
+    <option name="autoReloadType" value="SELECTIVE" />
+  </component>
+  <component name="ChangeListManager">
+    <list default="true" id="f9a370fb-0a42-4843-b895-dda120a31df2" name="Changes" comment="">
+      <change afterPath="$PROJECT_DIR$/rastermap_psth/cluster_postproc_analyses.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test_motion_lc.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test_motion_lc_new.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/single_neuron_shift_test/unit_fr_motion_shift_test.py" afterDir="false" />
+      <change afterPath="$PROJECT_DIR$/single_neuron_shift_test/unit_fr_motion_shift_test_harris.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/allen_utils/.idea/allen_utils.iml" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/allen_utils/.idea/allen_utils.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/allen_utils/allen_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/allen_utils/allen_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/allen_utils/unit_3d_brain_bisi.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/.idea/ephys_utilities.iml" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/.idea/ephys_utilities.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/allen_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/allen_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single_parallel.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single_parallel.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/helpers/data_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/helpers/data_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/helpers/load_helpers.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/helpers/load_helpers.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/neural_utils/unit_metrics_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/neural_utils/unit_metrics_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/plotting_utils/plotting_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/plotting_utils/plotting_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../NWB_reader/.gitignore" beforeDir="false" afterPath="$PROJECT_DIR$/../NWB_reader/.gitignore" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../NWB_reader/.idea/NWB_reader.iml" beforeDir="false" afterPath="$PROJECT_DIR$/../NWB_reader/.idea/NWB_reader.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../NWB_reader/NWB_filtering.py" beforeDir="false" afterPath="$PROJECT_DIR$/../NWB_reader/NWB_filtering.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/../NWB_reader/NWB_reader_functions.py" beforeDir="false" afterPath="$PROJECT_DIR$/../NWB_reader/NWB_reader_functions.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/anatomy_correlation/fraction_vs_anatomy.py" beforeDir="false" afterPath="$PROJECT_DIR$/anatomy_correlation/fraction_vs_anatomy.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/anatomy_correlation/run_function_vs_anatomy.py" beforeDir="false" afterPath="$PROJECT_DIR$/anatomy_correlation/run_function_vs_anatomy.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dyad_analysis/dyad_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/dyad_analysis/dyad_analysis.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py" beforeDir="false" afterPath="$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/glms_plotting_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/glms_plotting_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/inflection/population_inflection_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/inflection/population_inflection_analysis.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/neural_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/neural_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/raster_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/raster_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/area_latency_rastermap.py" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/area_latency_rastermap.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/cluster_comparison.py" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/cluster_comparison.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/cluster_comparison_new.py" beforeDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/cluster_explorer.py" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/cluster_explorer.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/config.yaml" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/config.yaml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/rastermap_psth/rastermap_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/rastermap_psth/rastermap_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/roc_analysis/cross_corr_analysis/create_neuronal_df.py" beforeDir="false" afterPath="$PROJECT_DIR$/roc_analysis/cross_corr_analysis/create_neuronal_df.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/roc_analysis/run_roc_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/roc_analysis/run_roc_analysis.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/roc_analysis/run_roc_analysis_experts_vs_learners.py" beforeDir="false" afterPath="$PROJECT_DIR$/roc_analysis/run_roc_analysis_experts_vs_learners.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/roc_analysis/single_unit_atlas.py" beforeDir="false" afterPath="$PROJECT_DIR$/roc_analysis/single_unit_atlas.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/roc_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/roc_analysis/roc_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test_figs_test_new.py" beforeDir="false" afterPath="$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test_figs_test_new.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/task_modulation_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/task_modulation_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/unit_desc_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/unit_desc_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/unit_spike_report_new.py" beforeDir="false" afterPath="$PROJECT_DIR$/unit_spike_report_new.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/unit_spikes_analysis.py" beforeDir="false" afterPath="$PROJECT_DIR$/unit_spikes_analysis.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/waveform_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/waveform_utils.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/xcorr_utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/xcorr_utils.py" afterDir="false" />
+    </list>
+    <option name="SHOW_DIALOG" value="false" />
+    <option name="HIGHLIGHT_CONFLICTS" value="true" />
+    <option name="HIGHLIGHT_NON_ACTIVE_CHANGELIST" value="false" />
+    <option name="LAST_RESOLUTION" value="IGNORE" />
+  </component>
+  <component name="CopilotPersistence">
+    <persistenceIdMap>
+      <entry key="_M:/analysis/Axel_Bisi/unit_spikes_analysis" value="2nr2GTKEaUeJG74TjS3dAkE467x" />
+    </persistenceIdMap>
+  </component>
+  <component name="DjangoConsoleOptions" custom-start-script="import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)">
+    <option name="myCustomStartScript" value="import sys; print('Python %s on %s' % (sys.version, sys.platform))&#10;import django; print('Django %s' % django.get_version())&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;if 'setup' in dir(django): django.setup()&#10;import django_manage_shell; django_manage_shell.run(PROJECT_ROOT)" />
+  </component>
+  <component name="FileTemplateManagerImpl">
+    <option name="RECENT_TEMPLATES">
+      <list>
+        <option value="Python Script" />
+      </list>
+    </option>
+  </component>
+  <component name="FlaskConsoleOptions" custom-start-script="import sys&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo&#10;locals().update(ScriptInfo(create_app=None).load_app().make_shell_context())&#10;print(&quot;Python %s on %s\nApp: %s [%s]\nInstance: %s&quot; % (sys.version, sys.platform, app.import_name, app.env, app.instance_path))">
+    <envs>
+      <env key="FLASK_APP" value="app" />
+    </envs>
+    <option name="myCustomStartScript" value="import sys&#10;sys.path.extend([WORKING_DIR_AND_PYTHON_PATHS])&#10;from flask.cli import ScriptInfo&#10;locals().update(ScriptInfo(create_app=None).load_app().make_shell_context())&#10;print(&quot;Python %s on %s\nApp: %s [%s]\nInstance: %s&quot; % (sys.version, sys.platform, app.import_name, app.env, app.instance_path))" />
+    <option name="myEnvs">
+      <map>
+        <entry key="FLASK_APP" value="app" />
+      </map>
+    </option>
+  </component>
+  <component name="Git.Settings">
+    <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
+    <option name="ROOT_SYNC" value="DONT_SYNC" />
+  </component>
+  <component name="GitHubPullRequestSearchHistory">{
+  &quot;lastFilter&quot;: {
+    &quot;state&quot;: &quot;OPEN&quot;,
+    &quot;assignee&quot;: &quot;abisi&quot;
+  }
+}</component>
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/abisi/allen_utils.git&quot;,
+    &quot;accountId&quot;: &quot;1889097c-2d75-4295-be2c-f7f9263eec7a&quot;
+  }
+}</component>
+  <component name="HighlightingSettingsPerFile">
+    <setting file="file://$USER_HOME$/AppData/Local/JetBrains/PyCharm2026.1/remote_sources/880471079/473495528/pandas/core/frame.py" root0="SKIP_INSPECTION" />
+    <setting file="file://$USER_HOME$/AppData/Local/JetBrains/PyCharm2026.1/remote_sources/880471079/473495528/pandas/core/indexes/base.py" root0="SKIP_INSPECTION" />
+    <setting file="file://$USER_HOME$/AppData/Roaming/uv/python/cpython-3.14-windows-x86_64-none/Lib/multiprocessing/process.py" root0="SKIP_INSPECTION" />
+    <setting file="file://$USER_HOME$/AppData/Roaming/uv/python/cpython-3.14-windows-x86_64-none/Lib/multiprocessing/spawn.py" root0="SKIP_INSPECTION" />
+    <setting file="file://$PROJECT_DIR$/.venv/Lib/site-packages/pandas/core/reshape/merge.py" root0="SKIP_INSPECTION" />
+  </component>
+  <component name="MarkdownSettingsMigration">
+    <option name="stateVersion" value="1" />
+  </component>
+  <component name="ProblemsViewState">
+    <option name="selectedTabId" value="CurrentFile" />
+  </component>
+  <component name="ProjectColorInfo">{
+  &quot;associatedIndex&quot;: 1
+}</component>
+  <component name="ProjectId" id="2nr2GTKEaUeJG74TjS3dAkE467x" />
+  <component name="ProjectSessionTemplates">
+    <option name="panelTemplate">
+      <template>
+        <option name="modeId" value="Agent" />
+        <option name="model">
+          <model>
+            <option name="modelType" value="builtin_id" />
+            <option name="modelValue" value="auto" />
+          </model>
+        </option>
+        <option name="targetType" value="BACKGROUND" />
+        <option name="worktreeMode" value="WORKSPACE" />
+      </template>
+    </option>
+  </component>
+  <component name="ProjectViewState">
+    <option name="hideEmptyMiddlePackages" value="true" />
+    <option name="showLibraryContents" value="true" />
+    <option name="showMembers" value="true" />
+    <option name="sortByType" value="true" />
+    <option name="sortKey" value="BY_TYPE" />
+  </component>
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.area_latency_rastermap.executor": "Run",
+    "Python.cluster_explorer (1).executor": "Debug",
+    "Python.cluster_explorer.executor": "Debug",
+    "Python.dyad_analysis_new.executor": "Debug",
+    "Python.fraction_vs_anatomy.executor": "Run",
+    "Python.fraction_vs_anatomy_new.executor": "Run",
+    "Python.generate_probe_tracks_visualization.executor": "Run",
+    "Python.generate_probe_tracks_visualization_colors.executor": "Run",
+    "Python.generate_probe_tracks_visualization_colors_single.executor": "Run",
+    "Python.generate_probe_tracks_visualization_colors_single_parallel.executor": "Run",
+    "Python.generate_probe_tracks_visualization_combined.executor": "Run",
+    "Python.glm_utils.executor": "Run",
+    "Python.main.executor": "Run",
+    "Python.noise_correlations (4).executor": "Debug",
+    "Python.passive_psth_utils_parallel.executor": "Run",
+    "Python.rastermap_clustering_psth.executor": "Run",
+    "Python.rastermap_clustering_psth_jaw.executor": "Run",
+    "Python.rastermap_psth.executor": "Run",
+    "Python.run_function_vs_anatomy.executor": "Run",
+    "Python.run_roc_analysis.executor": "Run",
+    "Python.single_unit_atlas.executor": "Run",
+    "Python.train_classifier.executor": "Run",
+    "Python.unit_spikes_analysis (1).executor": "Run",
+    "Python.unit_spikes_analysis.executor": "Run",
+    "RunOnceActivity.OpenProjectViewOnStart": "true",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.TerminalTabsStorage.copyFrom.TerminalArrangementManager.252": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "RunOnceActivity.typescript.service.memoryLimit.init": "true",
+    "WebServerToolWindowFactoryState": "false",
+    "WebServerToolWindowPanel.toolwindow.highlight.mappings": "true",
+    "WebServerToolWindowPanel.toolwindow.highlight.symlinks": "true",
+    "WebServerToolWindowPanel.toolwindow.show.date": "false",
+    "WebServerToolWindowPanel.toolwindow.show.permissions": "false",
+    "WebServerToolWindowPanel.toolwindow.show.size": "false",
+    "ai.playground.ignore.import.keys.banner.in.settings": "true",
+    "codeWithMe.voiceChat.enabledByDefault": "false",
+    "copilot.chat.legacySessionMetadata.migrated": "true",
+    "git-widget-placeholder": "master",
+    "ignore.virus.scanning.warn.message": "true",
+    "last_opened_file_path": "M:/analysis/Axel_Bisi/Github/ephys_utilities/ephys_utilities/allen_utils",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
+    "vue.rearranger.settings.migration": "true"
+  }
+}]]></component>
+  <component name="PyConsoleOptionsProvider">
+    <option name="myPythonConsoleState">
+      <console-settings module-name="unit_spikes_analysis" sdk-home="/home/bisi/anaconda3/envs/brain_wide_analysis/bin/python">
+        <option name="sdk">
+          <Sdk />
+        </option>
+        <option name="mySdkHome" value="/home/bisi/anaconda3/envs/brain_wide_analysis/bin/python" />
+        <option name="mySdk">
+          <Sdk />
+        </option>
+        <option name="myModuleName" value="unit_spikes_analysis" />
+      </console-settings>
+    </option>
+  </component>
+  <component name="RecentsManager">
+    <key name="CopyFile.RECENT_KEYS">
+      <recent name="M:\analysis\Axel_Bisi\Github\ephys_utilities\ephys_utilities\allen_utils" />
+      <recent name="M:\analysis\Axel_Bisi\Github\ephys_utilities\plotting_utils" />
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis\single_neuron_shift_test" />
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis" />
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis\noise_classification" />
+    </key>
+    <key name="MoveFile.RECENT_KEYS">
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis\roc_analysis" />
+      <recent name="M:\analysis\Axel_Bisi\Github\ephys_utilities\ephys_utilities" />
+      <recent name="M:\analysis\Axel_Bisi\Github\ephys_utilities\neural_utils" />
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis\anatomy_correlation" />
+      <recent name="M:\analysis\Axel_Bisi\unit_spikes_analysis\rastermap" />
+    </key>
+  </component>
+  <component name="RunManager" selected="Python.unit_spikes_analysis">
+    <configuration name="generate_probe_tracks_visualization" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="ephys_utilities" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="generate_probe_tracks_visualization_colors" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="ephys_utilities" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="generate_probe_tracks_visualization_colors_single" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="ephys_utilities" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="generate_probe_tracks_visualization_colors_single_parallel" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="ephys_utilities" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single_parallel.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="generate_probe_tracks_visualization_combined" type="PythonConfigurationType" factoryName="Python" temporary="true" nameIsGenerated="true">
+      <module name="ephys_utilities" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="false" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_combined.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
+      <module name="unit_spikes_analysis" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="main" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
+      <module name="unit_spikes_analysis" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$" />
+      <option name="IS_MODULE_SDK" value="true" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <option name="RUN_TOOL" value="" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <configuration name="unit_spikes_analysis" type="PythonConfigurationType" factoryName="Python" nameIsGenerated="true">
+      <module name="unit_spikes_analysis" />
+      <option name="ENV_FILES" value="" />
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="SDK_NAME" value="uv SSH (sftp://bisi@haas056.rcp.epfl.ch:22/home/bisi/code/unit_spikes_analysis/.venv/bin/python3.14)" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <option name="DEBUG_JUST_MY_CODE" value="true" />
+      <EXTENSION ID="PythonCoverageRunConfigurationExtension" runner="coverage.py" />
+      <PathMappingSettings>
+        <option name="pathMappings">
+          <list>
+            <mapping local-root="$PROJECT_DIR$" remote-root="/home/bisi/code/unit_spikes_analysis" />
+            <mapping local-root="$PROJECT_DIR$/../Github/allen_utils" remote-root="/home/bisi/code/allen_utils" />
+            <mapping local-root="$PROJECT_DIR$/../Github/NWB_reader" remote-root="/home/bisi/code/NWB_reader" />
+            <mapping local-root="$PROJECT_DIR$/../Github/ephys_utilities" remote-root="/home/bisi/code/ephys_utilities" />
+          </list>
+        </option>
+      </PathMappingSettings>
+      <option name="RUN_TOOL" value="true" />
+      <option name="SCRIPT_NAME" value="$PROJECT_DIR$/unit_spikes_analysis.py" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <option name="EMULATE_TERMINAL" value="false" />
+      <option name="MODULE_MODE" value="false" />
+      <option name="REDIRECT_INPUT" value="false" />
+      <option name="INPUT_FILE" value="" />
+      <method v="2" />
+    </configuration>
+    <list>
+      <item itemvalue="Python.main" />
+      <item itemvalue="Python.unit_spikes_analysis" />
+      <item itemvalue="Python.generate_probe_tracks_visualization_colors_single" />
+      <item itemvalue="Python.generate_probe_tracks_visualization_colors_single_parallel" />
+      <item itemvalue="Python.generate_probe_tracks_visualization" />
+      <item itemvalue="Python.generate_probe_tracks_visualization_colors" />
+      <item itemvalue="Python.generate_probe_tracks_visualization_combined" />
+    </list>
+    <recent_temporary>
+      <list>
+        <item itemvalue="Python.generate_probe_tracks_visualization_colors_single_parallel" />
+        <item itemvalue="Python.generate_probe_tracks_visualization_colors_single" />
+        <item itemvalue="Python.generate_probe_tracks_visualization_colors" />
+        <item itemvalue="Python.generate_probe_tracks_visualization" />
+        <item itemvalue="Python.generate_probe_tracks_visualization_combined" />
+      </list>
+    </recent_temporary>
+  </component>
+  <component name="SharedIndexes">
+    <attachedChunks>
+      <set>
+        <option value="bundled-js-predefined-d6986cc7102b-31caf2ab9e3c-JavaScript-PY-261.24374.152" />
+        <option value="bundled-python-sdk-c59985aa861c-c2ffad84badb-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-261.24374.152" />
+      </set>
+    </attachedChunks>
+  </component>
+  <component name="SpellCheckerSettings" RuntimeDictionaries="0" Folders="0" CustomDictionaries="0" DefaultDictionary="application-level" UseSingleDictionary="true" transferred="true" />
+  <component name="TaskManager">
+    <task active="true" id="Default" summary="Default task">
+      <changelist id="f9a370fb-0a42-4843-b895-dda120a31df2" name="Changes" comment="" />
+      <created>1729716777877</created>
+      <option name="number" value="Default" />
+      <option name="presentableId" value="Default" />
+      <updated>1729716777877</updated>
+      <workItem from="1729716779175" duration="44000" />
+      <workItem from="1729718606379" duration="39000" />
+      <workItem from="1729718672929" duration="24000" />
+      <workItem from="1729718734226" duration="26646000" />
+      <workItem from="1734021713304" duration="651000" />
+      <workItem from="1734087568219" duration="606000" />
+      <workItem from="1734353828592" duration="1247000" />
+      <workItem from="1736512237617" duration="106781000" />
+      <workItem from="1742314381169" duration="8447000" />
+      <workItem from="1744569278259" duration="11428000" />
+      <workItem from="1744627897990" duration="4258000" />
+      <workItem from="1744640773484" duration="9507000" />
+      <workItem from="1745590259924" duration="6689000" />
+      <workItem from="1746024422476" duration="2218000" />
+      <workItem from="1747380927766" duration="49054000" />
+      <workItem from="1747642226964" duration="21006000" />
+      <workItem from="1747685703379" duration="8423000" />
+      <workItem from="1747727950427" duration="16674000" />
+      <workItem from="1747750000831" duration="6379000" />
+      <workItem from="1747775490089" duration="64930000" />
+      <workItem from="1747949159606" duration="4796000" />
+      <workItem from="1748331419249" duration="7892000" />
+      <workItem from="1748347683773" duration="6821000" />
+      <workItem from="1749127460041" duration="637000" />
+      <workItem from="1757335231835" duration="87160000" />
+      <workItem from="1758018380149" duration="12854000" />
+      <workItem from="1758136669947" duration="3339000" />
+      <workItem from="1758186214267" duration="151000" />
+      <workItem from="1758444656884" duration="9316000" />
+      <workItem from="1758545054487" duration="9645000" />
+      <workItem from="1758572709359" duration="76000" />
+      <workItem from="1758572865070" duration="2222000" />
+      <workItem from="1758814906678" duration="76000" />
+      <workItem from="1759176901817" duration="3853000" />
+      <workItem from="1759220684206" duration="3497000" />
+      <workItem from="1759395383118" duration="741000" />
+      <workItem from="1759755312333" duration="19921000" />
+      <workItem from="1759853362033" duration="25715000" />
+      <workItem from="1760012531579" duration="134000" />
+      <workItem from="1760018825520" duration="167000" />
+      <workItem from="1760107507033" duration="10000" />
+      <workItem from="1760211248585" duration="30624000" />
+      <workItem from="1761654786958" duration="2434000" />
+      <workItem from="1761679109385" duration="11523000" />
+      <workItem from="1761900615316" duration="46326000" />
+      <workItem from="1762330305571" duration="11106000" />
+      <workItem from="1762768136074" duration="5758000" />
+      <workItem from="1763029685078" duration="5730000" />
+      <workItem from="1763127381368" duration="5290000" />
+      <workItem from="1763393441580" duration="15288000" />
+      <workItem from="1763497952879" duration="2968000" />
+      <workItem from="1763631156723" duration="96000" />
+      <workItem from="1764158628242" duration="81000" />
+      <workItem from="1764343757901" duration="260000" />
+      <workItem from="1768490500427" duration="563000" />
+      <workItem from="1768814703619" duration="50000" />
+      <workItem from="1773934563820" duration="21486000" />
+      <workItem from="1774354684752" duration="23924000" />
+      <workItem from="1774422486117" duration="35479000" />
+      <workItem from="1774854860470" duration="33958000" />
+      <workItem from="1774910221648" duration="11117000" />
+      <workItem from="1774964367130" duration="1749000" />
+      <workItem from="1774974951486" duration="55771000" />
+      <workItem from="1776931255998" duration="5251000" />
+      <workItem from="1776944240185" duration="17567000" />
+      <workItem from="1777198757348" duration="1427000" />
+      <workItem from="1777274837640" duration="2469000" />
+      <workItem from="1778231601382" duration="1396000" />
+      <workItem from="1778440004508" duration="33896000" />
+      <workItem from="1778615876884" duration="7274000" />
+      <workItem from="1778658761966" duration="11000000" />
+      <workItem from="1779180439584" duration="47246000" />
+      <workItem from="1779365640467" duration="16468000" />
+      <workItem from="1779611541581" duration="6378000" />
+      <workItem from="1780329178276" duration="14134000" />
+      <workItem from="1780474439891" duration="1188000" />
+      <workItem from="1781446843312" duration="10579000" />
+      <workItem from="1781469531625" duration="3618000" />
+      <workItem from="1781473607205" duration="405000" />
+      <workItem from="1781474031523" duration="734000" />
+      <workItem from="1781475481218" duration="139000" />
+      <workItem from="1781475973941" duration="731000" />
+      <workItem from="1781504573659" duration="523000" />
+      <workItem from="1781786263799" duration="32116000" />
+      <workItem from="1781874773475" duration="11789000" />
+      <workItem from="1782206012065" duration="4000" />
+      <workItem from="1782244190326" duration="44649000" />
+      <workItem from="1782385989472" duration="7972000" />
+      <workItem from="1782647524044" duration="70298000" />
+      <workItem from="1782889112979" duration="74902000" />
+      <workItem from="1784200441501" duration="59563000" />
+      <workItem from="1784535090186" duration="79370000" />
+      <workItem from="1784748417569" duration="21524000" />
+      <workItem from="1785311398996" duration="27840000" />
+      <workItem from="1785833531442" duration="760000" />
+      <workItem from="1785835049290" duration="9850000" />
+      <workItem from="1786018751565" duration="633000" />
+      <workItem from="1786367007233" duration="6716000" />
+      <workItem from="1786447230796" duration="2052000" />
+      <workItem from="1786449909567" duration="38000" />
+      <workItem from="1786471066019" duration="44007000" />
+      <workItem from="1787060264301" duration="32460000" />
+      <workItem from="1787301627521" duration="106904000" />
+      <workItem from="1787775646688" duration="91682000" />
+    </task>
+    <servers />
+  </component>
+  <component name="TypeScriptGeneratedFilesManager">
+    <option name="version" value="3" />
+  </component>
+  <component name="Vcs.Log.Tabs.Properties">
+    <option name="TAB_STATES">
+      <map>
+        <entry key="MAIN">
+          <value>
+            <State>
+              <option name="FILTERS">
+                <map>
+                  <entry key="branch">
+                    <value>
+                      <list>
+                        <option value="main" />
+                      </list>
+                    </value>
+                  </entry>
+                </map>
+              </option>
+            </State>
+          </value>
+        </entry>
+      </map>
+    </option>
+  </component>
+  <component name="XDebuggerManager">
+    <breakpoint-manager>
+      <breakpoints>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/main.py</url>
+          <line>8</line>
+          <option name="timeStamp" value="1" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/raster_utils.py</url>
+          <line>37</line>
+          <option name="timeStamp" value="89" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/raster_utils.py</url>
+          <line>130</line>
+          <option name="timeStamp" value="91" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>71</line>
+          <option name="timeStamp" value="92" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>45</line>
+          <option name="timeStamp" value="95" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/raster_utils.py</url>
+          <line>112</line>
+          <option name="timeStamp" value="99" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>184</line>
+          <option name="timeStamp" value="101" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>34</line>
+          <option name="timeStamp" value="102" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>48</line>
+          <option name="timeStamp" value="103" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/raster_utils.py</url>
+          <line>118</line>
+          <option name="timeStamp" value="104" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/raster_utils.py</url>
+          <line>185</line>
+          <option name="timeStamp" value="107" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file:////sv-nas1.rcp.epfl.ch/petersen-lab/analysis/Axel_Bisi/unit_spikes_analysis/cch_utils.py</url>
+          <line>118</line>
+          <option name="timeStamp" value="125" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/run_roc_analysis.py</url>
+          <line>186</line>
+          <option name="timeStamp" value="182" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/unit_desc_utils.py</url>
+          <line>366</line>
+          <option name="timeStamp" value="184" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/unit_desc_utils.py</url>
+          <line>355</line>
+          <option name="timeStamp" value="185" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/run_roc_analysis.py</url>
+          <line>932</line>
+          <option name="timeStamp" value="197" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/run_roc_analysis.py</url>
+          <line>940</line>
+          <option name="timeStamp" value="204" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>mock:///Python Console.py</url>
+          <option name="timeStamp" value="210" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/run_roc_analysis.py</url>
+          <line>1246</line>
+          <option name="timeStamp" value="213" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/roc_analysis_utils.py</url>
+          <line>284</line>
+          <option name="timeStamp" value="216" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/analysis/run_roc_analysis.py</url>
+          <line>1232</line>
+          <option name="timeStamp" value="223" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test.py</url>
+          <line>72</line>
+          <option name="timeStamp" value="259" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/single_neuron_shift_test/single_neuron_shift_test.py</url>
+          <line>780</line>
+          <option name="timeStamp" value="265" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>603</line>
+          <option name="timeStamp" value="272" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>355</line>
+          <option name="timeStamp" value="279" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/anatomy_correlation/run_function_vs_anatomy.py</url>
+          <line>799</line>
+          <option name="timeStamp" value="287" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/anatomy_correlation/run_function_vs_anatomy.py</url>
+          <line>805</line>
+          <option name="timeStamp" value="288" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>662</line>
+          <option name="timeStamp" value="289" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>371</line>
+          <option name="timeStamp" value="290" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>563</line>
+          <option name="timeStamp" value="291" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>580</line>
+          <option name="timeStamp" value="292" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>641</line>
+          <option name="timeStamp" value="293" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/cluster_explorer.py</url>
+          <line>634</line>
+          <option name="timeStamp" value="294" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth_delete.py</url>
+          <line>2712</line>
+          <option name="timeStamp" value="298" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2690</line>
+          <option name="timeStamp" value="308" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2698</line>
+          <option name="timeStamp" value="309" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2681</line>
+          <option name="timeStamp" value="311" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2612</line>
+          <option name="timeStamp" value="313" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2603</line>
+          <option name="timeStamp" value="314" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis.py</url>
+          <line>291</line>
+          <option name="timeStamp" value="321" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis.py</url>
+          <line>580</line>
+          <option name="timeStamp" value="322" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>470</line>
+          <option name="timeStamp" value="325" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>463</line>
+          <option name="timeStamp" value="327" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>375</line>
+          <option name="timeStamp" value="331" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>394</line>
+          <option name="timeStamp" value="343" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>402</line>
+          <option name="timeStamp" value="344" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>399</line>
+          <option name="timeStamp" value="345" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/dyad_analysis/dyad_analysis_new.py</url>
+          <line>417</line>
+          <option name="timeStamp" value="346" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>2628</line>
+          <option name="timeStamp" value="349" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>471</line>
+          <option name="timeStamp" value="356" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_clustering_psth.py</url>
+          <line>1147</line>
+          <option name="timeStamp" value="357" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/waveform_utils.py</url>
+          <line>1499</line>
+          <option name="timeStamp" value="363" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/waveform_utils.py</url>
+          <line>1508</line>
+          <option name="timeStamp" value="364" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/waveform_utils.py</url>
+          <line>1502</line>
+          <option name="timeStamp" value="365" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py</url>
+          <line>504</line>
+          <option name="timeStamp" value="369" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py</url>
+          <line>650</line>
+          <option name="timeStamp" value="370" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py</url>
+          <line>188</line>
+          <option name="timeStamp" value="371" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py</url>
+          <line>558</line>
+          <option name="timeStamp" value="372" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single.py</url>
+          <line>559</line>
+          <option name="timeStamp" value="373" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>350</line>
+          <option name="timeStamp" value="376" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>284</line>
+          <option name="timeStamp" value="379" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>282</line>
+          <option name="timeStamp" value="380" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single_parallel.py</url>
+          <line>371</line>
+          <option name="timeStamp" value="381" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils/generate_probe_tracks_visualization_colors_single_parallel.py</url>
+          <line>369</line>
+          <option name="timeStamp" value="382" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>264</line>
+          <option name="timeStamp" value="386" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>97</line>
+          <option name="timeStamp" value="388" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_utils.py</url>
+          <line>1286</line>
+          <option name="timeStamp" value="389" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_utils.py</url>
+          <line>648</line>
+          <option name="timeStamp" value="395" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/build_feature_matrix.py</url>
+          <line>315</line>
+          <option name="timeStamp" value="397" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_utils.py</url>
+          <line>1586</line>
+          <option name="timeStamp" value="403" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/rastermap_psth/rastermap_utils.py</url>
+          <line>3420</line>
+          <option name="timeStamp" value="404" />
+        </line-breakpoint>
+        <line-breakpoint enabled="true" suspend="THREAD" type="python-line">
+          <url>file://$PROJECT_DIR$/unit_spikes_analysis.py</url>
+          <line>259</line>
+          <option name="timeStamp" value="407" />
+        </line-breakpoint>
+      </breakpoints>
+      <default-breakpoints>
+        <breakpoint type="python-exception">
+          <properties notifyOnTerminate="true" exception="BaseException">
+            <option name="notifyOnTerminate" value="true" />
+          </properties>
+        </breakpoint>
+      </default-breakpoints>
+    </breakpoint-manager>
+    <watches-manager>
+      <configuration name="PythonConfigurationType">
+        <watch expression="X_trainval" />
+      </configuration>
+    </watches-manager>
+  </component>
+  <component name="com.intellij.coverage.CoverageDataManagerImpl">
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$fraction_vs_anatomy.coverage" NAME="fraction_vs_anatomy Coverage Results" MODIFIED="1782742286994" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/anatomy_correlation" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$unit_spikes_analysis.coverage" NAME="unit_spikes_analysis Coverage Results" MODIFIED="1788351207032" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$single_unit_atlas.coverage" NAME="single_unit_atlas Coverage Results" MODIFIED="1782822720572" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/roc_analysis" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$rastermap_psth.coverage" NAME="rastermap_psth Coverage Results" MODIFIED="1779210826341" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_analysis$unit_analysis.coverage" NAME="unit_analysis Coverage Results" MODIFIED="1729874225172" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$cluster_explorer__1_.coverage" NAME="cluster_explorer (1) Coverage Results" MODIFIED="1782895793491" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/rastermap_psth" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$generate_probe_tracks_visualization_colors_single_parallel.coverage" NAME="generate_probe_tracks_visualization_colors_single_parallel Coverage Results" MODIFIED="1788336206272" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$rastermap_clustering_psth.coverage" NAME="rastermap_clustering_psth Coverage Results" MODIFIED="1780329273939" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$generate_probe_tracks_visualization_colors.coverage" NAME="generate_probe_tracks_visualization_colors Coverage Results" MODIFIED="1787074169972" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$rastermap_clustering_psth_jaw.coverage" NAME="rastermap_clustering_psth_jaw Coverage Results" MODIFIED="1781504986733" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$generate_probe_tracks_visualization.coverage" NAME="generate_probe_tracks_visualization Coverage Results" MODIFIED="1787069534129" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$generate_probe_tracks_visualization_colors_single.coverage" NAME="generate_probe_tracks_visualization_colors_single Coverage Results" MODIFIED="1787579614103" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$run_function_vs_anatomy.coverage" NAME="run_function_vs_anatomy Coverage Results" MODIFIED="1782801953371" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/anatomy_correlation" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$run_roc_analysis.coverage" NAME="run_roc_analysis Coverage Results" MODIFIED="1775319494186" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/analysis" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$generate_probe_tracks_visualization_combined.coverage" NAME="generate_probe_tracks_visualization_combined Coverage Results" MODIFIED="1787068504321" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/../Github/ephys_utilities/ephys_utilities/allen_utils" />
+    <SUITE FILE_PATH="coverage/unit_analysis$main.coverage" NAME="main Coverage Results" MODIFIED="1729772727869" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="true" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$main.coverage" NAME="main Coverage Results" MODIFIED="1781473987266" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$passive_psth_utils_parallel.coverage" NAME="passive_psth_utils_parallel Coverage Results" MODIFIED="1775077591279" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$noise_correlations__4_.coverage" NAME="noise_correlations (4) Coverage Results" MODIFIED="1774022717649" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/noise_correlations" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$dyad_analysis_new.coverage" NAME="dyad_analysis_new Coverage Results" MODIFIED="1784756259261" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/dyad_analysis" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$glm_utils.coverage" NAME="glm_utils Coverage Results" MODIFIED="1748348461609" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$cluster_explorer.coverage" NAME="cluster_explorer Coverage Results" MODIFIED="1782654259475" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/rastermap" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$area_latency_rastermap.coverage" NAME="area_latency_rastermap Coverage Results" MODIFIED="1782815795545" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/rastermap_psth" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$train_classifier.coverage" NAME="train_classifier Coverage Results" MODIFIED="1779370406111" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/noise_classification" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$unit_spikes_analysis__1_.coverage" NAME="unit_spikes_analysis (1) Coverage Results" MODIFIED="1785843949661" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="" />
+    <SUITE FILE_PATH="coverage/unit_spikes_analysis$fraction_vs_anatomy_new.coverage" NAME="fraction_vs_anatomy_new Coverage Results" MODIFIED="1782745461544" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$/anatomy_correlation" />
+  </component>
+  <component name="github-copilot-workspace">
+    <instructionFileLocations>
+      <option value=".github/instructions" />
+    </instructionFileLocations>
+    <promptFileLocations>
+      <option value=".github/prompts" />
+    </promptFileLocations>
+  </component>
+</project>

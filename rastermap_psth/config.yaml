@@ -24,13 +24,14 @@ session_id_col:  "session_id"
 context_col:     "context"
 trial_type_col:  "trial_type"
 reward_group_col: "reward_group"
-area_col:        "area_acronym_custom"
+area_col:        "area_custom_acronym"
 
 
 # ── experiment / condition selection ─────────────────────────────────────────
-period:    "active"          # "passive" | "active" | "both"
+period:    "passive_active"          # "passive" | "active" | "both"
 modality:  "whisker_auditory"   # "whisker" | "auditory" | "whisker_auditory"
 reward_filter: "combined"  # "R+" | "R-" | "combined"
+unit_quality_label: ["good"]  # "good" | "both" for good+mua
 
 
 # ── PSTH time windows ─────────────────────────────────────────────────────────
@@ -40,6 +41,8 @@ t_pre_active:   0.2    # pre-stimulus window for active conditions (s)
 t_post_active:  0.5    # post-stimulus window for active conditions (s)
 t_pre_jaw:      0.35   # pre-jaw-onset window (s)
 t_post_jaw:     0.35   # post-jaw-onset window (s)
+t_pre_lick:      0.5   # pre-jaw-onset window (s)
+t_post_lick:     0.2   # post-jaw-onset window (s)
 
 
 # ── binning / smoothing ───────────────────────────────────────────────────────
@@ -50,7 +53,7 @@ sigma_ms:  5
 
 # ── trial type labels ─────────────────────────────────────────────────────────
 whisker_trial_label: "whisker_trial"
-artifact_win_s: [-0.005, 0.005]
+artifact_win_s: [-0.010, 0.005]
 
 
 # ── lick conditions ───────────────────────────────────────────────────────────
@@ -59,7 +62,7 @@ lick_quiet_window_s: 0.2   # quiet baseline window before nearest trial start_ti
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
-normalize:        "zscore"   # "zscore" | "baseline"
+normalize:        "baseline"   # "zscore" | "baseline"
 zscore_full:      true
 baseline_removal: true      # per-trial pre-window mean subtraction
 square_fr:        false
@@ -85,10 +88,10 @@ vmax_pct:        75
 # FEATURE MATRIX SCRIPT (build_feature_matrix.py)
 # ══════════════════════════════════════════════════════════════════════════════
 
-recompute_feature_matrix: true
+recompute_feature_matrix: false
 global_fr_hz:              0.01   # session-level FR pre-filter (Hz)
-fr_threshold_hz:           0.2    # per-condition FR threshold (Hz)
-n_min_trial_per_condition: 5      # minimum odd-trial count per mouse×condition
+fr_threshold_hz:           0.1    # per-condition FR threshold (Hz)
+n_min_trial_per_condition: 3      # minimum odd-trial count per mouse×condition
 min_odd_even_r:            0.2    # minimum Pearson r between odd/even PSTH vectors (reliability filter)
 waveform_type:             both    # compute on rsu only
 
@@ -102,7 +105,7 @@ cross_validate:       true   # fit on odd trials, evaluate on even
 cv_zscore_independent: true  # z-score odd and even splits independently
 
 # rastermap
-n_rastermap_clusters: 101
+n_rastermap_clusters: 100
 locality:             0.75
 time_lag_window:      20
 grid_upsample:        0

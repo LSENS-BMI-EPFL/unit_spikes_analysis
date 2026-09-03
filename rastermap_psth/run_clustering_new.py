@@ -53,7 +53,7 @@ from joblib import Parallel, delayed
 from scipy.stats import fisher_exact, kruskal, mannwhitneyu
 import matplotlib.patches as mpatches
 
-import plotting_utils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
 from rastermap_psth.rastermap_utils import (
     load_cfg, N_WORKERS,
     get_conditions, get_cond_infos,

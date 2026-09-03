@@ -16,7 +16,7 @@ Area inclusion filter
 ─────────────────────
     An area is included only if, in BOTH reward groups, it has:
       • ≥ 3 mice contributing neurons
-      • ≥ 5 neurons per mouse (bc_label in {"good","mua"}) from that area
+      • ≥ 5 neurons per mouse (quality_label in {"good","mua"}) from that area
     The area set is the intersection across reward groups, so both figures
     share identical rows.
 
@@ -35,6 +35,25 @@ Output variants (per reward group)
     variant 4 : whisker + auditory active, jaw-aligned only
 
 Each figure: two-panel matrix (input order | rastermap order) + area profile plot.
+
+PERFORMANCE NOTE (see _compute_full_neuron_matrix / _build_area_matrix)
+─────────────────────────────────────────────────────────────────────
+    The per-neuron z-scored PSTH computation (_neuron_vector_strided, run via
+    joblib over every unit) is the single most expensive step in this
+    pipeline. The original version called it fresh inside _build_area_matrix
+    for EVERY plot variant that needed it — and every variant that touched a
+    jaw-aligned condition additionally forced the *full* condition set to be
+    recomputed just so the sibling baseline lookup would succeed. With ~10
+    variants × 2 reward groups × 2 trial splits, that's on the order of 40
+    redundant full/partial recomputations of the same underlying per-neuron
+    vectors.
+
+    This version computes the per-neuron z-scored matrix ONCE per
+    (reward group × trial split) — i.e. 4 times total — over the complete
+    condition set (conds_all), and every variant thereafter just slices the
+    columns it needs out of that cached matrix. This also removes the old
+    has_jaw special-casing entirely, since every variant now effectively runs
+    through the "full condition set" path.
 """
 from __future__ import annotations
 
@@ -53,12 +72,17 @@ import cmasher as cmr
 from joblib import Parallel, delayed
 from rastermap import Rastermap
 
+hostname = socket.gethostname()
+if 'haas' in hostname:
+    N_WORKERS = 110
+else:
+    N_WORKERS = 20
 
 #TOOD: different cmaps
 #TODO: low and high performance states rastermap
 
 # ── reuse helpers from parent pipeline ────────────────────────────────────────
-from rastermap_psth.rastermap_clustering_psth_delete import (
+from rastermap_psth.rastermap_clustering_psth import (
     DEFAULT_CFG,
     get_conditions,
     get_cond_infos,
@@ -83,57 +107,101 @@ def diverging_cmap(cmap_left, cmap_right, name='diverging', N=256):
     colors = np.vstack([left, right])
     return mc.LinearSegmentedColormap.from_list(name, colors)
 
+def diverging_cmap_whitecenter(cmap_left, cmap_right, name='diverging', N=256):
+    half = N // 2
+    white = np.ones(3)
+
+    left_src  = cmap_left(np.linspace(1, 0, half))[:, :3]   # edge -> center
+    right_src = cmap_right(np.linspace(0, 1, half))[:, :3]  # center -> edge
+
+    w = np.linspace(1, 0, half)  # 1 at edge, 0 at center
+
+    left_colors  = w[:, None]  * left_src  + (1 - w[:, None])  * white
+    right_colors = w[::-1, None] * right_src + (1 - w[::-1, None]) * white
+
+    colors = np.vstack([left_colors, right_colors])
+    return mc.LinearSegmentedColormap.from_list(name, colors, N=N)
+
+# NOTE: removed the redundant non-whitecenter CUSTOM_HOTCOLD_CMAP(_DARK)
+# assignments that were immediately overwritten below — they built two
+# unused 256-color colormaps for nothing on every import.
 CUSTOM_HOTCOLD_CMAP_DARK = diverging_cmap(cmr.get_sub_cmap('cmr.arctic', 0, 0.85),
                              cmr.get_sub_cmap('cmr.ember', 0, 0.85))
 CUSTOM_HOTCOLD_CMAP = diverging_cmap(cmr.get_sub_cmap('cmr.arctic_r', 0.0, 0.55),
-                             cmr.get_sub_cmap('cmr.sunburst_r', 0.0, 0.55))
-
+                             cmr.get_sub_cmap('cmr.ember_r', 0.0, 0.55))
 
 # ── config ─────────────────────────────────────────────────────────────────────
 AREA_CFG: dict[str, Any] = {
     **DEFAULT_CFG,
     "min_mice_per_area"   : 3,    # minimum mice contributing to an area (per reward group)
-    "min_neurons_per_mouse": 10,   # minimum neurons per mouse per area (good + mua)
-    "bc_labels_area"      : {"good", "mua"},  # labels counted for area inclusion
-    "n_jobs"              : 25,
+    "min_neurons_per_mouse": 5,   # minimum neurons per mouse per area (good + mua)
+    "quality_labels_area"      : {"good", "mua"},  # labels counted for area inclusion
+    "n_jobs"              : N_WORKERS,
     "cmap"                : "hotcold", #coolwarm, Greys,
 }
 
-def _build_area_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
-                       area_arr, valid_areas, cfg, conds, cond_align_cols,
-                       conds_full=None, cond_align_cols_full=None,
-                       event_map_full=None):
-    """Compute per-neuron z-scored PSTHs, average within each area, then
-    re-z-score each area row using its own baseline window.
 
-    Jaw-aligned normalization fix
-    ─────────────────────────────
-    _neuron_vector_strided borrows the baseline mean/std for jaw-aligned
-    conditions from the start_time-aligned sibling of the same
-    (trial_type, context).  The sibling is looked up by index in the conds
-    list passed to that function.  When a variant contains ONLY jaw-aligned
-    conditions, the sibling is absent from conds and the lookup returns None,
-    so the jaw data is never z-scored.
+def _compute_full_neuron_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
+                                 cfg, conds_full, cond_align_cols_full, parallel=None):
+    """Compute per-neuron z-scored PSTH vectors over the COMPLETE condition set,
+    ONCE. Every plot variant then reuses this by column-slicing instead of
+    recomputing _neuron_vector_strided from scratch — this is the single
+    biggest cost in the pipeline and was previously repeated once per variant.
 
-    Fix: when conds_full / cond_align_cols_full are provided (the complete
-    conds_all list), _neuron_vector_strided is called with the full condition
-    set so sibling lookup always succeeds.  Only the columns corresponding to
-    the requested subset (conds / cond_align_cols) are then sliced out of the
-    resulting full feature vector before averaging.
+    Computing over the full condition set (rather than per-variant subsets)
+    also means jaw-aligned conditions always find their start_time sibling
+    for baseline lookup, so there's no more has_jaw special-casing needed
+    anywhere downstream.
 
-    conds_full / cond_align_cols_full / event_map_full:
-        Set to the complete condition list + event_map when any jaw-aligned
-        condition is present in conds; leave as None otherwise (falls back
-        to the variant-only path, which is cheaper).
+    Parameters
+    ----------
+    parallel : optional pre-constructed joblib.Parallel context. Pass one in
+        (e.g. via `with Parallel(...) as parallel:`) to reuse the same worker
+        pool across the odd- and even-trial calls instead of spinning up a
+        fresh pool each time.
+
+    Returns
+    -------
+    X_full       : (n_neurons, n_bins_full) per-neuron z-scored vectors
+    key_to_slice : dict{(trial_type, context, align_col) -> slice} mapping
+                   each condition to its column range in X_full
+    """
+    cond_infos_full = get_cond_infos(cfg, conds_full, cond_align_cols_full)
+
+    run = parallel if parallel is not None else Parallel(n_jobs=cfg["n_jobs"], prefer="threads")
+    rows = run(
+        delayed(_neuron_vector_strided)(
+            st_map[uid], mouse_map[uid], session_map[uid],
+            event_map, cond_infos_full, cfg, conds_full,
+            cond_align_cols=cond_align_cols_full,
+        )
+        for uid in unit_ids
+    )
+    X_full = np.vstack(rows)
+
+    full_n_bins  = [info[3] for info in cond_infos_full]
+    full_offsets = np.concatenate([[0], np.cumsum(full_n_bins)])
+    key_to_slice = {
+        (conds_full[ci][0], conds_full[ci][1], cond_align_cols_full[ci]):
+            slice(int(full_offsets[ci]), int(full_offsets[ci + 1]))
+        for ci in range(len(conds_full))
+    }
+    return X_full, key_to_slice
+
+
+def _build_area_matrix(X_full, key_to_slice, area_arr, valid_areas, cfg,
+                       conds, cond_align_cols):
+    """Slice the requested conditions out of the precomputed full per-neuron
+    matrix (see _compute_full_neuron_matrix), average within each area, then
+    re-z-score at the area level.
 
     Pipeline per area row:
       1. Average neuron-level z-scored PSTHs -> area mean vector
-      2. Subtract per-area baseline mean and divide by per-area baseline std,
-         where the baseline is the pre-stimulus window pooled across all
-         requested conditions (each condition's own base_mask, t_ctr < 0).
-         This sets the baseline to exactly zero and puts all areas on a
-         comparable amplitude scale -- critical for Rastermap to sort by
-         latency rather than by response strength.
+      2. Subtract per-area baseline mean, where the baseline is the
+         pre-stimulus window pooled across all requested conditions (each
+         condition's own base_mask, t_ctr < 0). This sets the baseline to
+         exactly zero, which is critical for Rastermap to sort by latency
+         rather than by response strength.
 
     Returns
     -------
@@ -141,53 +209,10 @@ def _build_area_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
     t_ctrs      : list of per-condition time axes
     n_bins_list : list of per-condition bin counts
     """
-    use_full = (conds_full is not None)
+    col_slices = [key_to_slice[(tt, ctx, acol)]
+                  for (tt, ctx), acol in zip(conds, cond_align_cols)]
+    X = np.hstack([X_full[:, sl] for sl in col_slices])
 
-    if use_full:
-        # Compute per-neuron vectors over the full condition set so that
-        # jaw-aligned conditions can find their start_time siblings.
-        cond_infos_full = get_cond_infos(cfg, conds_full, cond_align_cols_full)
-        em_for_compute  = event_map_full
-
-        # Build column slices: which bins in the full vector belong to each
-        # requested condition?
-        full_n_bins  = [info[3] for info in cond_infos_full]
-        full_offsets = np.concatenate([[0], np.cumsum(full_n_bins)])
-        full_key_to_slice = {
-            (conds_full[ci][0], conds_full[ci][1], cond_align_cols_full[ci]):
-                slice(int(full_offsets[ci]), int(full_offsets[ci + 1]))
-            for ci in range(len(conds_full))
-        }
-        col_slices = [
-            full_key_to_slice[(tt, ctx, acol)]
-            for (tt, ctx), acol in zip(conds, cond_align_cols)
-        ]
-    else:
-        cond_infos_full = get_cond_infos(cfg, conds, cond_align_cols)
-        em_for_compute  = event_map
-        col_slices      = None   # use full vector as-is
-
-    # Per-neuron z-scored vectors over the effective condition set
-    rows = Parallel(n_jobs=cfg["n_jobs"], prefer="threads")(
-        delayed(_neuron_vector_strided)(
-            st_map[uid], mouse_map[uid], session_map[uid],
-            em_for_compute,
-            cond_infos_full, cfg,
-            conds_full if use_full else conds,
-            cond_align_cols=cond_align_cols_full if use_full else cond_align_cols,
-        )
-        for uid in unit_ids
-    )
-    X_full = np.vstack(rows)   # (n_neurons, n_bins_full_or_variant)
-
-    # Slice to the requested columns when using the full condition set
-    if use_full and col_slices is not None:
-        X = np.hstack([X_full[:, sl] for sl in col_slices])
-    else:
-        X = X_full
-
-    # cond_infos for the requested (display) conditions -- t_ctrs, n_bins_list,
-    # and baseline mask.
     cond_infos  = get_cond_infos(cfg, conds, cond_align_cols)
     t_ctrs      = [info[2] for info in cond_infos]
     n_bins_list = [info[3] for info in cond_infos]
@@ -199,24 +224,22 @@ def _build_area_matrix(unit_ids, st_map, mouse_map, session_map, event_map,
     # Average within each area, then re-z-score at the area level
     mat = np.full((len(valid_areas), X.shape[1]), np.nan)
     for i, area in enumerate(valid_areas):
-        mask   = area_arr == area
+        mask = area_arr == area
         if mask.sum() == 0:
             continue
-        sub    = X[mask]
+        sub = X[mask]
         finite = np.isfinite(sub).all(axis=1)
         if finite.sum() == 0:
             continue
         row = sub[finite].mean(axis=0)   # area-mean z-scored PSTH
 
-        # Per-area baseline z-score: baseline sits at exactly zero,
-        # amplitude is in units of baseline std of the area mean.
+        # Per-area baseline subtraction: baseline sits at exactly zero.
         bl_vals = row[global_base_mask]
         bl_mean = bl_vals.mean()
-        #bl_std  = bl_vals.std()
-        mat[i]  = (row - bl_mean) #/ (bl_std + 1e-9) # baseline subtract onl<
-        #mat[i]  = row
+        mat[i]  = row - bl_mean
 
     return mat, t_ctrs, n_bins_list
+
 
 def _fit_rastermap_area(mat, n_areas):
     """Fit Rastermap on the (n_areas, n_bins) area matrix.
@@ -282,6 +305,15 @@ def _draw_area_profiles(axes_row, mat, isort, n_bins_list, conds, cond_align_col
     """One subplot per area (rastermap order), mean PSTH with all conditions overlaid."""
     offsets = np.concatenate([[0], np.cumsum(n_bins_list)]).astype(int)
 
+    # Time axes only depend on (condition, cfg), not on area — compute once
+    # per condition up front instead of re-deriving it inside the area loop
+    # (previously recomputed n_areas times per condition).
+    t_ctrs_by_cond = []
+    for ci in range(len(conds)):
+        t_pre, t_post = get_t_window(cfg, conds[ci][1], cond_align_cols[ci])
+        n_out = n_bins_list[ci]
+        t_ctrs_by_cond.append(np.linspace(-t_pre, t_post, n_out, endpoint=False))
+
     for plot_i, area_i in enumerate(isort):
         ax    = axes_row[plot_i]
         vec   = mat[area_i]
@@ -289,12 +321,7 @@ def _draw_area_profiles(axes_row, mat, isort, n_bins_list, conds, cond_align_col
 
         for ci, (label, color) in enumerate(zip(cond_labels, cond_colors)):
             sl = slice(offsets[ci], offsets[ci + 1])
-            # Build matching time axis from cond_infos
-            t_pre, t_post = get_t_window(cfg, conds[ci][1], cond_align_cols[ci])
-            dt = cfg["stride_ms"] / 1000
-            n_out = n_bins_list[ci]
-            t_ctr = np.linspace(-t_pre, t_post, n_out, endpoint=False)
-            ax.plot(t_ctr, vec[sl], color=color, lw=1.2, label=label)
+            ax.plot(t_ctrs_by_cond[ci], vec[sl], color=color, lw=1.2, label=label)
 
         ax.axvline(0, color="k", lw=0.5, ls="--")
         ax.axhline(0, color="k", lw=0.5, ls="--")
@@ -334,6 +361,7 @@ def _make_figure(mat_input, mat_ordered, isort, n_bins_list, conds, cond_align_c
         fig_mat.suptitle(suptitle, fontsize=10)
     fig_mat.tight_layout()
     _save(fig_mat, out_path.with_name(out_path.name + "_matrix"), dpi=300)
+    plt.close(fig_mat)  # avoid unbounded figure accumulation across variants/RGs
 
     # ── Panel C: area profiles (one subplot per area, rastermap order) ────
     ncols   = min(8, n_areas)
@@ -355,25 +383,22 @@ def _make_figure(mat_input, mat_ordered, isort, n_bins_list, conds, cond_align_c
         fig_prof.suptitle(suptitle + "  — profiles (rastermap order)", fontsize=9)
     fig_prof.tight_layout()
     _save(fig_prof, out_path.with_name(out_path.name + "_profiles"), dpi=300)
+    plt.close(fig_prof)  # avoid unbounded figure accumulation across variants/RGs
 
 
 def _run_variant(variant_label, conds, cond_align_cols, cond_labels, cond_colors,
-                 unit_ids, st_map, mouse_map, session_map,
-                 event_map_odd, event_map_even,
-                 area_arr, valid_areas, cfg, out_dir, rg_label,
-                 conds_full=None, cond_align_cols_full=None,
-                 event_map_odd_full=None, event_map_even_full=None):
+                 X_full_odd, X_full_even, key_to_slice,
+                 area_arr, valid_areas, cfg, out_dir, rg_label):
     """Full pipeline for one plot variant and one reward group.
 
-    conds_full / cond_align_cols_full / event_map_odd_full / event_map_even_full:
-        When the variant contains jaw-aligned conditions, pass the complete
-        condition list and corresponding full event maps here so that
-        _build_area_matrix can forward them to _neuron_vector_strided for
-        correct sibling-based baseline estimation.  None = not needed.
+    X_full_odd / X_full_even / key_to_slice come from
+    _compute_full_neuron_matrix and are shared across every variant for this
+    reward group + trial split — no spike-time recomputation happens here,
+    only column slicing + area averaging + Rastermap fitting.
 
     Steps:
-      1. Build area matrix from odd trials -> fit Rastermap -> isort
-      2. Build area matrix from even trials -> apply isort (validation)
+      1. Slice odd-trial columns -> average into areas -> fit Rastermap -> isort
+      2. Slice even-trial columns -> average into areas -> apply isort (validation)
       3. Save two figures: odd-trial ordered | even-trial same order
     """
     n_areas = len(valid_areas)
@@ -383,11 +408,7 @@ def _run_variant(variant_label, conds, cond_align_cols, cond_labels, cond_colors
 
     print(f"  [{rg_label}] {variant_label}: building odd-trial area matrix...")
     mat_odd, t_ctrs, n_bins_list = _build_area_matrix(
-        unit_ids, st_map, mouse_map, session_map,
-        event_map_odd, area_arr, valid_areas, cfg, conds, cond_align_cols,
-        conds_full=conds_full,
-        cond_align_cols_full=cond_align_cols_full,
-        event_map_full=event_map_odd_full)
+        X_full_odd, key_to_slice, area_arr, valid_areas, cfg, conds, cond_align_cols)
 
     # Drop all-NaN area rows
     valid_rows = np.isfinite(mat_odd).any(axis=1)
@@ -409,11 +430,7 @@ def _run_variant(variant_label, conds, cond_align_cols, cond_labels, cond_colors
 
     print(f"  [{rg_label}] {variant_label}: building even-trial area matrix...")
     mat_even, _, _ = _build_area_matrix(
-        unit_ids, st_map, mouse_map, session_map,
-        event_map_even, area_arr, valid_areas_v, cfg, conds, cond_align_cols,
-        conds_full=conds_full,
-        cond_align_cols_full=cond_align_cols_full,
-        event_map_full=event_map_even_full)
+        X_full_even, key_to_slice, area_arr, valid_areas_v, cfg, conds, cond_align_cols)
 
     # ── Figure 1: odd-trial embedding ─────────────────────────────────────
     slug     = variant_label.replace(" ", "_").replace("/", "-").replace("(", "").replace(")", "")
@@ -442,11 +459,11 @@ def _run_variant(variant_label, conds, cond_align_cols, cond_labels, cond_colors
 # ── area inclusion filter ──────────────────────────────────────────────────────
 
 def compute_valid_areas(units_all, area_col, mouse_id_col, reward_group_col,
-                        bc_labels, min_mice, min_neurons_per_mouse):
+                        quality_labels, min_mice, min_neurons_per_mouse):
     """Return the intersection of areas passing the filter in every reward group.
 
     For each reward group:
-      - keep only units with bc_label in bc_labels
+      - keep only units with quality_label in quality_labels
       - for each area: count how many mice have >= min_neurons_per_mouse neurons there
       - area passes if that count >= min_mice
 
@@ -462,7 +479,7 @@ def compute_valid_areas(units_all, area_col, mouse_id_col, reward_group_col,
     for rg in rgs:
         rg_units = units_all[
             (units_all[reward_group_col] == rg) &
-            (units_all["bc_label"].isin(bc_labels))
+            (units_all["quality_label"].isin(quality_labels))
         ]
         passing = set()
         for area, grp in rg_units.groupby(area_col):
@@ -497,13 +514,19 @@ def run_area_latency_rastermap(units: pd.DataFrame,
     out_root : root output directory (new subfolder created inside)
     """
     cfg = {**AREA_CFG, **cfg_overrides}
+    cfg['square'] = False
+    cfg['fr_threshold_hz'] = 0.01
+    cfg['sigma_ms'] = 0.0
 
     # ── resolve globals from parent (conditions, labels, colors) ──────────
     conds_all, cond_labels_all, cond_colors_all, _, cond_align_cols_all = \
         get_conditions(cfg)
 
     # ── output folder ─────────────────────────────────────────────────────
-    out_folder = Path(out_root) / "area_latency_rastermap" / f"area_latency_rastermap_{cfg["cmap"]}"
+    # NOTE: fixed a pre-existing SyntaxError on Python < 3.12 — an f-string
+    # can't reuse the same quote character inside its expression part
+    # (f"...{cfg["cmap"]}" is invalid before PEP 701 / Python 3.12).
+    out_folder = Path(out_root) / "area_latency_rastermap" / f"area_latency_rastermap_{cfg['cmap']}"
     out_folder.mkdir(parents=True, exist_ok=True)
     print(f"Output → {out_folder}")
 
@@ -529,10 +552,10 @@ def run_area_latency_rastermap(units: pd.DataFrame,
     units      = units.copy()
     units["_rg_str"] = rg_raw.values
 
-    # ── bc_label filter for FR pass (good only, as in parent) ─────────────
-    units_good = units[units["bc_label"].isin(["good","mua"])].copy()
+    # ── quality_label filter for FR pass (good only, as in parent) ─────────────
+    units_good = units[units["quality_label"].isin(["good","mua"])].copy()
     all_ids    = units_good.index.tolist()
-    print(f"  {len(units)} total → {len(units_good)} bc=good units")
+    print(f"  {len(units)} total → {len(units_good)} quality_label>=good units")
 
     # ── area inclusion filter (good + mua, intersection across R+/R-) ─────
     print("Computing valid areas (intersection across reward groups)...")
@@ -545,7 +568,7 @@ def run_area_latency_rastermap(units: pd.DataFrame,
         area_col          = cfg["area_col"],
         mouse_id_col      = cfg["mouse_id_col"],
         reward_group_col  = "_rg_str",   # already mapped to "R+"/"R-" strings
-        bc_labels         = cfg["bc_labels_area"],
+        quality_labels         = cfg["quality_labels_area"],
         min_mice          = cfg["min_mice_per_area"],
         min_neurons_per_mouse = cfg["min_neurons_per_mouse"],
     )
@@ -679,6 +702,26 @@ def run_area_latency_rastermap(units: pd.DataFrame,
         rg_dir = out_folder / rg_label.replace("+", "plus").replace("-", "minus")
         rg_dir.mkdir(exist_ok=True)
 
+        # ── compute the full per-neuron z-scored matrix ONCE per split ─────
+        # This is the main optimization: previously _neuron_vector_strided
+        # was re-run (fully or partially) inside _build_area_matrix for every
+        # single variant below. Now it runs exactly twice per reward group
+        # (odd, even), and every variant just slices columns out of the
+        # result. The `with Parallel(...) as parallel:` block reuses one
+        # worker pool across both calls instead of spinning up a fresh pool
+        # each time.
+        with Parallel(n_jobs=cfg["n_jobs"], prefer="threads") as parallel:
+            print(f"  [{rg_label}] computing full odd-trial neuron matrix "
+                  f"({len(uid_rg)} units × {len(conds_all)} conditions)...")
+            X_full_odd, key_to_slice = _compute_full_neuron_matrix(
+                uid_rg, st_map, mouse_map, session_map, event_map_odd,
+                cfg, conds_all, cond_align_cols_all, parallel=parallel)
+
+            print(f"  [{rg_label}] computing full even-trial neuron matrix...")
+            X_full_even, _ = _compute_full_neuron_matrix(
+                uid_rg, st_map, mouse_map, session_map, event_map_even,
+                cfg, conds_all, cond_align_cols_all, parallel=parallel)
+
         for v in variants:
             conds_v  = v["conds"]
             acols_v  = v["cond_acols"]
@@ -688,52 +731,19 @@ def run_area_latency_rastermap(units: pd.DataFrame,
             if not conds_v:
                 continue
 
-            # Jaw-aligned normalization fix: _neuron_vector_strided looks up
-            # each jaw condition's start_time sibling by index in conds.
-            # When a variant contains jaw-aligned conditions, we pass the full
-            # condition set (conds_all) so the sibling is always found.
-            # _build_area_matrix then slices out only the requested columns
-            # after per-neuron vectors have been computed with correct norms.
-            has_jaw = "jaw_onset_time" in acols_v
-            if has_jaw:
-                conds_full_v          = conds_all
-                acols_full_v          = cond_align_cols_all
-                event_map_odd_full_v  = event_map_odd    # full maps have all keys
-                event_map_even_full_v = event_map_even
-                event_map_odd_v       = event_map_odd
-                event_map_even_v      = event_map_even
-            else:
-                conds_full_v          = None
-                acols_full_v          = None
-                event_map_odd_full_v  = None
-                event_map_even_full_v = None
-                # Filter event maps to only the align_cols this variant needs
-                needed_acols = set(acols_v)
-                event_map_odd_v  = {k: v2 for k, v2 in event_map_odd.items()
-                                    if k[4] in needed_acols}
-                event_map_even_v = {k: v2 for k, v2 in event_map_even.items()
-                                    if k[4] in needed_acols}
-
             _run_variant(
-                variant_label        = v["label"],
-                conds                = conds_v,
-                cond_align_cols      = acols_v,
-                cond_labels          = labels_v,
-                cond_colors          = colors_v,
-                unit_ids             = uid_rg,
-                st_map               = st_map,
-                mouse_map            = mouse_map,
-                session_map          = session_map,
-                event_map_odd        = event_map_odd_v,
-                event_map_even       = event_map_even_v,
-                area_arr             = area_rg,
-                valid_areas          = valid_areas,
-                cfg                  = cfg,
-                out_dir              = rg_dir,
-                rg_label             = rg_label,
-                conds_full           = conds_full_v,
-                cond_align_cols_full = acols_full_v,
-                event_map_odd_full   = event_map_odd_full_v,
-                event_map_even_full  = event_map_even_full_v,
+                variant_label   = v["label"],
+                conds           = conds_v,
+                cond_align_cols = acols_v,
+                cond_labels     = labels_v,
+                cond_colors     = colors_v,
+                X_full_odd      = X_full_odd,
+                X_full_even     = X_full_even,
+                key_to_slice    = key_to_slice,
+                area_arr        = area_rg,
+                valid_areas     = valid_areas,
+                cfg             = cfg,
+                out_dir         = rg_dir,
+                rg_label        = rg_label,
             )
     print(f"\nDone. All outputs → {out_folder}")

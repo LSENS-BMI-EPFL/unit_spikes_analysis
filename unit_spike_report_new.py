@@ -21,11 +21,12 @@ from matplotlib.gridspec import GridSpec
 import matplotlib.ticker as mticker
 
 from typing import Dict, Any, Optional, Tuple, List
+from scipy.ndimage.filters import gaussian_filter1d
 
 import NWB_reader_functions as nwb_reader
-import allen_utils as allen
-import neural_utils
-import plotting_utils as plutils
+import ephys_utilities.allen_utils.allen_utils as allen
+import ephys_utilities.neural_utils.neural_utils
+import ephys_utilities.plotting_utils.plotting_utils as plutils
 
 # DREDGE_DATA_ROOT: the Linux root find_kilosort_paths already relies on
 # (cicada_analysis/templates/baseline_analysis.py's own DATA_ROOT is a
@@ -255,8 +256,6 @@ def plot_raster(
     ax.invert_yaxis()
 
 
-    return
-
 def plot_psth(ax,
               spikes: np.ndarray,
               trials_df: pd.DataFrame,
@@ -323,7 +322,6 @@ def plot_psth(ax,
     # Integer y-axis
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, pos: f"{int(x)}"))
 
-    return
 
 def plot_spike_amplitudes(ax,
                           spike_times: np.ndarray,
@@ -455,9 +453,9 @@ def plot_performance(ax, trials_df: pd.DataFrame, block_size: int = 20, time_col
     # panel no longer has guaranteed empty space to its right — extra_metrics
     # now sits immediately next to it.
     ax.legend(frameon=False, fontsize=6, loc='best')
-    ax.set_title(f'Mouse performance')
+    ax.set_title('Mouse performance')
     ax.grid(alpha=0.3)
-    return
+
 
 # ---------------------------
 # Layout / PDF generator
@@ -734,7 +732,7 @@ def generate_neuron_pdf(neuron_id: Any,
     for op in outpaths:
         fig.savefig(os.path.join(op, f"{filename}.png"), dpi=150, bbox_inches='tight')
     plt.close(fig)
-    return
+
 
 def find_kilosort_paths(base_dir, experimenter, mouse_id, session_id, probe_id='imec0'):
     """
@@ -801,40 +799,79 @@ def find_kilosort_paths(base_dir, experimenter, mouse_id, session_id, probe_id='
 
     return result
 
+def compute_presence_ratio(unit_df, spike_times_col='spike_times', bin_size=60.0,
+                            session_col='session_id'):
+    """Compute the fraction of 60-s recording bins containing >=1 spike, per unit.
+
+    Recording boundaries (earliest -> latest spike) are computed PER SESSION
+    (grouped by session_col), not pooled across the whole unit_df - so units
+    from different sessions are scored against their own session's duration.
+
+    Returns
+    -------
+    pd.Series
+        Presence ratio for each unit, aligned with unit_df.index.
+    """
+    out = pd.Series(0.0, index=unit_df.index)
+
+    for _, session_df in unit_df.groupby(session_col):
+        all_spikes = [np.asarray(s) for s in session_df[spike_times_col]]
+        non_empty = [s for s in all_spikes if len(s) > 0]
+        if not non_empty:
+            continue
+
+        rec_start = min(np.min(s) for s in non_empty)
+        rec_end = max(np.max(s) for s in non_empty)
+        n_bins = int(np.ceil((rec_end - rec_start) / bin_size))
+        if n_bins == 0:
+            continue
+
+        for idx, s in zip(session_df.index, all_spikes):
+            if len(s) == 0:
+                continue
+            bin_indices = ((s - rec_start) // bin_size).astype(int)
+            n_present_bins = len(np.unique(bin_indices))
+            out.loc[idx] = n_present_bins / n_bins
+
+    return out
 
 
-def compute_coverage_ratio(unit_df, spike_times_col='spike_times'):
-    """Fraction of the recording duration spanned by each unit's own spike
-    train, reimplemented from baseline_analysis.py's filter_units_by_quality
-    (cicada_analysis/templates/baseline_analysis.py) — same formula, applied
+def compute_coverage_ratio(unit_df, spike_times_col='spike_times', session_col='session_id'):
+    """Fraction of the recording duration spanned by each unit's own spike train,
+    reimplemented from baseline_analysis.py's filter_units_by_quality
+    (cicada_analysis/templates/baseline_analysis.py) - same formula, applied
     here directly rather than importing that function (which expects to run
     as part of its own quality-filtering pipeline).
 
-    Recording duration is derived from the population: earliest first-spike
-    and latest last-spike across ALL units in unit_df (should be the full,
-    unfiltered per-session unit table — not already subset to e.g. bc_label
-    =='good' — since the population span is what "coverage" is relative to).
+    Recording duration is derived PER SESSION (grouped by session_col): earliest
+    first-spike and latest last-spike across ALL units within that session's
+    unit_df (should be the full, unfiltered per-session unit table - not already
+    subset to e.g. bc_label=='good' - since the population span is what
+    "coverage" is relative to).
 
-    Returns a pd.Series aligned to unit_df's index; 1.0 = spikes span the
-    full recording, 0.0 for units with <2 spikes or an unusable duration.
+    Returns a pd.Series aligned to unit_df's index; 1.0 = spikes span the full
+    recording, 0.0 for units with <2 spikes or an unusable duration.
     """
-    all_spikes = [np.asarray(s) for s in unit_df[spike_times_col]]
-    firsts = [s[0]  for s in all_spikes if len(s) > 0]
-    lasts  = [s[-1] for s in all_spikes if len(s) > 0]
-    if firsts and lasts:
-        rec_start = min(firsts)
-        rec_dur   = max(lasts) - rec_start
-    else:
-        rec_start, rec_dur = 0.0, 0.0
-    ratios = [
-        (s[-1] - s[0]) / rec_dur if (len(s) > 1 and rec_dur > 0) else 0.0
-        for s in all_spikes
-    ]
-    return pd.Series(ratios, index=unit_df.index)
+    out = pd.Series(0.0, index=unit_df.index)
+
+    for _, session_df in unit_df.groupby(session_col):
+        all_spikes = [np.asarray(s) for s in session_df[spike_times_col]]
+        firsts = [s[0] for s in all_spikes if len(s) > 0]
+        lasts = [s[-1] for s in all_spikes if len(s) > 0]
+        if firsts and lasts:
+            rec_start = min(firsts)
+            rec_dur = max(lasts) - rec_start
+        else:
+            rec_start, rec_dur = 0.0, 0.0
+
+        for idx, s in zip(session_df.index, all_spikes):
+            if len(s) > 1 and rec_dur > 0:
+                out.loc[idx] = (s[-1] - s[0]) / rec_dur
+
+    return out
 
 
 _SHIFT_TEST_CACHE: Dict[Any, Optional[pd.DataFrame]] = {}
-
 
 def _load_shift_test_results(combined_results_path, mouse_id, session_day):
     """Load single_neuron_shift_tests.py's per-session shift-test CSV, if it
@@ -845,12 +882,156 @@ def _load_shift_test_results(combined_results_path, mouse_id, session_day):
     if key not in _SHIFT_TEST_CACHE:
         csv_path = (pathlib.Path(combined_results_path) / mouse_id / session_day
                    / 'single_neuron_shift_test' / f'{mouse_id}_{session_day}_shift_test_results.csv')
-        _SHIFT_TEST_CACHE[key] = pd.read_csv(csv_path) if csv_path.exists() else None
+        data = pd.read_csv(csv_path) if csv_path.exists() else None
+
     return _SHIFT_TEST_CACHE[key]
 
 
+def export_unit_quality_metrics(nwb_file, results_path, extra_metrics=None, unit_table=None):
+    """
+    Same prototype and per-session data loading as generate_unit_spike_report
+    (get_unit_table, create_area_custom_column, compute_coverage_ratio, the
+    bc_label in {'good','mua'} filter, the unit_table/unit_id merge, and
+    computes presence ratio, coverage ratio and shift-test correlations for
+    every neuron in this session and saves them to a CSV plus a simple QC
+    scatter plot, both under combined_results_path / 'unit_quality_metrics'.
+
+    extra_metrics : unused here (kept only for prototype parity with
+        generate_unit_spike_report).
+    unit_table : optional combined (all-mice) unit_table, used the same way
+        as in generate_unit_spike_report to recover each unit's shift-test
+        'unit_id' by matching (cluster_id, electrode_group) within this
+        mouse/session. Without it, shift-test columns are simply omitted.
+
+    Returns
+    -------
+    pd.DataFrame, one row per neuron (also written to CSV):
+        mouse_id, session_id, electrode_group, cluster_id,
+        presence_ratio, coverage_ratio,
+        shift_r_<epoch>_<factor>, shift_sig_<epoch>_<factor> for every
+        epoch/factor combination found in this session's shift-test results.
+    """
+    results_path = pathlib.Path(results_path)
+
+    # Get session info (same as generate_unit_spike_report)
+    mouse_id = nwb_reader.get_mouse_id(nwb_file)
+    session_id = nwb_reader.get_session_id(nwb_file)
+    behavior_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
+    if day != 0:
+        return None
+    session_day = f"{behavior_type}_{day}"
+
+    # Load unit table from NWB (coverage_ratio computed over ALL units in
+    # this session, before the bc_label filter, since coverage is relative
+    # to the whole recording span — see compute_coverage_ratio's docstring)
+    unit_df = nwb_reader.get_unit_table(nwb_file)
+    unit_df = allen.create_area_custom_column(unit_df)
+    unit_df['coverage_ratio'] = compute_coverage_ratio(unit_df)
+    unit_df['presence_ratio'] = compute_presence_ratio(unit_df)
+
+    unit_df_subset = unit_df[unit_df['bc_label'].isin(['good', 'mua'])].copy()
+    unit_df_subset = neural_utils.convert_electrode_group_object_to_columns(unit_df_subset)
+
+    # Recover each unit's shift-test 'unit_id' the same way generate_unit_spike_report does
+    if unit_table is not None:
+        id_map = (unit_table[(unit_table['mouse_id'] == mouse_id) &
+                             (unit_table['session_id'] == session_id)]
+                 [['cluster_id', 'electrode_group', 'unit_id']]
+                 .drop_duplicates(['cluster_id', 'electrode_group']))
+        unit_df_subset = unit_df_subset.merge(id_map, on=['cluster_id', 'electrode_group'], how='left')
+
+
+    # presenceRatio/coverage_ratio are occasionally strings in raw NWB data
+    # (same coercion as generate_unit_spike_report's per-unit loop)
+    unit_df_subset['presenceRatio'] = pd.to_numeric(unit_df_subset['presenceRatio'], errors='coerce') #bombcell def
+    unit_df_subset['presence_ratio'] = pd.to_numeric(unit_df_subset['presence_ratio'], errors='coerce') #our def
+    unit_df_subset['coverage_ratio'] = pd.to_numeric(unit_df_subset['coverage_ratio'], errors='coerce')
+
+    unit_df_subset['mouse_id'] = mouse_id
+    unit_df_subset['session_id'] = session_id
+
+    shift_cols = [c for c in unit_df_subset.columns if c.startswith('shift_r_') or c.startswith('shift_sig_')]
+    out_cols = (['mouse_id', 'session_id', 'electrode_group', 'cluster_id',
+                'presenceRatio', 'presence_ratio', 'coverage_ratio'] + shift_cols)
+    summary = unit_df_subset[out_cols].reset_index(drop=True)
+
+    out_dir = results_path
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f'{mouse_id}_{session_id}_unit_quality_metrics.csv'
+    summary.to_csv(out_path, index=False)
+    print(f"Saved unit coverage/presence ratios quality metrics for {len(summary)} neurons to {out_path}")
+
+    # Figures
+    def plot_metric(ax, data, bins, x_axis_label, color, label=None, max_value=-1):
+        h, b = np.histogram(data, bins=bins, density=True)
+
+        x = b[:-1]
+        y = gaussian_filter1d(h, 1)
+
+        ax.plot(x, y, color=color, label=label)
+        ax.set_xlabel(x_axis_label)
+        ax.get_yaxis().set_visible(False)
+        [ax.spines[loc].set_visible(False) for loc in ['right', 'top', 'left']]
+        if max_value < np.max(y) * 1.1:
+            max_value = np.max(y) * 1.1
+        ax.set_ylim([0, max_value])
+
+        return max_value
+
+    fig, ax = plt.subplots(1, 3, figsize=(15, 5), dpi=500)
+
+    # --- Panel 1: scatter (unchanged) ---
+    ax[0].scatter(summary['presence_ratio'], summary['coverage_ratio'],
+                  c='k', s=12, alpha=0.6, edgecolor='none')
+    ax[0].axvline(PRESENCE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[0].axhline(COVERAGE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[0].set_xlabel('Presence ratio')
+    ax[0].set_ylabel('Coverage ratio')
+    ax[0].set_title(f'{mouse_id} {session_id} unit quality (n={len(summary)})')
+    ax[0].set_box_aspect(1)
+
+    # --- Panel 2: density plot (replaces scatter to deal with overplotting) ---
+    sns.kdeplot(x=summary['presence_ratio'], y=summary['coverage_ratio'],
+                ax=ax[1], fill=True, cmap='viridis', thresh=0.02, levels=20,
+                clip=((0, 1), (0, 1)))
+    ax[1].axvline(PRESENCE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[1].axhline(COVERAGE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[1].set_xlabel('Presence ratio')
+    ax[1].set_ylabel('Coverage ratio')
+    ax[1].set_title('Density')
+    ax[1].set_box_aspect(1)
+    ax[1].sharey(ax[0])
+
+    # --- Panel 3: plot_metric for both ratios on the same subplot ---
+    bins = np.linspace(0, 1, 50)
+    max_val = plot_metric(ax[2], summary['coverage_ratio'], bins, 'Ratio', 'tab:blue',
+                          label='Coverage ratio')
+    max_val = plot_metric(ax[2], summary['presence_ratio'], bins, 'Ratio', 'tab:orange',
+                          label='Presence ratio', max_value=max_val)
+    ax[2].axvline(PRESENCE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[2].axvline(COVERAGE_RATIO_THRESHOLD, color='grey', linestyle='--', linewidth=0.8)
+    ax[2].legend(frameon=False, fontsize=8)
+    ax[2].set_title('Metric distributions')
+    ax[2].set_ylabel('Density')
+    ax[2].set_box_aspect(1)
+
+    fig.tight_layout()
+    plot_path = out_path.with_suffix('.pdf')
+    fig.savefig(plot_path, dpi=200)
+    plt.close(fig)
+
+    return summary
+
+def compute_presence_coverage_metrics(unit_table):
+    """ Computes presence and coverage ratio to units."""
+    unit_table['coverage_ratio'] = compute_coverage_ratio(unit_table)
+    unit_table['presence_ratio'] = compute_presence_ratio(unit_table)
+    return unit_table
+
+
+
 # Main function
-def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, extra_metrics=None, unit_table=None):
+def generate_unit_spike_report(nwb_file, results_path, extra_metrics=None, unit_table=None):
     """
     extra_metrics : optional list of unit_table column names to look up per
         unit and print in the report title (see make_title_table), in
@@ -866,7 +1047,7 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, 
         correlations are simply omitted from extra_metrics.
     """
 
-    combined_results_path = pathlib.Path(combined_results_path)
+    results_path = pathlib.Path(results_path)
 
     # Get session info
     mouse_id = nwb_reader.get_mouse_id(nwb_file)
@@ -874,8 +1055,8 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, 
     initials = nwb_reader.get_experimenter(nwb_file)
     sess_metadata = nwb_reader.get_session_metadata(nwb_file)
     behavior_type, day = nwb_reader.get_bhv_type_and_training_day_index(nwb_file)
-    if day != 0 :
-        return 0
+    if day != 0:
+        return None
     # Matches single_neuron_shift_tests.py's session_day folder/filename convention
     # (e.g. "whisker_0"), used below to locate its per-session results CSV.
     session_day = f"{behavior_type}_{day}"
@@ -890,11 +1071,10 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, 
     # filter below), since coverage is relative to the whole recording span.
     unit_df['coverage_ratio'] = compute_coverage_ratio(unit_df)
 
-
     # Define passive pre and passive post
+    # (passive trials in the first half of the session vs. the second half)
     n_trials = len(trial_df)
     mid_session_trial_idx = n_trials // 2
-     # Passive pre are early and passive post are late in session
     mask_pre = (trial_df['context'] == 'passive') & (trial_df.index < mid_session_trial_idx)
     mask_post = (trial_df['context'] == 'passive') & (trial_df.index >= mid_session_trial_idx)
     trial_df.loc[mask_pre, 'context'] = 'passive_pre'
@@ -919,13 +1099,15 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, 
                  [['cluster_id', 'electrode_group', 'unit_id']]
                  .drop_duplicates(['cluster_id', 'electrode_group']))
         unit_df_subset = unit_df_subset.merge(id_map, on=['cluster_id', 'electrode_group'], how='left')
-    shift_results = _load_shift_test_results(combined_results_path, mouse_id, session_day)
-    print(unit_df_subset['area_acronym_custom'].unique())
-    print('Unit cols', unit_df_subset.columns)
-    if initials=='AB':
+    shift_results = _load_shift_test_results(results_path, mouse_id, session_day)
+
+    if initials == 'AB':
         experimenter = 'Axel_Bisi'
-    elif initials=='MH':
+    elif initials == 'MH':
         experimenter = 'Myriam_Hamon'
+    else:
+        raise ValueError(f"Unknown experimenter initials {initials!r} for "
+                         f"{mouse_id}/{session_id}; add a mapping above.")
 
     for imec_id in unit_df_subset['electrode_group'].unique():
         unit_df_imec = unit_df_subset[unit_df_subset['electrode_group']==imec_id]
@@ -1025,12 +1207,12 @@ def generate_unit_spike_report(nwb_file, mouse_res_path, combined_results_path, 
                       f"(spike_clusters.npy has {len(spike_clusters)} total spikes, "
                       f"{len(set(spike_clusters.tolist()))} unique cluster ids)")
 
-
             tier_paths = []
             for tier in quality_tiers:
-                tier_path = combined_results_path / 'unit_spike_report' / tier
+                tier_path = results_path / 'unit_spike_report' / tier
                 tier_path.mkdir(parents=True, exist_ok=True)
                 tier_paths.append(tier_path)
 
             generate_neuron_pdf(row['neuron_id'], unit_spikes, unit_spikes, unit_spike_amplitudes, trial_df, metadata,
                                 outpath=tier_paths)
+

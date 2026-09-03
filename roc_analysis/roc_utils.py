@@ -8,16 +8,21 @@
 
 # Imports
 import os
+import socket
 import pathlib
 import numpy as np
 import pandas as pd
+import tqdm as tqdm
 import multiprocessing
 from functools import partial
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.utils.class_weight import compute_sample_weight
 import NWB_reader_functions as nwb_reader
-import neural_utils
+import ephys_utilities
+import ephys_utilities.neural_utils.neural_utils as neural_utils
+import ephys_utilities.helpers.data_utils as data_utils
+import ephys_utilities.allen_utils.allen_utils as allen_utils
 
 
 N_WORKERS = 100
@@ -34,12 +39,13 @@ def process_nwb_tables(nwb_file):
     units['neuron_id'] = units.index # note before any filtering
 
     # Keep well-isolated units with a valid brain region label
-    units = units[(units['bc_label'] == 'good')]
+    #units = units[(units['bc_label'].isin(['good','mua']))]
     units = neural_utils.convert_electrode_group_object_to_columns(units)
 
     # Keep fewer columns only
     ccf_cols = [c for c in units.columns if "ccf" in c]
-    columns_to_keep = ["cluster_id", "neuron_id", "spike_times", "firing_rate", "target_region"] + ccf_cols
+    columns_to_keep = ["electrode_group", "cluster_id", "neuron_id",
+                       "spike_times", "firing_rate", "target_region"] + ccf_cols
     units = units[columns_to_keep]
 
     # Use index as new column named "neuron_id", then reset
@@ -92,7 +98,7 @@ def filter_lick_times(lick_times, interval=1, **stimuli):
 
     return filtered
 
-def get_filtered_lick_times(nwbfile, interval=1):
+def get_filtered_lick_times(nwbfile, interval=1): #TODO: improve
     """ Extract and filter piezo lick times from NWB data. """
     behavior = nwbfile.processing['behavior']
     events = behavior.data_interfaces['BehavioralEvents']
@@ -222,15 +228,23 @@ def extract_spike_data(nwb_file):
     contexts_available = trial_table['context'].unique()
     has_context = 'active' in contexts_available and 'passive_pre' in contexts_available
 
-    event_types = ['whisker', 'auditory', 'spontaneous_licks',
-                   'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss']
-    baseline_events = {'whisker', 'auditory', 'lick_trial', 'no_lick_trial', 'whisker_hit', 'whisker_miss', 'whisker', 'auditory'}
+    event_types = ['whisker',
+                   'auditory',
+                   'spontaneous_licks',
+                   'lick_trial',
+                   'no_lick_trial',
+                   'whisker_hit',
+                   'whisker_miss']
+    baseline_events = {'whisker', 'auditory',
+                       'lick_trial', 'no_lick_trial',
+                       'whisker_hit', 'whisker_miss',
+                       'whisker', 'auditory'}
 
     time_windows = {
-        'pre':               (-0.05,  -0.005),
-        'post':              ( 0.005,  0.05),
+        'pre':               (-0.05,  -0.015),
+        'post':              ( 0.005,  0.035),
         'spontaneous_licks': (-0.4,   -0.2,  0.0,  0.2),
-        'baseline_pre':      (-1.0, -0.005)
+        'baseline_pre':      (-1.0, -0.015)
     }
 
 
@@ -483,7 +497,7 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
 
     # Keep relevant columns for results
     ccf_cols = [c for c in unit_table.columns if 'ccf' in c]
-    cols_to_keep = ['mouse_id', 'session_id', 'neuron_id', 'cluster_id', 'firing_rate', 'target_region'] + ccf_cols
+    cols_to_keep = ['mouse_id', 'session_id', 'electrode_group', 'neuron_id', 'cluster_id', 'firing_rate', 'target_region'] + ccf_cols
     res_dict = {col: unit_table[col].values[0] for col in cols_to_keep}
     res_dict.update({'analysis_type': analysis_type, 'neuron_id': neuron_id, 'mouse_id': mouse_id, 'area': area})
 
@@ -583,7 +597,7 @@ def _process_unit_task(args):
         results_path=results_path,
     )
 
-def roc_analysis(nwb_file, results_path):
+def compute_unit_roc(nwb_file, results_path):
     """
     Perform ROC roc_analysis on spike data from a NWB file.
     :param nwb_file: path to NWB file
@@ -626,12 +640,17 @@ def roc_analysis(nwb_file, results_path):
 
     # Single pool: proc_unit_table is loaded once per worker via the initializer,
     # never re-pickled across individual tasks
+    chunksize = max(1, len(tasks) // (N_WORKERS * 4))
     with multiprocessing.Pool(
-        processes=N_WORKERS,
-        initializer=_worker_init,
-        initargs=(proc_unit_table,),
+            processes=N_WORKERS,
+            initializer=_worker_init,
+            initargs=(proc_unit_table,),
     ) as pool:
-        results = pool.map(_process_unit_task, tasks, chunksize=max(1, len(tasks) // (N_WORKERS * 4)))
+        results = list(tqdm.tqdm(
+            pool.imap(_process_unit_task, tasks, chunksize=chunksize),
+            total=len(tasks),
+            desc="Processing units",
+        ))
 
     os.makedirs(results_path, exist_ok=True)
     results_table = pd.DataFrame(results)

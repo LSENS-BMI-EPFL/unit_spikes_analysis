@@ -11,60 +11,45 @@ import os
 import math
 import numpy as np
 import pandas as pd
+import ast
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 from sklearn.mixture import GaussianMixture
 from scipy import signal, optimize, stats
+import diptest   # bimodality
 
 
 import NWB_reader_functions as nwb_reader
-import allen_utils as allen_utils
-import plotting_utils as plutils
+import ephys_utilities.allen_utils.allen_utils as allen_utils
+import ephys_utilities.plotting_utils.plotting_utils as plutils
 
-import diptest   # pip install diptest
+def _parse_waveform(value):
+    """waveform_mean_bc is sometimes a real array/list, sometimes a
+    stringified list (e.g. after a CSV round-trip) — normalize either
+    case to a float ndarray."""
+    if isinstance(value, str):
+        value = ast.literal_eval(value)
+    return np.asarray(value, dtype=float)
 
-
-def process_area_acronyms(unit_table):
+def plot_waveforms(nwb_file, results_path):
     """
-    Process and re-assign area acronyms.
-    In particular, groups barrel columns together.
-    :param unit_table: PETH table with all mice data
-    :param params: Plotting parameters
-    :return: Updated PETH table with processed area acronyms
+    Plot waveform overlay for all units in a NWB file and save the figure.
+    :param nwb_file: path to NWB file
+    :param results_path: path to save results
     """
-    # Assign to SSp-bfd if ccf parent acronym contains SSp-bfd
-    unit_table['ccf_parent_acronym'] = unit_table['ccf_parent_acronym'].astype(str)
-    unit_table['ccf_parent_acronym'] = unit_table['ccf_parent_acronym'].apply(
-        lambda x: 'SSp-bfd' if 'SSp-bfd' in x else x
-    )
+    print('Starting waveform plotting for file:', nwb_file)
+    unit_table = nwb_reader.get_unit_table(nwb_file)
+    unit_table = unit_table[unit_table.bc_label.isin(['good','mua','non-soma'])]  # only good units
+    mouse_id = unit_table['mouse_id'].values[0]
 
-    # Decide which area acronym to use
-    # Use ccf_parent_acronym if layer or part is in the name
-    unit_table['area_acronym'] = unit_table.apply(
-        lambda row: row['ccf_parent_acronym']
-        if ('layer' in row['ccf_name'].lower() or 'part' in row['ccf_name'].lower())
-        else row['ccf_acronym'],
-        axis=1
-    )
+    out_path = os.path.join(results_path, 'unit_waveforms')
+    os.makedirs(out_path, exist_ok=True)
 
-    # Same for area name
-    unit_table['area_name'] = unit_table.apply(
-        lambda row: row['ccf_parent_name']
-        if ('layer' in row['ccf_name'].lower() or 'part' in row['ccf_name'].lower())
-        else row['ccf_name'],
-        axis=1
-    )
-
-    # For cortical areas, use the ccf_parent_acronym
-    ctx_areas = allen_utils.get_cortical_areas()
-    unit_table['area_acronym'] = [row['ccf_parent_acronym'] if row['ccf_parent_acronym'] in ctx_areas
-                                  else row['ccf_acronym'] for idx, row in unit_table.iterrows()]
-
-    # Same for area name
-    unit_table['area_name'] = [row['ccf_parent_name'] if row['ccf_parent_name'] in ctx_areas
-                                  else row['ccf_name'] for idx, row in unit_table.iterrows()]
-
-    return unit_table
+    print('Saving waveform overlay to:', out_path)
+    _save_waveform_overlay(unit_table, out_path, threshold_mode='none', type='cwaves')
+    _save_waveform_overlay(unit_table, out_path, threshold_mode='none', type='bombcell')
+    #_save_waveform_overlay(unit_table, folder_results_path, threshold_mode='none', type='kilosort')
+    return
 
 
 
@@ -306,6 +291,7 @@ def _fit_gmm_robust(
 def classify_rsu_vs_fsu(
     unit_data,
     output_path,
+    level ='area_acronym_custom',
     threshold_mode: str = 'single',
     uncertainty_percentile: float = 80.0,
 ):
@@ -344,28 +330,22 @@ def classify_rsu_vs_fsu(
     """
 
     # Inspect waveform duration
+    unit_data = unit_data[unit_data.bc_label.isin(['good','mua'])]
     unit_data['duration'] = unit_data['duration'].astype(float)
-    print(unit_data.duration.describe())
-    print(unit_data.duration.max(), unit_data.duration.min())
 
     if threshold_mode not in ('single', 'double'):
         raise ValueError(
             f"threshold_mode must be 'single' or 'double', got '{threshold_mode}'."
         )
 
-    print('Classification of cortical cells: RSU vs FSU ...')
+    print('Classification of waveform type: RSU (WW) vs FSU (NW) ...')
     print(
-        'Total "good" neurons:',
-        len(unit_data[unit_data['bc_label'] == 'good']),
+        'Total neurons:',
+        len(unit_data[unit_data['bc_label'].isin(['good', 'mua'])]),
     )
 
     # ── Preprocessing ─────────────────────────────────────────────────────
-    #unit_data = unit_data[
-    #    ~unit_data['ccf_acronym'].isin(allen_utils.get_excluded_areas())
-    #].copy()
-    #unit_data = allen_utils.create_area_custom_column(unit_data)
-    area_list = unit_data['area_acronym_custom'].unique()
-    print('Areas', area_list)
+    area_list = unit_data[level].unique()
 
     results_list = []
     single_threshold_records = []
@@ -383,8 +363,8 @@ def classify_rsu_vs_fsu(
     for area in area_list:
         print(f'  Processing area: {area}')
         area_data = unit_data[
-            (unit_data['area_acronym_custom'] == area)
-            & (unit_data['bc_label'] == 'good')
+            (unit_data[level] == area)
+            & (unit_data['bc_label'].isin(['good','mua']))
         ].copy()  # .copy() prevents SettingWithCopyWarning
 
         if len(area_data) < 5:
@@ -601,7 +581,7 @@ def classify_rsu_vs_fsu(
         ax.legend(frameon=False, fontsize=8, loc='upper right')
         plt.tight_layout()
 
-        area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
+        area_out = os.path.join(output_path, 'waveform_analysis', 'rsu_vs_fsu', area)
         os.makedirs(area_out, exist_ok=True)
         plutils.save_figure_with_options(
             figure=fig,
@@ -616,18 +596,18 @@ def classify_rsu_vs_fsu(
 
         # ── Per-area waveform overlay ─────────────────────────────────────
         _save_waveform_overlay_per_area(
-            area_data=area_data,
+            area_data=area_data[area_data.bc_label=='good'],
             area=area,
-            output_path=output_path,
+            output_path=os.path.join(output_path, 'waveform_analysis', 'rsu_vs_fsu', area),
             threshold_mode=threshold_mode,
             color_dict=color_dict,
             sampling_rate_khz=30.0,
         )
 
         _save_waveform_overlay_by_duration_percentile(
-            area_data=area_data,
+            area_data=area_data[area_data.bc_label=='good'],
             area=area,
-            output_path=output_path,
+            output_path=os.path.join(output_path, 'waveform_analysis', 'rsu_vs_fsu', area),
             threshold_mode=threshold_mode,
             waveform_col='waveform_mean',
             duration_col='duration',
@@ -651,9 +631,9 @@ def classify_rsu_vs_fsu(
     ]
     for mouse_id in results['mouse_id'].unique():
         mouse_results = results.loc[results['mouse_id'] == mouse_id, cols_to_keep].copy()
-        # Use iloc[0] to safely get a single representative value
         behaviour = mouse_results['behaviour'].iloc[0]
         day = mouse_results['day'].iloc[0]
+
         mouse_out = os.path.join(
             output_path, mouse_id, f'{behaviour}_{day}', 'waveform_analysis'
         )
@@ -664,11 +644,11 @@ def classify_rsu_vs_fsu(
         )
 
         # ── Save threshold tables to CSV ──────────────────────────────────────
-        threshold_out = os.path.join(output_path, 'waveform_analysis', 'cortex')
+        threshold_out = os.path.join(output_path ,'waveform_analysis', 'rsu_vs_fsu', level)
         os.makedirs(threshold_out, exist_ok=True)
 
         # Reorder
-        area_order = allen_utils.get_custom_area_order()
+        area_order = allen_utils.get_area_acronym_custom_order()
 
         if threshold_mode == 'single':
             # Reorder table for areas according to area_order
@@ -698,8 +678,79 @@ def classify_rsu_vs_fsu(
     print('RSU vs FSU assignment complete.')
     return results
 
+def _save_waveform_overlay(
+    unit_data: pd.DataFrame,
+    output_path: str,
+    threshold_mode: str,
+    color_dict: dict | None = None,
+    sampling_rate_khz: float = 30.0,
+    baseline_ms: float = 0.5,  # window (from start of waveform) used to estimate baseline
+        type='cwaves'
+):
+    if unit_data.empty:
+        raise ValueError("No unit data provided")
 
-# ── Helper: cross-area overlay figure ─────────────────────────────────────────
+    mouse_id = unit_data['mouse_id'].unique()[0]
+
+    fig, axs = plt.subplots(1,3,figsize=(15, 5),dpi=300)
+
+    for ax,bc_label in zip(axs.flat, ['good','mua','non-soma']):
+        unit_data_sub = unit_data[unit_data.bc_label == bc_label]
+
+        all_waveforms = []
+        time_ms = None
+        baseline_samples = max(1, int(baseline_ms * sampling_rate_khz))
+
+        for _, row in unit_data_sub.iterrows():
+            if type == 'cwaves':
+                waveform = _parse_waveform(row["waveform_mean"])
+            elif type == 'bombcell':
+                waveform = _parse_waveform(row["waveform_mean_bc"])
+            elif type == 'kilosort':
+                waveform = _parse_waveform(row["waveform_mean_ks"])
+            wf_min, wf_max = waveform.min(), waveform.max()
+            waveform = (waveform - wf_min) / (wf_max - wf_min)
+
+            baseline = waveform[:baseline_samples].mean()
+            waveform = waveform - baseline
+
+            time_ms = np.arange(len(waveform)) / sampling_rate_khz
+            all_waveforms.append(waveform)
+            color = (color_dict or {}).get(row["neuron_id"], "black")
+
+            ax.plot(time_ms, waveform, color='grey', lw=0.6, alpha=0.3, label=str(row["neuron_id"]))
+
+            if "waveform_std" in unit_data.columns and row.get("waveform_std") is not None:
+                std = np.asarray(row["waveform_std"], dtype=float) / (wf_max - wf_min)
+                ax.fill_between(time_ms, waveform - std, waveform + std, color=color, alpha=0.08, lw=0)
+
+            if threshold_mode == "per_unit" and row.get("threshold") is not None:
+                thr = (row["threshold"] - wf_min) / (wf_max - wf_min) - baseline
+                ax.axhline(thr, color=color, ls="--", lw=0.5, alpha=0.3)
+
+        if threshold_mode == "mean" and "threshold" in unit_data.columns:
+            ax.axhline(unit_data["threshold"].mean(), color="black", ls="--", lw=1.0, label="mean threshold")
+
+        ax.axhline(0, color="gray", lw=0.5, ls=":", zorder=0)
+
+        # Grand average +/- SEM across normalized, baseline-centered waveforms, on top
+        all_waveforms = np.vstack(all_waveforms)
+        mean_wf = all_waveforms.mean(axis=0)
+        sem_wf = all_waveforms.std(axis=0, ddof=1) / np.sqrt(all_waveforms.shape[0])
+        ax.fill_between(time_ms, mean_wf - sem_wf, mean_wf + sem_wf, color="black", alpha=0.25, lw=0, zorder=9)
+        ax.plot(time_ms, mean_wf, color="black", lw=2.0, zorder=10, label="mean ± SEM")
+
+        ax.set_xlabel("Time (ms)")
+        ax.set_ylabel("Normalized amplitude (baseline-centered)")
+        ax.set_title(f"Waveform overlay (n={len(unit_data_sub)} {bc_label} units)")
+
+    fig.tight_layout()
+    save_path = os.path.join(output_path, f"{mouse_id}_waveform_overlay_{type}.png")
+    fig.savefig(save_path, dpi=200)
+    plt.close(fig)
+
+    return save_path
+
 def _save_waveform_overlay_per_area(
     area_data: pd.DataFrame,
     area: str,
@@ -802,13 +853,12 @@ def _save_waveform_overlay_per_area(
 
     plt.tight_layout()
 
-    area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
-    os.makedirs(area_out, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
     plutils.save_figure_with_options(
         figure=fig,
         file_formats=['png', 'svg', 'pdf'],
         filename=f'all_mice_{area}_waveform_overlay_{threshold_mode}',
-        output_dir=area_out,
+        output_dir=output_path,
         dark_background=False,
     )
     plt.close(fig)
@@ -982,13 +1032,12 @@ def _save_waveform_overlay_by_duration_percentile(
 
     plt.tight_layout()
 
-    area_out = os.path.join(output_path, 'waveform_analysis', 'cortex', area)
-    os.makedirs(area_out, exist_ok=True)
+    os.makedirs(output_path, exist_ok=True)
     plutils.save_figure_with_options(
         figure=fig,
         file_formats=['png', 'svg', 'pdf'],
         filename=f'all_mice_{area}_waveform_by_duration_percentile_{threshold_mode}',
-        output_dir=area_out,
+        output_dir=output_path,
         dark_background=False,
     )
     plt.close(fig)
@@ -1245,7 +1294,7 @@ def compute_acg_properties(spike_times, param):
     return acg_props
 
 
-def plot_striatal_waveforms_and_acgs(results_df, output_path):
+def plot_striatal_waveforms_and_acgs(results_df, output_path, unit_labels):
     """"
     Plot average waveforms and ACGs for striatal cell types.
     :param results_df: DataFrame with unit data including 'striatal_type', 'waveform_mean', and 'acg'
@@ -1264,8 +1313,12 @@ def plot_striatal_waveforms_and_acgs(results_df, output_path):
     n_types = len(cell_types)
 
     # Filter to striatal units only
-    results_df = results_df[(results_df['ccf_atlas_acronym'].isin(striatal_areas))
-                        & (results_df['bc_label']=='good')]
+    if unit_labels== 'good':
+        results_df = results_df[(results_df['ccf_atlas_acronym'].isin(striatal_areas))
+                            & (results_df['bc_label'].isin(['good']))]
+    elif unit_labels == 'all':
+        results_df = results_df[(results_df['ccf_atlas_acronym'].isin(striatal_areas))
+                                & (results_df['bc_label'].isin(['good','mua']))]
 
 
     # Set up figure
@@ -1306,7 +1359,7 @@ def plot_striatal_waveforms_and_acgs(results_df, output_path):
         #ax.grid(True, alpha=0.2)
         #axs[0, idx].set_ylim(-20,5)
         n_samples = len(wf_mean)
-        labels = [0,1,2,3]
+        labels = [0, 1, 2, 3]
         sampling_rate = 30000  # Hz
         xticks = [int(i * sampling_rate / 1000) for i in labels]
         axs[0,idx].set_xticks(xticks)
@@ -1336,7 +1389,10 @@ def plot_striatal_waveforms_and_acgs(results_df, output_path):
     fig.align_ylabels()
 
     # Save
-    fig_name = 'striatal_cell_types_waveforms_acgs'
+    if unit_labels== 'good':
+        fig_name = f'striatal_cell_types_waveforms_acgs_good'
+    elif unit_labels== 'all':
+        fig_name = f'striatal_cell_types_waveforms_acgs_all'
     output_path_all = os.path.join(output_path, 'waveform_analysis', 'striatum')
     if not os.path.exists(output_path_all):
         os.makedirs(output_path_all)
@@ -1361,7 +1417,7 @@ def classify_striatal_units(unit_data, output_path):
 
     # --- Keep only valid rows (good quality + striatal areas) ---
     valid_mask = (
-        (unit_data['bc_label'] == 'good') &
+        (unit_data['bc_label'].isin(['good','mua'])) &
         (unit_data['ccf_atlas_acronym'].isin(['CP', 'ACB', 'STR', 'STRd', 'STRv', 'FS', 'OT']))
         & (len(unit_data['spike_times'])>300)
     )
@@ -1445,13 +1501,14 @@ def classify_striatal_units(unit_data, output_path):
     n_unassigned = (unit_data['striatal_type'] == 'unknown').sum()
     # 2. Number of assigned units per type
     n_assigned_per_type = unit_data['striatal_type'].value_counts().to_dict()
-    print(f'Total number of striatal "good" neurons: {n_total}')
+    print(f'Total number of striatal units: {n_total},; non-assigned: {n_unassigned}')
     # 4. Number of assigned units
     n_assigned = n_total - n_unassigned
 
 
     # Plot classification results
-    plot_striatal_waveforms_and_acgs(unit_data, output_path)
+    plot_striatal_waveforms_and_acgs(unit_data, output_path, unit_labels='good')
+    plot_striatal_waveforms_and_acgs(unit_data, output_path, unit_labels='all')
 
     # Save entire dataframe with results
     output_file = os.path.join(output_path, 'waveform_analysis', 'striatum', 'all_mice_striatal_waveform_classification.csv')

@@ -23,7 +23,7 @@ from elephant.spike_train_correlation import cross_correlation_histogram
 from elephant.spike_train_surrogates import dither_spikes, jitter_spikes
 from elephant.statistics import mean_firing_rate, isi
 
-import plotting_utils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
 import os
 
 

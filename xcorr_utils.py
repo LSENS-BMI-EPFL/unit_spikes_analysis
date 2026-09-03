@@ -22,7 +22,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
 
-from plotting_utils import get_excluded_areas, remove_top_right_frame
+from ephys_utilities.plotting_utils.plotting_utils import remove_top_right_frame
+from ephys_utilities.allen_utils.allen_utils import get_excluded_areas
 import NWB_reader_functions as nwb_reader
 import cch_utils
 from elephant.conversion import BinnedSpikeTrain
@@ -273,7 +274,7 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Distributed CCH Analysis")
     parser.add_argument("nwb_file", type=str, help="Path to the NWB file.")
-    parser.add_argument("results_path", type=str, help="Path to save results.")
+    parser.add_argument("folder_results_path", type=str, help="Path to save results.")
     args = parser.parse_args()
 
     xcorr_analysis_mpi(args.nwb_file, args.results_path)

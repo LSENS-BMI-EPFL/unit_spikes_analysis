@@ -17,6 +17,8 @@ import matplotlib
 import yaml
 import cmasher as cmr
 
+from ephys_utilities.plotting_utils import plotting_utils
+import ephys_utilities.allen_utils.allen_utils as allen_utils
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
@@ -24,19 +26,20 @@ from rastermap import Rastermap
 import umap
 from sklearn.cluster import KMeans
 from sklearn.decomposition import PCA
-from scipy.stats import fisher_exact, kruskal, mannwhitneyu
+from scipy.stats import fisher_exact, kruskal, mannwhitneyu, chisquare
 from matplotlib.colors import ListedColormap
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 
-import plotting_utils
+from ephys_utilities.plotting_utils import *
+rplus_color = plotting_utils.GROUP_COLORS['rplus']
+rminus_color = plotting_utils.GROUP_COLORS['rminus']
 
 # ── config ─────────────────────────────────────────────────────────────────────
-# TODO: Implement trad spectral emb/GMM approach and compare clustering / have it in different script for all the methods
+# TODO: collapse pre/post passive trials into one for only sensory responses?
+# TODO: save more anat and metadata of neurons for analysis to avoid loading tables several times,.,.,
 # TODO: order of clustering kmeans/GMMs applied on ordered rastermap_psth cmatrix
-# TODO: fix missing jaw onset files / missing pre / missing post data
 # TODO: make axon cmap logscale too? or data as logscale? not mean over neurons? but areas?
-# TODO: average of neurons, mice, areas,geometric mean for anatomical axes?
 
 
 hostname = socket.gethostname()
@@ -55,7 +58,7 @@ WAVEFORM_ANALYSIS_ROOT = os.path.join(ANALYSIS_ROOT_PATH, 'Axel_Bisi', 'combined
 
 DEFAULT_CFG: dict[str, Any] = dict(
     recompute_feature_matrix = True,
-    n_min_trial_per_condition = 5, # trial count for spit-trials
+    n_min_trial_per_condition = 3, # trial count for spit-trials
     period                = 'active_passive', # "active_passive", "passive"', "active"
     t_pre_passive        = 0.2,    # pre-stimulus window for passive conditions (s)
     t_post_passive       = 0.5,    # post-stimulus window for passive conditions (s)
@@ -64,13 +67,13 @@ DEFAULT_CFG: dict[str, Any] = dict(
     t_pre_jaw            = 0.35,   # pre-jaw-onset window (s)
     t_post_jaw           = 0.35,   # post-jaw-onset window (s)
     bin_ms               = 10,
-    sigma_ms             = 5,
-    artifact_win_s       = (-0.005, 0.005),
+    sigma_ms             = 0,
+    artifact_win_s       = (-0.010, 0.005),
     whisker_trial_label  = "whisker_trial",
-    global_fr_hz         = 0.01,
-    fr_threshold_hz      = 0.2,
+    global_fr_hz         = 0.01, # threshold on the whole-session
+    fr_threshold_hz      = 0.1, # treshold on psth data
     square_fr            = False,
-    baseline_removal     = False,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
+    baseline_removal     = True,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
     include_lick_conditions = True,  # if True: add spontaneous_lick + reward_lick conditions (requires lick_df passed to run_rastermap_psth)
     lick_quiet_window_s     = 0.2,   # duration (s) of quiet baseline window ending at closest preceding trial start_time, for lick_time conditions
     reward_group_col     = "reward_group",
@@ -81,7 +84,7 @@ DEFAULT_CFG: dict[str, Any] = dict(
     trial_type_col       = "trial_type",
     mouse_id_col         = "mouse_id",
     session_id_col       = "session_id",
-    n_rastermap_clusters = 20,
+    n_rastermap_clusters = 100,
     locality             = 0.75,
     time_lag_window      = 20,
     grid_upsample        = 0,
@@ -134,14 +137,14 @@ def get_conditions(cfg):
     # whisker hit/miss, auditory hit, false alarm, correct rejection
     # Jaw-aligned: same trial subsets but aligned to jaw_onset_time instead of start_time
     active_all = [
-        ("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
         ("whisker_trial",  "active_nolick",  "Whisker miss",       "#d6371e", "start_time"),
+        ("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
         ("auditory_trial", "active_lick",    "Auditory hit",       "#7c0082", "start_time"),
-        ("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"), #TODO: use spontaneous licks for this
+        #("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"),
         #("no_stim_trial",  "active_nolick",  "Correct rej.",       "#a6a4a1", "start_time"),
         # Jaw-aligned conditions (lighter shades of the start_time counterparts)
-        ("whisker_trial",  "active_lick",    "Whisker hit (jaw)",  "#fde89a", "jaw_onset_time"),
-        ("auditory_trial", "active_lick",    "Auditory hit (jaw)", "#c9aadd", "jaw_onset_time"),
+        #("whisker_trial",  "active_lick",    "Whisker hit (jaw)",  "#fde89a", "jaw_onset_time"),
+        #("auditory_trial", "active_lick",    "Auditory hit (jaw)", "#c9aadd", "jaw_onset_time"),
         #("no_stim_trial",  "active_lick",    "False alarm (jaw)",  "#999999", "jaw_onset_time"),
     ]
 
@@ -150,7 +153,9 @@ def get_conditions(cfg):
     # Appended last so existing condition indices are never disturbed when flag is False.
     if cfg.get("include_lick_conditions", False):
         active_all += [
-            ("spontaneous_lick", "spontaneous", "Spont. lick",  "#999999", "lick_time"),
+            ("spontaneous_lick", "spontaneous", "Spont. lick", "#999999", "lick_time"),
+            ("whisker_trial", "active_lick", "Whisker hit (lick)",  "#fcba03", "lick_time"),
+            ("auditory_trial", "active_lick", "Auditory hit (lick)",  "#7c0082", "lick_time"),
             ("reward_lick",      "spontaneous", "Reward time",  "#bf1a1a", "lick_time"),
         ]
 
@@ -177,8 +182,10 @@ def get_conditions(cfg):
 
 
 def get_t_window(cfg, context: str, align_col: str = "start_time"):
-    if align_col == "jaw_onset_time":# or align_col == "lick_time":
-        return cfg["t_pre_jaw"], cfg["t_post_jaw"]
+    if align_col == "lick_time":
+        return cfg["t_pre_lick"], cfg["t_post_lick"]
+    if align_col == "jaw_onset_time":
+            return cfg["t_pre_jaw"], cfg["t_post_jaw"]
     if context.startswith("passive"):
         return cfg["t_pre_passive"], cfg["t_post_passive"]
     else:
@@ -253,7 +260,7 @@ def _replace_artifact(rel, t_pre, lo, hi, rng):
 
 
 def spikes_around_events(spk, events, t_pre, t_post,
-                         is_whisker=False, artifact_win_s=(-0.005, 0.005), rng=None,
+                         is_whisker=False, artifact_win_s=(-0.01, 0.005), rng=None,
                          align_col="start_time"):
     """
     align_col : alignment column name for this condition ('start_time' or
@@ -418,7 +425,7 @@ def precompute_event_map(trials: pd.DataFrame, cfg: dict,
     # For passive/both: drop mice that have no passive data at all
     mice_beh_epochs = trials.groupby('mouse_id')['context'].nunique()
     mice_with_no_passive = mice_beh_epochs[mice_beh_epochs == 2].index
-    print('Excluding mice without passive data...')
+    print('Excluding mice without passive data...:', mice_with_no_passive)
     trials = trials[~trials['mouse_id'].isin(mice_with_no_passive)]
 
 
@@ -464,6 +471,8 @@ def add_lick_event_map(lick_df: pd.DataFrame, event_map: dict, cfg: dict) -> Non
     sid_col = cfg.get("session_id_col", "session_id")
     n_spont = n_reward = 0
 
+    estimated_second_lick_latency = 0.15
+
     missing_spont = []
     missing_reward = []
 
@@ -478,7 +487,7 @@ def add_lick_event_map(lick_df: pd.DataFrame, event_map: dict, cfg: dict) -> Non
             n_spont += 1
 
         if reward_times is not None and len(reward_times):
-            event_map[(mouse_id, session_id, "spontaneous", "reward_lick", "lick_time")] = np.sort(reward_times)
+            event_map[(mouse_id, session_id, "spontaneous", "reward_lick", "lick_time")] = np.sort(reward_times) + estimated_second_lick_latency
             n_reward += 1
 
         if spont_times is None:
@@ -641,7 +650,8 @@ def _neuron_vector_strided(st, mouse_id, session_id, event_map, cond_infos, cfg,
                 raster = spikes_around_events(
                     st, events, t_pre, t_post,
                     is_whisker=(tt == cfg["whisker_trial_label"]),
-                    artifact_win_s=cfg["artifact_win_s"], rng=rng)
+                    artifact_win_s=cfg["artifact_win_s"], rng=rng,
+                    align_col=acol)
                 rates_cache[idx] = _bin_and_smooth(
                     raster, t_pre, t_post, cfg["stride_ms"], cfg["sigma_ms"])
         return rates_cache[idx]
@@ -719,7 +729,8 @@ def _neuron_vector_strided(st, mouse_id, session_id, event_map, cond_infos, cfg,
         norms    = norm_params
         mean_, std_ = norms
 
-    psths = [(p - mean_) / std_ for p in psths]
+    #psths = [(p - mean_) / std_ for p in psths]
+    psths = [(p) / std_ for p in psths]
 
     vec = np.concatenate(psths)
     if return_norm:
@@ -1037,11 +1048,7 @@ def order_area_groups(area_group_arr):
     (primary), then by descending population frequency within any unrecognised groups
     (secondary).
     """
-    try:
-        from allen_utils import get_custom_area_groups
-        canonical_order = list(get_custom_area_groups().keys())
-    except Exception:
-        canonical_order = []
+    canonical_order = allen_utils.get_area_group_custom_order()
 
     # count population frequency per group
     groups, counts = np.unique(area_group_arr, return_counts=True)
@@ -1362,7 +1369,9 @@ def split_event_map(event_map):
     return event_map_odd, event_map_even
 
 
-def run_reward_group_stats(out_folder: Path | str) -> dict: # this is for rastermap only
+
+def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.DataFrame,
+                            plot_all_clusters: bool = False) -> dict:
     """Mouse-level R+/R− enrichment analysis across rastermap_psth clusters.
 
     Loads embedding_results.npz from *out_folder* (must contain mouse_arr and
@@ -1470,8 +1479,8 @@ def run_reward_group_stats(out_folder: Path | str) -> dict: # this is for raster
     # Permutation MANOVA on Euclidean distances between per-mouse f-vectors.
     # Tests whether R+/R- group centroids differ in cluster-usage space.
     # H0: group label is exchangeable with the distance matrix.
-    permanova_F, permanova_p = _permanova(f_matrix, reward_groups, n_perm=9999)
-    print(f"  PERMANOVA — F={permanova_F:.3f}  p={permanova_p:.4f}  (9999 permutations)")
+    permanova_F, permanova_p = _permanova(f_matrix, reward_groups, n_perm=500)
+    print(f"  PERMANOVA — F={permanova_F:.3f}  p={permanova_p:.4f}  (500 permutations)")
 
     # ── 4. Per-cluster Mann-Whitney + BH-FDR ─────────────────────────────
     # For each cluster k, compare f_{m,k} between R+ and R- mice.
@@ -1518,9 +1527,16 @@ def run_reward_group_stats(out_folder: Path | str) -> dict: # this is for raster
         sig_clusters = np.where(reject)[0] + 1
         fh.write(f"  Cluster IDs: {list(sig_clusters)}\n")
 
+    # ── condition metadata for post-hoc figures ────────────────────────────
+    conds, cond_labels, cond_colors, _, cond_align_cols = get_conditions(cfg)
+    row_groups = _condition_rows(conds, cond_align_cols)
+    edge_trim = _edge_trim_bins(cfg)
+    area_arr, area_src = _load_area_arr(out_folder, data["unit_ids"])
+    print(f"  Loaded area_acronym from {area_src.name}")
+
     # ── 5. Figures ────────────────────────────────────────────────────────
     _fig_stats_overview(f_matrix, reward_groups, pvals_raw, pvals_fdr, reject,
-                        permanova_F, permanova_p, n_clusters, stats_dir)
+                    permanova_F, permanova_p, n_clusters, stats_dir)
 
     _fig_strip_plots(f_matrix, reward_groups, pvals_fdr, reject, valid_mice, stats_dir)
 
@@ -1531,6 +1547,64 @@ def run_reward_group_stats(out_folder: Path | str) -> dict: # this is for raster
                               X, cluster_labels, reward_arr, isort, boundaries,
                               n_bins_list, t_ctrs,
                               n_clusters, stats_dir)
+
+    # Area compo all clusters
+   # _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr, pvals_fdr, reject, stats_dir.parent, mode="all")
+
+
+    # Activity profiles by trial types
+    _fig_sigclusters_by_trialtype(X, cluster_labels, mouse_arr, pvals_fdr, reject,
+                                   n_bins_list, t_ctrs, cond_labels, row_groups,
+                                   edge_trim, stats_dir)
+
+    # TODO: plot the activity of these neurons, not the z-scored.
+    _fig_sigclusters_by_trialtype_by_rewardgroup(X, cluster_labels, mouse_arr, reward_arr, pvals_fdr, reject,
+                                   n_bins_list, t_ctrs, cond_labels, row_groups,
+                                   edge_trim, stats_dir)
+
+    # ── area composition ────────────────────────────────────────────────────
+    mode = "significant"
+
+    area_arr, area_src = _load_area_arr(out_folder, data["unit_ids"])
+    print(f"  Loaded area_acronym from {area_src.name}")
+    _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr,
+                                  pvals_fdr, reject, stats_dir, mode=mode)
+
+    # ── spatial location ─────────────────────────────────────────────────────
+    mode = "significant"
+    sig_clusters = _select_clusters_to_plot(pvals_fdr, reject, mode=mode)
+
+    coords_bregma = _load_bregma_coords(unit_table, data["unit_ids"])
+    coords_ccf = _load_ccf_atlas_coords(unit_table, data["unit_ids"])
+
+    loc_dir = stats_dir / "sig_clusters_location"
+    if not os.path.exists(loc_dir) and mode=="significant":
+        os.makedirs(loc_dir)
+
+    loc_df, baseline_centroid = _permutation_location_vs_dataset(
+        cluster_labels, coords_bregma, mouse_arr, sig_clusters, n_perm=500)
+    loc_df.to_csv(loc_dir / "location_vs_dataset_stats.csv", index=False)
+
+    rg_loc_df = _permutation_location_by_rewardgroup(
+        cluster_labels, coords_bregma, mouse_arr, reward_arr, sig_clusters, n_perm=500)
+    rg_loc_df.to_csv(loc_dir / "location_by_rewardgroup_stats.csv", index=False)
+
+    _fig_location_vs_dataset_detail(cluster_labels, coords_bregma, mouse_arr, sig_clusters,
+                                    loc_df, baseline_centroid, loc_dir)
+    _fig_location_by_rewardgroup(cluster_labels, coords_bregma, mouse_arr, reward_arr,
+                                 sig_clusters, rg_loc_df, loc_dir)
+
+    dev_df, baseline_centroid = compute_cluster_centroid_deviation(
+        cluster_labels, coords_bregma, mouse_arr, clusters_to_test=sig_clusters, n_perm=2000)
+    dev_df.to_csv(loc_dir / "cluster_centroid_deviation.csv", index=False)
+    _fig_cluster_centroid_deviation(dev_df, loc_dir)
+
+    #render_cluster_location_and_density_grid(cluster_labels, coords_ccf, sig_clusters, loc_dir,
+    #                                          cluster_selection=mode)
+
+    ATLAS_PATH = Path("/mnt/lsens-analysis/Axel_Bisi/Anatomy/allen_mouse_bluebrain_barrels_10um_v1.0")
+    _fig_cluster_atlas_projections(cluster_labels, coords_ccf, sig_clusters, loc_dir,
+                                    atlas_path=ATLAS_PATH)
 
     return dict(
         f_matrix     = f_matrix,
@@ -1639,10 +1713,10 @@ def _fig_stats_overview(f_matrix, reward_groups, pvals_raw, pvals_fdr, reject,
 
     # ── A: mean ± SEM per cluster ─────────────────────────────────────────
     ax = axes[0]
-    ax.fill_between(x, mean_rp - sem_rp, mean_rp + sem_rp, alpha=0.25, color="forestgreen")
-    ax.fill_between(x, mean_rm - sem_rm, mean_rm + sem_rm, alpha=0.25, color="crimson")
-    ax.plot(x, mean_rp, color="forestgreen", lw=1.5, label=f"R+ (n={mask_rp.sum()})")
-    ax.plot(x, mean_rm, color="crimson",     lw=1.5, label=f"R− (n={mask_rm.sum()})")
+    ax.fill_between(x, mean_rp - sem_rp, mean_rp + sem_rp, alpha=0.25, color=rplus_color)
+    ax.fill_between(x, mean_rm - sem_rm, mean_rm + sem_rm, alpha=0.25, color=rminus_color)
+    ax.plot(x, mean_rp, color=rplus_color, lw=1.5, label=f"R+ (n={mask_rp.sum()})")
+    ax.plot(x, mean_rm, color=rminus_color,     lw=1.5, label=f"R− (n={mask_rm.sum()})")
     for k in np.where(reject)[0]:
         ax.axvspan(k - 0.4, k + 0.4, color="gold", alpha=0.35, zorder=0)
     ax.set_xlim(-0.5, n_clusters - 0.5)
@@ -1714,11 +1788,11 @@ def _fig_strip_plots(f_matrix, reward_groups, pvals_fdr, reject, mouse_ids, stat
             patch_artist=True, showfliers=False,
             medianprops=dict(color="k", lw=2),
         )
-        for patch, col in zip(bp["boxes"], ["forestgreen", "crimson"]):
+        for patch, col in zip(bp["boxes"], [rplus_color, rminus_color]):
             patch.set_facecolor(col); patch.set_alpha(0.25)
 
         # strip plot with jitter
-        for xi, (vals, col) in enumerate([(fp, "forestgreen"), (fm, "crimson")]):
+        for xi, (vals, col) in enumerate([(fp, rplus_color), (fm, rminus_color)]):
             jitter = rng_jitter.uniform(-0.12, 0.12, size=len(vals))
             ax.scatter(xi + jitter, vals, color=col, s=30, alpha=0.85,
                        edgecolors="none", zorder=3)
@@ -1759,7 +1833,7 @@ def _fig_neuron_yield(neuron_counts, reward_groups, mouse_ids, stats_dir):
     fig, ax = plt.subplots(figsize=(5, 4))
     rng_j   = np.random.default_rng(1)
     for xi, (vals, col, lab) in enumerate(
-            [(fp, "forestgreen", "R+"), (fm, "crimson", "R-")]):
+            [(fp, rplus_color, "R+"), (fm, rminus_color, "R-")]):
         jitter = rng_j.uniform(-0.15, 0.15, size=len(vals))
         ax.scatter(xi + jitter, vals, color=col, s=40, alpha=0.8,
                    edgecolors="none", label=lab, zorder=3)
@@ -1836,9 +1910,9 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     sem_rp   = f_matrix[mask_rp].std(axis=0) / np.sqrt(max(mask_rp.sum(), 1))
     sem_rm   = f_matrix[mask_rm].std(axis=0) / np.sqrt(max(mask_rm.sum(), 1))
     dy       = 0.18   # vertical offset between the two group dots within a row
-    ax_f.errorbar(mean_rp, y_inv + dy, xerr=sem_rp, fmt="o", color="forestgreen",
+    ax_f.errorbar(mean_rp, y_inv + dy, xerr=sem_rp, fmt="o", color=rplus_color,
                  ms=3, lw=0.8, elinewidth=0.8, capsize=0, zorder=3)
-    ax_f.errorbar(mean_rm, y_inv - dy, xerr=sem_rm, fmt="o", color="crimson",
+    ax_f.errorbar(mean_rm, y_inv - dy, xerr=sem_rm, fmt="o", color=rminus_color,
                  ms=3, lw=0.8, elinewidth=0.8, capsize=0, zorder=3)
     ax_f.set_ylim(0.5, n_clusters + 0.5)
     ax_f.set_yticks([])
@@ -1849,8 +1923,8 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     ax_f.set_title("Mean ± SEM", fontsize=9)
     from matplotlib.lines import Line2D
     ax_f.legend(handles=[
-        Line2D([0], [0], marker="o", color="forestgreen", lw=0, label="R+"),
-        Line2D([0], [0], marker="o", color="crimson",     lw=0, label="R−"),
+        Line2D([0], [0], marker="o", color=rplus_color, lw=0, label="R+"),
+        Line2D([0], [0], marker="o", color=rminus_color,     lw=0, label="R−"),
     ], fontsize=6, loc="upper right", frameon=False)
 
     # ── Column 2: p-value lollipop plot ─────────────────────────────────────
@@ -1949,13 +2023,1767 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
         fontsize=10)
     fig.tight_layout(rect=[0, 0, 1, 0.97])
     _save(fig, stats_dir / "figS4_cluster_stats_matrix",dpi=400)
+    return
 
 
+def _condition_rows(conds, cond_align_cols):
+    """Group condition indices into display rows: passive, active (start_time),
+    active (jaw), active (lick) — in that canonical order, skipping empty rows.
+    """
+    rows = {"passive": [], "active_start": [], "active_jaw": [], "active_lick": []}
+    for i, ((tt, ctx), acol) in enumerate(zip(conds, cond_align_cols)):
+        if ctx.startswith("passive"):
+            rows["passive"].append(i)
+        elif acol == "lick_time":
+            rows["active_lick"].append(i)
+        elif acol == "jaw_onset_time":
+            rows["active_jaw"].append(i)
+        else:
+            rows["active_start"].append(i)
+    order = ["passive", "active_start", "active_jaw", "active_lick"]
+    return [idxs for name in order if (idxs := rows[name])]
+
+
+def _edge_trim_bins(cfg):
+    """Number of bins at each edge of every condition segment biased by the
+    zero-padding artifact in _bin_and_smooth (see notes)."""
+    sigma_bins = cfg["sigma_ms"] / cfg["stride_ms"]
+    return int(np.ceil(4 * sigma_bins))
+
+
+def _load_area_arr(out_folder, unit_ids):
+    """Load area_acronym per neuron from the CV metadata CSV, aligned to
+    unit_ids by an explicit merge (not position)."""
+    out_folder = Path(out_folder)
+
+    for name in ("neuron_cluster_labels_cv.csv",""):
+        for candidate in (out_folder / name, out_folder.parent / name):
+            if candidate.exists():
+                meta_df = pd.read_csv(candidate).set_index("unit_ids")
+                area_arr = meta_df.reindex(unit_ids)["area_acronym"].to_numpy()
+                missing = pd.isna(area_arr).sum()
+                if missing:
+                    print(f"  Warning: {missing}/{len(unit_ids)} unit_ids not found in {candidate.name}")
+                return area_arr, candidate
+    raise FileNotFoundError(
+        f"Could not find neuron_cluster_labels[_cv].csv near {out_folder}")
+
+
+def _select_clusters_to_plot(pvals_fdr, reject, top_n_fallback=10, mode="significant"):
+    """mode: "significant" (BH-FDR sig, fallback top-N by p_fdr) or "all"
+    (every cluster, ignoring the reward-group stats entirely)."""
+    if mode == "all":
+        return np.arange(len(pvals_fdr))
+    sig_idx = np.where(reject)[0]
+    if len(sig_idx) == 0:
+        print(f"  No clusters significant after FDR — plotting top-{top_n_fallback} by p_fdr instead")
+        sig_idx = np.argsort(pvals_fdr)[:top_n_fallback]
+    return sig_idx
+
+
+def _fig_sigclusters_by_trialtype(X, cluster_labels, mouse_arr, pvals_fdr, reject,
+                                   n_bins_list, t_ctrs, cond_labels, row_groups,
+                                   edge_trim, stats_dir):
+    """One figure per sig cluster: grid of subplots (rows = passive / active-start
+    / active-lick), each cell one trial-type condition, mean ± SEM over neurons.
+    Edge bins biased by the smoothing/window artifact are trimmed from display.
+    Y-axis shared across all subplots in the figure; x shared within each row
+    (rows have different alignment windows). Every axis is individually labeled.
+    """
+    out_dir = stats_dir / "sig_clusters_by_trialtype"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    starts = np.cumsum([0] + list(n_bins_list[:-1]))
+    ends   = np.cumsum(n_bins_list)
+    slices = list(zip(starts, ends))
+
+    n_rows = len(row_groups)
+    n_cols = max(len(r) for r in row_groups)
+
+    for k in _select_clusters_to_plot(pvals_fdr, reject):
+        neurons_k = cluster_labels == k
+        n_k = int(neurons_k.sum())
+        if n_k == 0:
+            continue
+        n_mice_k = len(np.unique(mouse_arr[neurons_k]))
+        X_k = X[neurons_k]
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.6 * n_rows),
+                                  squeeze=False)
+
+        # first pass: compute all traces + a shared y-range
+        all_means, all_sems = {}, {}
+        y_min, y_max = np.inf, -np.inf
+        for row_idx, idxs in enumerate(row_groups):
+            for col_idx, ci in enumerate(idxs):
+                s, e = slices[ci]
+                t = t_ctrs[ci]
+                trim = min(edge_trim, (e - s) // 3)  # never trim more than 1/3 of a window
+                seg  = X_k[:, s + trim : e - trim]
+                t_tr = t[trim: len(t) - trim] if trim else t
+                mean = seg.mean(axis=0)
+                sem  = seg.std(axis=0, ddof=1) / np.sqrt(n_k) if n_k > 1 else np.zeros_like(mean)
+                all_means[(row_idx, col_idx)] = (t_tr, mean, sem, ci)
+                y_min = min(y_min, (mean - sem).min())
+                y_max = max(y_max, (mean + sem).max())
+
+        pad = 0.05 * (y_max - y_min) if y_max > y_min else 1.0
+        y_min, y_max = y_min - pad, y_max + pad
+
+        for row_idx, idxs in enumerate(row_groups):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx, col_idx]
+                if col_idx >= len(idxs):
+                    ax.axis("off")
+                    continue
+                t_tr, mean, sem, ci = all_means[(row_idx, col_idx)]
+                ax.plot(t_tr, mean, color="k", lw=1.5)
+                ax.fill_between(t_tr, mean - sem, mean + sem, color="k", alpha=0.25)
+                ax.axvline(0, ls="--", color="gray", lw=0.8)
+                ax.set_ylim(y_min, y_max)
+                ax.set_title(cond_labels[ci], fontsize=9)
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("z-score (mean ± SEM)")
+
+        fig.suptitle(f"Cluster {k + 1}  (n={n_k} neurons, {n_mice_k} mice, "
+                     f"p_fdr={pvals_fdr[k]:.3g})")
+        fig.tight_layout()
+        fig.savefig(out_dir / f"cluster_{k + 1:03d}_by_trialtype.png", dpi=150)
+        plt.close(fig)
+
+    print(f"  Saved per-cluster trial-type figures → {out_dir}")
+
+def _condition_slices(n_bins_list):
+    """(start, end) index pairs into the concatenated PSTH axis of X, one per condition."""
+    starts = np.cumsum([0] + list(n_bins_list[:-1]))
+    ends   = np.cumsum(n_bins_list)
+    return list(zip(starts, ends))
+
+def _fig_sigclusters_by_trialtype_by_rewardgroup(X, cluster_labels, mouse_arr, reward_arr,
+                                                   pvals_fdr, reject,
+                                                   n_bins_list, t_ctrs, cond_labels, row_groups,
+                                                   edge_trim, stats_dir):
+    """One figure per sig cluster: grid of subplots (rows = passive / active-start
+    / active-lick), each cell one trial-type condition, overlaying R+ vs R-
+    mean ± SEM. Edge bins biased by the smoothing/window artifact are trimmed
+    from display. Y-axis shared across all subplots in the figure; x shared
+    within each row (rows have different alignment windows). Every axis is
+    individually labeled.
+    """
+    out_dir = stats_dir / "sig_clusters_by_trialtype_by_rewardgroup"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    starts = np.cumsum([0] + list(n_bins_list[:-1]))
+    ends   = np.cumsum(n_bins_list)
+    slices = list(zip(starts, ends))
+
+    group_colors = {"R+": rplus_color, "R-": rminus_color}
+    n_rows = len(row_groups)
+    n_cols = max(len(r) for r in row_groups)
+
+    for k in _select_clusters_to_plot(pvals_fdr, reject):
+        neurons_k = cluster_labels == k
+        if neurons_k.sum() == 0:
+            continue
+
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.6 * n_rows),
+                                  squeeze=False)
+
+        # ── first pass: compute traces for both groups + a shared y-range ──
+        traces = {}          # (row_idx, col_idx) -> ci -> {group: (t_tr, mean, sem)}
+        n_per_group, mice_per_group = {}, {}
+        y_min, y_max = np.inf, -np.inf
+
+        for group, color in group_colors.items():
+            grp_mask = neurons_k & (reward_arr == group)
+            n_grp = int(grp_mask.sum())
+            n_per_group[group]    = n_grp
+            mice_per_group[group] = len(np.unique(mouse_arr[grp_mask])) if n_grp > 0 else 0
+            if n_grp == 0:
+                continue
+            X_grp = X[grp_mask]
+
+            for row_idx, idxs in enumerate(row_groups):
+                for col_idx, ci in enumerate(idxs):
+                    s, e = slices[ci]
+                    t = t_ctrs[ci]
+                    trim = min(edge_trim, (e - s) // 3)
+                    seg  = X_grp[:, s + trim : e - trim]
+                    t_tr = t[trim: len(t) - trim] if trim else t
+                    mean = seg.mean(axis=0)
+                    sem  = seg.std(axis=0, ddof=1) / np.sqrt(n_grp) if n_grp > 1 else np.zeros_like(mean)
+
+                    cell = traces.setdefault((row_idx, col_idx), {})
+                    cell[group] = (t_tr, mean, sem, ci)
+                    y_min = min(y_min, (mean - sem).min())
+                    y_max = max(y_max, (mean + sem).max())
+
+        if not np.isfinite(y_min) or not np.isfinite(y_max):
+            plt.close(fig)
+            continue
+        pad = 0.05 * (y_max - y_min) if y_max > y_min else 1.0
+        y_min, y_max = y_min - pad, y_max + pad
+
+        # ── second pass: draw ───────────────────────────────────────────────
+        for row_idx, idxs in enumerate(row_groups):
+            for col_idx in range(n_cols):
+                ax = axes[row_idx, col_idx]
+                if col_idx >= len(idxs):
+                    ax.axis("off")
+                    continue
+
+                cell = traces.get((row_idx, col_idx), {})
+                ci = idxs[col_idx]
+                for group, color in group_colors.items():
+                    if group not in cell:
+                        continue
+                    t_tr, mean, sem, _ = cell[group]
+                    ax.plot(t_tr, mean, color=color, lw=1.5,
+                             label=f"{group} (n={n_per_group[group]})")
+                    ax.fill_between(t_tr, mean - sem, mean + sem, color=color, alpha=0.2)
+
+                ax.axvline(0, ls="--", color="gray", lw=0.8)
+                ax.set_ylim(y_min, y_max)
+                ax.set_title(cond_labels[ci], fontsize=9)
+                ax.set_xlabel("Time (s)")
+                ax.set_ylabel("z-score (mean ± SEM)")
+                ax.legend(fontsize=7, frameon=False)
+
+        fig.suptitle(
+            f"Cluster {k + 1}  "
+            f"(R+={n_per_group.get('R+', 0)} neu / {mice_per_group.get('R+', 0)} mice, "
+            f"R-={n_per_group.get('R-', 0)} neu / {mice_per_group.get('R-', 0)} mice, "
+            f"p_fdr={pvals_fdr[k]:.3g})"
+        )
+        fig.tight_layout()
+        fig.savefig(out_dir / f"cluster_{k + 1:03d}_by_trialtype_by_rewardgroup.png", dpi=150)
+        plt.close(fig)
+
+    print(f"  Saved per-cluster trial-type-by-reward-group figures → {out_dir}")
+
+# ---------------------
+# Area-level analysis
+# ---------------------
+
+def _mouse_level_area_baseline(group_arr, mouse_arr, all_groups):
+    """Dataset-wide 'sampling bias' baseline: each mouse's own area-group
+    composition (all of that mouse's neurons, any cluster), averaged with
+    equal weight across mice — not pooled at the neuron level, so a
+    heavily-recorded mouse doesn't dominate the baseline."""
+    mice = np.unique(mouse_arr)
+    per_mouse = []
+    for m in mice:
+        mask = mouse_arr == m
+        n_m = mask.sum()
+        if n_m == 0:
+            continue
+        counts = pd.Series(group_arr[mask]).value_counts().reindex(all_groups, fill_value=0)
+        per_mouse.append(counts.values / n_m)
+    per_mouse = np.array(per_mouse)
+    baseline = per_mouse.mean(axis=0)
+    return baseline / baseline.sum(), mice
+
+
+def _cluster_mouse_level_composition(cluster_labels, group_arr, mouse_arr, k, all_groups):
+    """Per-mouse area-group proportions among the neurons of mouse m that
+    fall in cluster k, averaged with equal weight across contributing mice."""
+    neurons_k = cluster_labels == k
+    mice_in_k = np.unique(mouse_arr[neurons_k])
+    per_mouse = []
+    for m in mice_in_k:
+        mask = neurons_k & (mouse_arr == m)
+        n_km = mask.sum()
+        if n_km == 0:
+            continue
+        counts = pd.Series(group_arr[mask]).value_counts().reindex(all_groups, fill_value=0)
+        per_mouse.append(counts.values / n_km)
+    if not per_mouse:
+        return None, 0
+    per_mouse = np.array(per_mouse)
+    dist = per_mouse.mean(axis=0)
+    return dist / dist.sum(), len(per_mouse)
+
+
+def _permutation_area_divergence_test(cluster_labels, group_arr, mouse_arr, sig_clusters,
+                                       all_groups, n_perm=500, rng=None):
+    """Mouse-level permutation test: does a cluster's area-group composition
+    (mouse-averaged) diverge from the dataset-wide baseline (also
+    mouse-averaged) more than expected by chance, given each mouse's own area
+    sampling? Effect size = Jensen-Shannon distance (bounded [0, 1], base 2).
+
+    Null model: for each mouse contributing n_km neurons to cluster k, redraw
+    a random subsample of n_km neurons (without replacement) from that same
+    mouse's full neuron pool. This preserves each mouse's own area
+    composition exactly, and only asks whether *which* of its neurons happen
+    to land in cluster k depends on area group — the same logic as the
+    mouse-level PERMANOVA used for reward-group enrichment elsewhere in this
+    pipeline, applied here to area composition instead of R+/R−.
+    """
+    from scipy.spatial.distance import jensenshannon
+    if rng is None:
+        rng = np.random.default_rng()
+
+    baseline_dist, _ = _mouse_level_area_baseline(group_arr, mouse_arr, all_groups)
+    mice_all = np.unique(mouse_arr)
+    mouse_pool_idx = {m: np.where(mouse_arr == m)[0] for m in mice_all}
+
+    js_obs, pvals_raw, n_mice_used = [], [], []
+
+    for k in sig_clusters:
+        obs_dist, n_mice_k = _cluster_mouse_level_composition(
+            cluster_labels, group_arr, mouse_arr, k, all_groups)
+        n_mice_used.append(n_mice_k)
+        if obs_dist is None or n_mice_k == 0:
+            js_obs.append(np.nan); pvals_raw.append(1.0)
+            continue
+
+        obs_js = jensenshannon(obs_dist, baseline_dist, base=2)
+        js_obs.append(obs_js)
+
+        neurons_k = cluster_labels == k
+        contrib = {m: int((neurons_k & (mouse_arr == m)).sum())
+                   for m in mice_all if (neurons_k & (mouse_arr == m)).sum() > 0}
+
+        null_js = np.empty(n_perm)
+        for p in range(n_perm):
+            per_mouse = []
+            for m, n_km in contrib.items():
+                sub_idx = rng.choice(mouse_pool_idx[m], size=n_km, replace=False)
+                counts = pd.Series(group_arr[sub_idx]).value_counts().reindex(all_groups, fill_value=0)
+                per_mouse.append(counts.values / n_km)
+            perm_dist = np.array(per_mouse).mean(axis=0)
+            perm_dist = perm_dist / perm_dist.sum()
+            null_js[p] = jensenshannon(perm_dist, baseline_dist, base=2)
+
+        pvals_raw.append((1 + np.sum(null_js >= obs_js)) / (n_perm + 1))
+
+    pvals_raw = np.array(pvals_raw)
+    pvals_fdr, reject = _bh_correction(pvals_raw, alpha=0.05)
+
+    return pd.DataFrame(dict(
+        cluster       = [k + 1 for k in sig_clusters],
+        js_divergence = js_obs,
+        n_mice        = n_mice_used,
+        p_raw         = pvals_raw,
+        p_fdr         = pvals_fdr,
+        significant   = reject,
+    ))
+
+def _resolve_area_group_map(acronyms):
+    """Map each raw area_acronym_custom value to its custom group name."""
+    groups = allen_utils.get_custom_area_groups()
+    acronym_to_group = {}
+    # Handle dict[group_name] -> list[acronym]
+    if isinstance(next(iter(groups.values())), (list, tuple, set)):
+        for group_name, acs in groups.items():
+            for ac in acs:
+                acronym_to_group[ac] = group_name
+    else:
+        # Handle dict[acronym] -> group_name directly
+        acronym_to_group = dict(groups)
+    ac_dict = {ac: acronym_to_group.get(ac, "unassigned") for ac in np.unique(acronyms)}
+    unassigned = [ac for ac, grp in ac_dict.items() if grp == "unassigned"]
+    if unassigned:
+        print(f"  Warning: {len(unassigned)} area_acronym_custom values not found in custom groups, "
+          f"mapped to 'unassigned': {unassigned}.")
+    return ac_dict
+
+def _wilson_ci(k, n, z=1.96):
+    """Wilson score interval for a binomial proportion."""
+    if n == 0:
+        return 0.0, 1.0
+    phat = k / n
+    denom = 1 + z**2 / n
+    center = phat + z**2 / (2 * n)
+    margin = z * np.sqrt(phat * (1 - phat) / n + z**2 / (4 * n**2))
+    return max((center - margin) / denom, 0.0), min((center + margin) / denom, 1.0)
+
+
+def _compute_area_enrichment_stats(cluster_group_counts, global_prop, all_groups, sig_clusters):
+    """Per-(cluster, area-group) log2 fold-change vs. dataset baseline, Wilson CI
+    (also in log2 space), and BH-FDR-corrected binomial significance.
+    Neuron-level (not mouse-level) — see caveat in accompanying notes.
+    """
+    from scipy.stats import binomtest
+    eps = 1e-6
+    n_groups, n_clusters = len(all_groups), len(sig_clusters)
+    log2fc   = np.zeros((n_clusters, n_groups))
+    ci_lo    = np.zeros((n_clusters, n_groups))
+    ci_hi    = np.zeros((n_clusters, n_groups))
+    pvals    = np.ones((n_clusters, n_groups))
+    counts_m = np.zeros((n_clusters, n_groups), dtype=int)
+
+    for i, k in enumerate(sig_clusters):
+        counts = cluster_group_counts[k]
+        n_k = int(counts.sum())
+        for j, g in enumerate(all_groups):
+            c = int(counts.get(g, 0))
+            counts_m[i, j] = c
+            p0 = global_prop[g]
+
+            phat = c / n_k if n_k > 0 else 0.0
+            wilson_lo, wilson_hi = _wilson_ci(c, n_k)
+
+            # identical eps-shift + denominator applied to phat and both bounds,
+            # so ci_lo <= log2fc <= ci_hi holds exactly (wilson_lo <= phat <= wilson_hi
+            # is preserved through the same monotonic transform on all three).
+            log2fc[i, j] = np.log2((phat + eps) / (p0 + eps))
+            ci_lo[i, j]  = np.log2((wilson_lo + eps) / (p0 + eps))
+            ci_hi[i, j]  = np.log2((wilson_hi + eps) / (p0 + eps))
+
+            if n_k > 0:
+                pvals[i, j] = binomtest(c, n_k, p0, alternative="two-sided").pvalue
+
+    flat_fdr, flat_reject = _bh_correction(pvals.flatten(), alpha=0.05)
+    return dict(log2fc=log2fc, ci_lo=ci_lo, ci_hi=ci_hi, pvals=pvals, counts=counts_m,
+                pvals_fdr=flat_fdr.reshape(n_clusters, n_groups),
+                reject=flat_reject.reshape(n_clusters, n_groups))
+
+
+# ── Recommendation 1: enrichment dot-heatmap ────────────────────────────────
+def _fig_area_enrichment_dotplot(stats, all_groups, sig_clusters, out_dir, js_df=None):
+    n_groups, n_clusters = len(all_groups), len(sig_clusters)
+    n_cols = n_groups + (1 if js_df is not None else 0)
+    log2fc = stats["log2fc"]
+    reject = stats["reject"]
+
+    vmax = 4
+
+    side = 0.55 * max(n_cols, n_clusters) + 2.6
+    fig, ax = plt.subplots(figsize=(side, side))
+
+    xs, ys = np.meshgrid(np.arange(n_groups) + 0.5, np.arange(n_clusters) + 0.5)
+    xs, ys = xs.flatten(), ys.flatten()
+    c_flat   = log2fc.flatten()
+    sig_flat = reject.flatten()
+
+    # sizing stays on the true (unrounded) magnitude
+    abs_fc = np.abs(c_flat)
+    max_abs = max(abs_fc.max(), 1e-6)
+    sig_size_min, sig_size_max = 90, 500
+    sig_sizes = sig_size_min + (sig_size_max - sig_size_min) * (abs_fc / max_abs)
+    nonsig_color = (0.80, 0.80, 0.80)
+
+    cmap = plt.get_cmap("PiYG")
+    norm = plt.Normalize(vmin=-vmax, vmax=vmax)
+    base_colors = cmap(norm(c_flat))[:, :3]
+
+    m = ~sig_flat
+    ax.scatter(xs[m], ys[m], facecolors="none", edgecolors=nonsig_color,
+               linewidths=0.8, s=sig_sizes[m], marker="o", zorder=2)
+    m = sig_flat
+    ax.scatter(xs[m], ys[m], facecolors=base_colors[m], edgecolors="black",
+               linewidths=0.0, s=sig_sizes[m], marker="o", zorder=3)
+
+    # ── extra column: overall JS-divergence effect size per cluster ────────
+    js_cmap, js_norm = None, None
+    if js_df is not None:
+        js_vals = js_df["js_divergence"].to_numpy()
+        js_sig  = js_df["significant"].to_numpy()
+        js_cmap = plt.get_cmap("Purples")
+        js_vmax = max(np.nanmax(js_vals), 1e-3)
+        js_norm = plt.Normalize(vmin=0, vmax=js_vmax)
+        js_x = np.full(n_clusters, n_groups + 0.5)
+        js_y = np.arange(n_clusters) + 0.5
+        js_colors = js_cmap(js_norm(js_vals))[:, :3]
+        js_sizes = sig_size_min + (sig_size_max - sig_size_min) * (js_vals / js_vmax)
+
+        m = ~js_sig
+        ax.scatter(js_x[m], js_y[m], facecolors="none", edgecolors=nonsig_color,
+                   linewidths=0.8, s=js_sizes[m], marker="o", zorder=2)
+        m = js_sig
+        ax.scatter(js_x[m], js_y[m], facecolors=js_colors[m], edgecolors="black",
+                   linewidths=0.3, s=js_sizes[m], marker="o", zorder=3)
+
+        ax.axvline(n_groups, color="black", lw=0.8, ls="--", alpha=0.5)
+
+    ax.set_xlim(0, n_cols); ax.set_ylim(0, n_clusters)
+    ax.set_aspect("equal")
+    xtick_labels = list(all_groups) + (["Overall\ndivergence"] if js_df is not None else [])
+    ax.set_xticks(np.arange(n_cols) + 0.5)
+    ax.set_xticklabels(xtick_labels, rotation=45, ha="right", fontsize=11)
+    ax.set_yticks(np.arange(n_clusters) + 0.5)
+    ax.set_yticklabels([f"Cluster {k+1}" for k in sig_clusters], fontsize=11)
+    ax.invert_yaxis()
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(length=0)
+
+    # ── colorbars: fixed inset axes, stacked, hugging the right edge ───────
+    cax1 = ax.inset_axes([1.04, 0.56, 0.025, 0.36], transform=ax.transAxes)
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    cbar = fig.colorbar(sm, cax=cax1)
+    cbar.set_label("log2 Fold-Change vs. dataset\n(significant cells only)", fontsize=10)
+    cbar.ax.tick_params(labelsize=9, length=2)
+    cbar.outline.set_visible(False)
+
+    if js_df is not None:
+        cax2 = ax.inset_axes([1.04, 0.06, 0.025, 0.36], transform=ax.transAxes)
+        sm2 = plt.cm.ScalarMappable(cmap=js_cmap, norm=js_norm)
+        cbar2 = fig.colorbar(sm2, cax=cax2)
+        cbar2.set_label("JS divergence\n(mouse-level, sig. only)", fontsize=10)
+        cbar2.ax.tick_params(labelsize=9, length=2)
+        cbar2.outline.set_visible(False)
+
+    legend_vals = sorted(set(v for v in
+                             [round(max_abs), max(round(max_abs) / 2, 1), 1] if v >= 1))
+    size_handles = [
+        ax.scatter([], [], s=sig_size_min + (sig_size_max - sig_size_min) * (v / max_abs),
+                   facecolors="grey", edgecolors="black", linewidths=0.3, label=f"{v:.0f}")
+        for v in legend_vals
+    ]
+    sig_handle    = ax.scatter([], [], facecolors="grey", edgecolors="black",
+                                linewidths=0.3, s=150, label="Significant")
+    nonsig_handle = ax.scatter([], [], facecolors="none", edgecolors=nonsig_color,
+                                linewidths=0.8, s=150, label="Not significant")
+    all_handles = size_handles + [sig_handle, nonsig_handle]
+    ax.legend(handles=all_handles,
+              title="|log2 Fold-Change| (rounded, sig. only)          Significance",
+              loc="upper center", bbox_to_anchor=(0.5, -0.14),
+              ncol=len(all_handles), fontsize=10, title_fontsize=11,
+              frameon=False, handletextpad=0.6, columnspacing=1.6,
+              borderaxespad=1.2)
+
+    ax.set_title("Area-group enrichment vs. dataset baseline\n"
+                  "(rightmost column: overall composition divergence, mouse-level permutation test)",
+                  fontsize=14, pad=14)
+    fig.tight_layout(rect=[0, 0, 0.98, 1])
+    fig.savefig(out_dir / "area_enrichment_dotplot.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
+
+
+# ── Recommendation 2: forest plot, one subplot per cluster ─────────────────
+def _fig_area_enrichment_forest(stats, all_groups, sig_clusters, group_color_map, out_dir):
+    n_sig = len(sig_clusters)
+    ncols = min(4, n_sig)
+    nrows = int(np.ceil(n_sig / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                              figsize=(3.2 * ncols, 0.5 * len(all_groups) + 1.8 * nrows),
+                              squeeze=False)
+    y = np.arange(len(all_groups))
+    colors = [group_color_map.get(g, "grey") for g in all_groups]
+
+    for idx, k in enumerate(sig_clusters):
+        r, c = divmod(idx, ncols)
+        ax = axes[r, c]
+        fc, lo, hi, sig = stats["log2fc"][idx], stats["ci_lo"][idx], stats["ci_hi"][idx], stats["reject"][idx]
+        xerr_lo = np.maximum(0, fc - lo)
+        xerr_hi = np.maximum(0, hi - fc)
+        ax.errorbar(fc, y, xerr=[xerr_lo, xerr_hi], fmt="none", ecolor="grey", capsize=2, zorder=2)
+        ax.scatter(fc, y, c=colors, s=60, zorder=3, edgecolors="black", linewidths=0.5)
+        for yi in np.where(sig)[0]:
+            ax.text(fc[yi], yi, " *", va="center", fontsize=11, fontweight="bold")
+        ax.axvline(0, color="black", lw=1, ls="--")
+        ax.set_yticks(y); ax.set_yticklabels(all_groups, fontsize=7)
+        ax.set_title(f"Cluster {k+1}", fontsize=9)
+        ax.set_xlabel("log2 FC vs. dataset")
+
+    for idx in range(n_sig, nrows * ncols):
+        axes[divmod(idx, ncols)].axis("off") if False else axes[idx // ncols, idx % ncols].axis("off")
+
+    fig.suptitle("Per-cluster area-group enrichment (Wilson 95% CI vs. dataset baseline)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "area_enrichment_forest.png", dpi=150)
+    plt.close(fig)
+
+
+# ── Recommendation 3: stacked composition (panel A) + enrichment heatmap strip (panel B) ──
+def _fig_area_stacked_with_heatmap(cluster_group_counts, global_prop, all_groups, sig_clusters,
+                                    group_color_map, stats, out_dir):
+    n_sig = len(sig_clusters)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2, 1, figsize=(max(7, 1.1 * (n_sig + 1)), 8),
+        gridspec_kw={"height_ratios": [3, 3]})
+
+    x = np.arange(n_sig + 1)
+    bottom = np.zeros(n_sig + 1)
+    for group in all_groups:
+        cluster_fracs = np.array([
+            cluster_group_counts[k].get(group, 0) / max(1, cluster_group_counts[k].sum())
+            for k in sig_clusters])
+        fracs = np.concatenate([[global_prop[group]], cluster_fracs])
+        color = group_color_map.get(group, "lightgrey")
+        ax_top.bar(x, fracs, bottom=bottom, color=color, edgecolor="white", linewidth=0.5, label=group)
+        for xi, (frac, base) in enumerate(zip(fracs, bottom)):
+            if frac >= 0.04:
+                ax_top.text(xi, base + frac / 2, f"{frac*100:.0f}%", ha="center", va="center",
+                            fontsize=7, color="white")
+        bottom += fracs
+
+    ax_top.axvline(0.5, color="black", lw=1, ls="--", alpha=0.6)
+    ax_top.set_xticks(x)
+    ax_top.set_xticklabels(["Dataset"] + [f"Cluster {k+1}" for k in sig_clusters], rotation=45, ha="right")
+    ax_top.set_ylabel("Fraction"); ax_top.set_ylim(0, 1.05)
+    ax_top.set_title("Area-group composition")
+    ax_top.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=7, frameon=False)
+    ax_top.set_xlim(-0.5, n_sig + 0.5)
+
+    hm = stats["log2fc"].T  # groups × clusters
+    vmax = max(np.nanmax(np.abs(hm)), 1e-3)
+    im = ax_bot.imshow(hm, cmap="RdBu_r", vmin=-vmax, vmax=vmax, aspect="auto")
+    for gi in range(hm.shape[0]):
+        for ci in range(hm.shape[1]):
+            if stats["reject"][ci, gi]:
+                ax_bot.text(ci, gi, "*", ha="center", va="center", fontsize=9, fontweight="bold")
+    ax_bot.set_yticks(np.arange(len(all_groups))); ax_bot.set_yticklabels(all_groups)
+    ax_bot.set_xticks(np.arange(n_sig))
+    ax_bot.set_xticklabels([f"Cluster {k+1}" for k in sig_clusters], rotation=45, ha="right")
+    ax_bot.set_xlim(-0.5, n_sig - 0.5)
+    ax_bot.set_title("log2 fold-enrichment vs. dataset (* = significant, BH-FDR)")
+    fig.colorbar(im, ax=ax_bot, orientation="horizontal", fraction=0.05, pad=0.35, label="log2FC")
+
+    fig.tight_layout()
+    fig.savefig(out_dir / "area_stacked_with_enrichment_heatmap.png", dpi=150)
+    plt.close(fig)
+
+
+# ── Recommendation 4: radar plot, one subplot per cluster ──────────────────
+def _fig_area_radar(cluster_group_counts, global_prop, all_groups, sig_clusters, group_color_map, out_dir):
+    n_groups = len(all_groups)
+    angles = np.linspace(0, 2 * np.pi, n_groups, endpoint=False).tolist()
+    angles += angles[:1]
+    baseline_vals = [global_prop[g] for g in all_groups]; baseline_vals += baseline_vals[:1]
+
+    ncols = min(4, len(sig_clusters))
+    nrows = int(np.ceil(len(sig_clusters) / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.2 * ncols, 3.2 * nrows),
+                              subplot_kw=dict(polar=True), squeeze=False)
+
+    for idx, k in enumerate(sig_clusters):
+        ax = axes[idx // ncols, idx % ncols]
+        n_k = max(1, cluster_group_counts[k].sum())
+        cluster_vals = [cluster_group_counts[k].get(g, 0) / n_k for g in all_groups]
+        cluster_vals += cluster_vals[:1]
+
+        ax.plot(angles, baseline_vals, color="grey", lw=1.5, ls="--", label="Dataset")
+        ax.fill(angles, baseline_vals, color="grey", alpha=0.1)
+        ax.plot(angles, cluster_vals, color="black", lw=1.5, label=f"Cluster {k+1}")
+        for a, v, g in zip(angles[:-1], cluster_vals[:-1], all_groups):
+            ax.scatter([a], [v], color=group_color_map.get(g, "grey"), s=50,
+                       zorder=5, edgecolors="black", linewidths=0.5)
+
+        ax.set_xticks(angles[:-1]); ax.set_xticklabels(all_groups, fontsize=7)
+        ax.set_title(f"Cluster {k+1}", fontsize=9, pad=15)
+        ax.set_ylim(0, max(max(baseline_vals), max(cluster_vals)) * 1.15)
+        ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.15), fontsize=6, frameon=False)
+
+    for idx in range(len(sig_clusters), nrows * ncols):
+        axes[idx // ncols, idx % ncols].axis("off")
+
+    fig.suptitle("Area-group composition: cluster (solid) vs. dataset baseline (dashed)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "area_radar_per_cluster.png", dpi=150)
+    plt.close(fig)
+
+
+# ── Recommendation 5: spatial CCF maps, one subplot per cluster ────────────
+def _fig_area_spatial_ccf(cluster_labels, group_arr, sig_clusters, group_color_map,
+                           ccf_ap, ccf_ml, out_dir):
+    if ccf_ap is None or ccf_ml is None:
+        print("  Skipping spatial CCF enrichment maps — ccf_ap/ccf_ml not provided.")
+        return
+    n_sig = len(sig_clusters)
+    ncols = min(4, n_sig); nrows = int(np.ceil(n_sig / ncols))
+    fig, axes = plt.subplots(nrows, ncols, figsize=(3.5 * ncols, 3.2 * nrows), squeeze=False)
+
+    for idx, k in enumerate(sig_clusters):
+        ax = axes[idx // ncols, idx % ncols]
+        ax.scatter(ccf_ml, ccf_ap, s=3, color="lightgrey", alpha=0.3)
+        mask = cluster_labels == k
+        colors = [group_color_map.get(g, "grey") for g in group_arr[mask]]
+        ax.scatter(ccf_ml[mask], ccf_ap[mask], s=10, c=colors, edgecolors="black", linewidths=0.2)
+        ax.set_title(f"Cluster {k+1} (n={int(mask.sum())})", fontsize=9)
+        ax.set_xlabel("ML (CCF)"); ax.set_ylabel("AP (CCF)")
+        ax.invert_yaxis()
+
+    for idx in range(n_sig, nrows * ncols):
+        axes[idx // ncols, idx % ncols].axis("off")
+
+    fig.suptitle("Spatial distribution of cluster neurons (colored by area group) vs. all neurons (grey)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "area_spatial_ccf_maps.png", dpi=150)
+    plt.close(fig)
+
+def _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr, pvals_fdr, reject, stats_dir,
+                                   ccf_ap=None, ccf_ml=None, mode='significant'):
+    """All sig clusters on shared figures (not one file per cluster):
+    (1) a grid of paired bar charts (area group / area acronym) per cluster,
+        colored by allen_utils custom area group colors;
+    (2) a stacked bar chart of area-group proportion per cluster, annotated
+        per-segment, with significance from the mouse-level permutation test
+        (observed area-group composition vs. dataset-wide "sampling bias"
+        proportions), BH-FDR corrected across clusters.
+        [Chi-square goodness-of-fit is still computed for CSV/figure-1 output,
+        but is no longer used for the stacked-figure annotation — see below.]
+    """
+    out_dir = stats_dir / "sig_clusters_area_composition"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    group_map        = _resolve_area_group_map(area_arr)
+    group_arr        = np.array([group_map[a] for a in area_arr])
+    group_color_map  = allen_utils.get_custom_area_groups_colors()          # {group: color}
+    canonical_groups = list(allen_utils.get_custom_area_groups().keys())   # stacking order
+    default_color    = "lightgrey"
+    sig_clusters = _select_clusters_to_plot(pvals_fdr, reject, mode=mode)
+    n_sig = len(sig_clusters)
+    if n_sig == 0:
+        print("  No clusters to plot for area composition.")
+        return
+    # ── dataset-wide baseline proportions (the "sampling bias" null) ───────
+    global_group_counts = pd.Series(group_arr).value_counts()
+    all_groups = sorted(set(canonical_groups) | set(global_group_counts.index),
+                         key=lambda g: canonical_groups.index(g) if g in canonical_groups else 999)
+    global_prop = (global_group_counts.reindex(all_groups, fill_value=0) /
+                   global_group_counts.sum())
+    #
+    js_df = _permutation_area_divergence_test(
+        cluster_labels, group_arr, mouse_arr, sig_clusters, all_groups, n_perm=500)
+    js_df.to_csv(out_dir / "area_composition_permutation_stats.csv", index=False)
+    n_sig_js = int(js_df["significant"].sum())
+    print(f"  Mouse-level permutation test: {n_sig_js}/{len(sig_clusters)} clusters "
+          f"deviate from sampling baseline after BH-FDR (α=0.05)")
+    # lookup keyed by cluster id, for the stacked-figure annotation below
+    js_sig_by_cluster = dict(zip(js_df["cluster"], js_df["significant"]))
+    # ── pass 1: per-cluster counts, proportions, and chi-square test ───────
+    rows = []
+    cluster_group_counts = {}   # k -> Series indexed by all_groups
+    chi2_stats, pvals_raw = [], []
+    for k in sig_clusters:
+        neurons_k = cluster_labels == k
+        n_k = int(neurons_k.sum())
+        if n_k == 0:
+            cluster_group_counts[k] = pd.Series(0, index=all_groups)
+            chi2_stats.append(np.nan); pvals_raw.append(1.0)
+            continue
+        fine_counts  = pd.Series(area_arr[neurons_k]).value_counts()
+        group_counts = pd.Series(group_arr[neurons_k]).value_counts().reindex(all_groups, fill_value=0)
+        cluster_group_counts[k] = group_counts
+        expected = n_k * global_prop.values
+        low_exp = (expected < 5).sum()
+        if low_exp:
+            print(f"  Cluster {k+1}: {low_exp}/{len(expected)} area groups have "
+                  f"expected count < 5 — chi-square p-value may be unreliable")
+        # --- Chi-square goodness-of-fit test (kept for CSV / figure-1 output; ---
+        # --- no longer drives significance annotation on the stacked figure) ---
+        chi2, p = chisquare(f_obs=group_counts.values, f_exp=expected)
+        chi2_stats.append(chi2); pvals_raw.append(p)
+        for area_val, cnt in fine_counts.items():
+            n_mice_area = len(np.unique(mouse_arr[neurons_k & (area_arr == area_val)]))
+            rows.append(dict(cluster=k+1, area_acronym_custom=area_val,
+                              area_group=group_map[area_val],
+                              n_neurons=int(cnt), frac_of_cluster=cnt / n_k,
+                              n_mice=n_mice_area))
+    pvals_raw = np.array(pvals_raw)
+    area_pvals_fdr, area_reject = _bh_correction(pvals_raw, alpha=0.05)
+    stats_df = pd.DataFrame(dict(
+        cluster      = [k + 1 for k in sig_clusters],
+        n_neurons    = [int((cluster_labels == k).sum()) for k in sig_clusters],
+        chi2         = chi2_stats,
+        p_raw        = pvals_raw,
+        p_fdr        = area_pvals_fdr,
+        significant  = area_reject,
+    ))
+    stats_df.to_csv(out_dir / "area_composition_stats.csv", index=False)
+    pd.DataFrame(rows).to_csv(out_dir / "area_composition_table.csv", index=False)
+    n_sig_area = int(area_reject.sum())
+    print(f"  Area composition chi-square: {n_sig_area}/{n_sig} clusters deviate "
+          f"from sampling bias after BH-FDR (α=0.05)")
+    # ── figure 1: grid of paired bar charts, all sig clusters, one figure ──
+    fig1, axes1 = plt.subplots(n_sig, 2, figsize=(8, 4 * n_sig), squeeze=False)
+    for row, k in enumerate(sig_clusters):
+        neurons_k = cluster_labels == k
+        n_k = int(neurons_k.sum())
+        group_counts = cluster_group_counts[k].sort_values(ascending=False)
+        group_counts = group_counts[group_counts > 0]
+        colors_g = [group_color_map.get(g, default_color) for g in group_counts.index]
+        ax = axes1[row, 0]
+        bars = ax.bar(group_counts.index.astype(str), group_counts.values, color=colors_g)
+        ax.bar_label(bars, fontsize=7)
+        ax.set_title(f"Cluster {k + 1}: area groups (n={n_k})", fontsize=9)
+        ax.set_ylabel("N neurons")
+        ax.tick_params(axis="x", labelbottom=False, bottom=False)
+        ax.set_box_aspect(1)
+        fine_counts = (pd.Series(area_arr[neurons_k]).value_counts()
+                       .sort_values(ascending=False)) if n_k else pd.Series(dtype=int)
+        colors_f = [group_color_map.get(group_map.get(a, "Other"), default_color)
+                    for a in fine_counts.index]
+        ax = axes1[row, 1]
+        bars = ax.bar(fine_counts.index.astype(str), fine_counts.values, color=colors_f)
+        ax.bar_label(bars, fontsize=7)
+        ax.set_title(f"Cluster {k + 1}: area_acronym_custom (n={n_k})", fontsize=9)
+        ax.set_ylabel("N neurons")
+        ax.tick_params(axis="x", rotation=45)
+        ax.set_box_aspect(1)
+    fig1.tight_layout()
+    fig1.savefig(out_dir / "all_sig_clusters_area_composition.png", dpi=150)
+    plt.close(fig1)
+    # ── figure 2: stacked proportion bar chart, all sig clusters ───────────
+    fig2, ax2 = plt.subplots(figsize=(max(6, 1.1 * n_sig), 6))
+    x = np.arange(n_sig)
+    bottom = np.zeros(n_sig)
+    for group in all_groups:
+        fracs = np.array([
+            (cluster_group_counts[k].get(group, 0) / max(1, cluster_group_counts[k].sum()))
+            for k in sig_clusters
+        ])
+        color = group_color_map.get(group, default_color)
+        bar_container = ax2.bar(x, fracs, bottom=bottom, color=color, label=group,
+                                 edgecolor="white", linewidth=0.5)
+        for xi, (frac, base) in enumerate(zip(fracs, bottom)):
+            if frac >= 0.04:   # only annotate segments large enough to hold text
+                ax2.text(xi, base + frac / 2, f"{frac*100:.0f}%",
+                          ha="center", va="center", fontsize=7, color="white")
+        bottom += fracs
+    for xi, k in enumerate(sig_clusters):
+        # was: star = "*" if area_reject[xi] else "ns"   (chi-square)
+        star = "*" if js_sig_by_cluster.get(k + 1, False) else "ns"
+        ax2.text(xi, 1.02, star, ha="center", va="bottom", fontsize=9)
+    ax2.set_ylim(0, 1.12)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([f"Cluster {k+1}" for k in sig_clusters], rotation=45, ha="right")
+    ax2.set_ylabel("Fraction of cluster")
+    ax2.set_title("Area-group composition per cluster\n"
+                   "(* = significantly deviates from dataset-wide sampling proportions,\n"
+                   "mouse-level permutation test, BH-FDR α=0.05)")
+    ax2.legend(bbox_to_anchor=(1.02, 1), loc="upper left", fontsize=8, frameon=False)
+    fig2.tight_layout()
+    fig2.savefig(out_dir / "all_sig_clusters_area_proportion_stacked.png", dpi=150)
+    plt.close(fig2)
+
+    # ── recommendations 1–5 ─────────────────────────────────────────────────
+    enrich_stats = _compute_area_enrichment_stats(cluster_group_counts, global_prop, all_groups, sig_clusters)
+    _fig_area_enrichment_dotplot(enrich_stats, all_groups, sig_clusters, out_dir, js_df=js_df)
+    _fig_area_enrichment_forest(enrich_stats, all_groups, sig_clusters, group_color_map, out_dir)
+    _fig_area_stacked_with_heatmap(cluster_group_counts, global_prop, all_groups, sig_clusters,
+                                   group_color_map, enrich_stats, out_dir)
+    _fig_area_radar(cluster_group_counts, global_prop, all_groups, sig_clusters, group_color_map, out_dir)
+    _fig_area_spatial_ccf(cluster_labels, group_arr, sig_clusters, group_color_map, ccf_ap, ccf_ml, out_dir)
+
+    print(f"  Saved enrichment dotplot, forest, stacked+heatmap, radar "
+          f"{'and spatial CCF ' if ccf_ap is not None else ''}figures → {out_dir}")
+
+
+def _load_bregma_coords(unit_table, unit_ids):
+    """Per-neuron bregma-relative AP/ML/DV, for statistics and the matplotlib
+    projection figures."""
+    ut = unit_table.set_index("unit_id") if unit_table.index.name != "unit_id" else unit_table
+    sub = ut.reindex(unit_ids)
+    coords = np.column_stack([
+        pd.to_numeric(sub["ap"], errors="coerce").to_numpy(),
+        pd.to_numeric(sub["ml"], errors="coerce").to_numpy(),
+        pd.to_numeric(sub["dv"], errors="coerce").to_numpy(),
+    ])
+    n_bad = np.isnan(coords).any(axis=1).sum()
+    if n_bad:
+        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing bregma AP/ML/DV")
+    return coords  # (n_neurons, 3), columns = AP, ML, DV, bregma-relative
+
+
+def _load_ccf_atlas_coords(unit_table, unit_ids):
+    """Per-neuron true CCF atlas coordinates, for brainrender only (brainrender
+    needs actual atlas-space microns, not bregma-relative offsets)."""
+    ut = unit_table.set_index("unit_id") if unit_table.index.name != "unit_id" else unit_table
+    sub = ut.reindex(unit_ids)
+    coords = np.column_stack([
+        pd.to_numeric(sub["ccf_atlas_ap"], errors="coerce").to_numpy(),
+        pd.to_numeric(sub["ccf_atlas_ml"], errors="coerce").to_numpy(),
+        pd.to_numeric(sub["ccf_atlas_dv"], errors="coerce").to_numpy(),
+    ])
+    n_bad = np.isnan(coords).any(axis=1).sum()
+    if n_bad:
+        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing ccf_atlas_ap/ml/dv")
+    return coords  # (n_neurons, 3), columns = AP, ML, DV, true CCF atlas space
+
+def _mouse_level_centroid(coords, mouse_arr, mask):
+    """Equal-weight-per-mouse centroid: average each mouse's own mean
+    coordinate, then average across mice — avoids one heavily-recorded mouse
+    dominating, same principle as _mouse_level_area_baseline."""
+    mice = np.unique(mouse_arr[mask])
+    per_mouse = []
+    for m in mice:
+        sub = coords[mask & (mouse_arr == m)]
+        sub = sub[~np.isnan(sub).any(axis=1)]
+        if len(sub) == 0:
+            continue
+        per_mouse.append(sub.mean(axis=0))
+    if not per_mouse:
+        return None, 0
+    per_mouse = np.array(per_mouse)
+    return per_mouse.mean(axis=0), len(per_mouse)
+
+from scipy.stats import gaussian_kde
+
+
+def _kde_contour_on_ax(ax, x, y, color, levels=4, alpha_lines=0.9, fill_alpha=0.08,
+                        grid_n=120, min_points=8):
+    """Fit a 2D Gaussian KDE to (x, y) and draw it as light filled contours +
+    solid contour lines in `color`. Falls back to a plain scatter if there
+    aren't enough points for a stable KDE fit (avoids gaussian_kde's singular-
+    covariance errors on tiny/degenerate point sets)."""
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) < min_points or np.std(x) == 0 or np.std(y) == 0:
+        ax.scatter(x, y, s=8, color=color, alpha=0.5, zorder=2)
+        return
+
+    try:
+        kde = gaussian_kde(np.vstack([x, y]))
+    except np.linalg.LinAlgError:
+        ax.scatter(x, y, s=8, color=color, alpha=0.5, zorder=2)
+        return
+
+    pad_x = 0.1 * (x.max() - x.min() + 1e-9)
+    pad_y = 0.1 * (y.max() - y.min() + 1e-9)
+    xx, yy = np.meshgrid(
+        np.linspace(x.min() - pad_x, x.max() + pad_x, grid_n),
+        np.linspace(y.min() - pad_y, y.max() + pad_y, grid_n))
+    zz = kde(np.vstack([xx.ravel(), yy.ravel()])).reshape(xx.shape)
+
+    from matplotlib.colors import LinearSegmentedColormap
+    cmap = LinearSegmentedColormap.from_list("kde_cmap", ["white", color])
+    ax.contourf(xx, yy, zz, levels=levels, cmap=cmap, alpha=fill_alpha, zorder=1)
+    ax.contour(xx, yy, zz, levels=levels, colors=[color], linewidths=1.0,
+               alpha=alpha_lines, zorder=2)
+
+
+def _fig_location_by_rewardgroup(cluster_labels, coords, mouse_arr, reward_arr,
+                                  sig_clusters, rg_loc_df, out_dir):
+    """One row per cluster, one column per projection (AP-ML, AP-DV, ML-DV).
+    R+ vs R- shown as overlaid KDE contours (not raw scatter) so density
+    differences between cohorts are visible rather than obscured by
+    overplotting."""
+    n_sig = len(sig_clusters)
+    fig, axes = plt.subplots(n_sig, 3, figsize=(9, 2.8 * n_sig), squeeze=False)
+
+    for row, k in enumerate(sig_clusters):
+        neurons_k = cluster_labels == k
+        rp_mask = neurons_k & (reward_arr == "R+")
+        rm_mask = neurons_k & (reward_arr == "R-")
+        rg_row = rg_loc_df.iloc[row]
+        star = "*" if rg_row["significant"] else "ns"
+
+        for col, (xlabel, ylabel, xi, yi) in enumerate(_PROJECTIONS):
+            ax = axes[row, col]
+            _kde_contour_on_ax(ax, coords[rp_mask, xi], coords[rp_mask, yi], rplus_color)
+            _kde_contour_on_ax(ax, coords[rm_mask, xi], coords[rm_mask, yi], rminus_color)
+
+            ax.set_xlabel(xlabel, fontsize=8); ax.set_ylabel(ylabel, fontsize=8)
+            ax.tick_params(labelsize=7)
+            if yi == 0:
+                ax.invert_yaxis()
+            if col == 0:
+                ax.set_title(f"Cluster {k+1}: {rg_row['within_cluster_distance']:.0f} vs "
+                              f"{rg_row['global_dataset_distance']:.0f} μm baseline ({star})",
+                              fontsize=8, loc="left")
+            if row == 0 and col == 0:
+                from matplotlib.lines import Line2D
+                handles = [Line2D([0], [0], color=rplus_color, lw=1.5, label="R+"),
+                           Line2D([0], [0], color=rminus_color, lw=1.5, label="R-")]
+                ax.legend(handles=handles, fontsize=7, frameon=False)
+
+    fig.suptitle("Within-cluster R+ vs. R− centroid location, all three projections\n"
+                  "(KDE contours; subplot title: within-cluster centroid distance vs. "
+                  "dataset-wide R+/R- baseline gap)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "location_by_rewardgroup_3proj.png", dpi=150)
+    plt.close(fig)
+
+def _permutation_location_vs_dataset(cluster_labels, coords, mouse_arr, sig_clusters, n_perm=500, rng=None):
+    """Mouse-level permutation test: does a cluster's centroid (mouse-averaged
+    AP/ML/DV) deviate from the dataset-wide baseline centroid more than
+    expected, given each mouse's own spatial sampling? Effect size = Euclidean
+    centroid distance in CCF units. Null: for each mouse contributing n_km
+    neurons, resample n_km neurons from that mouse's full pool (any cluster).
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+    all_mask = np.ones(len(mouse_arr), dtype=bool)
+    baseline_centroid, _ = _mouse_level_centroid(coords, mouse_arr, all_mask)
+    mice_all = np.unique(mouse_arr)
+    mouse_pool_idx = {m: np.where((mouse_arr == m) & ~np.isnan(coords).any(axis=1))[0] for m in mice_all}
+
+    dist_obs, pvals_raw, n_mice_used = [], [], []
+    for k in sig_clusters:
+        neurons_k = cluster_labels == k
+        obs_centroid, n_mice_k = _mouse_level_centroid(coords, mouse_arr, neurons_k)
+        n_mice_used.append(n_mice_k)
+        if obs_centroid is None:
+            dist_obs.append(np.nan); pvals_raw.append(1.0)
+            continue
+        obs_dist = np.linalg.norm(obs_centroid - baseline_centroid)
+        dist_obs.append(obs_dist)
+
+        contrib = {m: int((neurons_k & (mouse_arr == m)).sum())
+                   for m in mice_all if (neurons_k & (mouse_arr == m)).sum() > 0}
+
+        null_dist = np.empty(n_perm)
+        for p in range(n_perm):
+            per_mouse = []
+            for m, n_km in contrib.items():
+                pool = mouse_pool_idx[m]
+                if len(pool) < n_km:
+                    continue
+                sub_idx = rng.choice(pool, size=n_km, replace=False)
+                per_mouse.append(coords[sub_idx].mean(axis=0))
+            if not per_mouse:
+                null_dist[p] = np.nan
+                continue
+            perm_centroid = np.array(per_mouse).mean(axis=0)
+            null_dist[p] = np.linalg.norm(perm_centroid - baseline_centroid)
+
+        valid = ~np.isnan(null_dist)
+        pvals_raw.append((1 + np.sum(null_dist[valid] >= obs_dist)) / (valid.sum() + 1))
+
+    pvals_raw = np.array(pvals_raw)
+    pvals_fdr, reject = _bh_correction(pvals_raw, alpha=0.05)
+    return pd.DataFrame(dict(
+        cluster=[k + 1 for k in sig_clusters], centroid_distance=dist_obs,
+        n_mice=n_mice_used, p_raw=pvals_raw, p_fdr=pvals_fdr, significant=reject,
+    )), baseline_centroid
+
+
+
+def _permutation_location_by_rewardgroup(cluster_labels, coords, mouse_arr, reward_arr,
+                                          sig_clusters, n_perm=500, rng=None):
+    """For each cluster already found significant in the R+/R- enrichment
+    test: do R+ and R- mice's neurons within THIS cluster differ in centroid
+    location more than expected by chance, given which mice contribute?
+    Also reports the dataset-wide global R+/R- centroid distance for context
+    — if the within-cluster distance isn't bigger than the global baseline
+    gap, location isn't a special confound for this cluster specifically.
+
+    Null: shuffle reward-group labels among the mice CONTRIBUTING TO THIS
+    CLUSTER (their neuron counts/locations held fixed) — tests whether actual
+    R+/R- assignment separates centroids more than random relabeling of the
+    same contributing mice.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    # global (dataset-wide) R+/R- centroid distance, for context
+    mouse_reward = {m: reward_arr[mouse_arr == m][0] for m in np.unique(mouse_arr)}
+    global_rp_mask = np.array([mouse_reward[m] == "R+" for m in mouse_arr])
+    global_rm_mask = np.array([mouse_reward[m] == "R-" for m in mouse_arr])
+    c_rp, _ = _mouse_level_centroid(coords, mouse_arr, global_rp_mask)
+    c_rm, _ = _mouse_level_centroid(coords, mouse_arr, global_rm_mask)
+    global_dist = np.linalg.norm(c_rp - c_rm) if (c_rp is not None and c_rm is not None) else np.nan
+
+    dist_obs, pvals_raw, n_mice_rp, n_mice_rm = [], [], [], []
+    for k in sig_clusters:
+        neurons_k = cluster_labels == k
+        mice_k = np.unique(mouse_arr[neurons_k])
+        group_of = {m: mouse_reward[m] for m in mice_k}
+
+        rp_mice = [m for m in mice_k if group_of[m] == "R+"]
+        rm_mice = [m for m in mice_k if group_of[m] == "R-"]
+        n_mice_rp.append(len(rp_mice)); n_mice_rm.append(len(rm_mice))
+
+        if len(rp_mice) < 2 or len(rm_mice) < 2:
+            dist_obs.append(np.nan); pvals_raw.append(1.0)
+            continue
+
+        c1, _ = _mouse_level_centroid(coords, mouse_arr, neurons_k & np.isin(mouse_arr, rp_mice))
+        c2, _ = _mouse_level_centroid(coords, mouse_arr, neurons_k & np.isin(mouse_arr, rm_mice))
+        obs_dist = np.linalg.norm(c1 - c2)
+        dist_obs.append(obs_dist)
+
+        # per-mouse coordinate pool WITHIN this cluster (locations fixed, only relabel group)
+        mouse_coords_k = {m: coords[neurons_k & (mouse_arr == m)] for m in mice_k}
+        null_dist = np.empty(n_perm)
+        for p in range(n_perm):
+            shuffled = rng.permutation(mice_k)
+            perm_rp = shuffled[:len(rp_mice)]
+            perm_rm = shuffled[len(rp_mice):len(rp_mice) + len(rm_mice)]
+            pc1 = np.array([mouse_coords_k[m].mean(axis=0) for m in perm_rp
+                             if len(mouse_coords_k[m])]).mean(axis=0)
+            pc2 = np.array([mouse_coords_k[m].mean(axis=0) for m in perm_rm
+                             if len(mouse_coords_k[m])]).mean(axis=0)
+            null_dist[p] = np.linalg.norm(pc1 - pc2)
+
+        pvals_raw.append((1 + np.sum(null_dist >= obs_dist)) / (n_perm + 1))
+
+    pvals_raw = np.array(pvals_raw)
+    pvals_fdr, reject = _bh_correction(pvals_raw, alpha=0.05)
+    return pd.DataFrame(dict(
+        cluster=[k + 1 for k in sig_clusters], within_cluster_distance=dist_obs,
+        global_dataset_distance=global_dist, n_mice_rplus=n_mice_rp, n_mice_rminus=n_mice_rm,
+        p_raw=pvals_raw, p_fdr=pvals_fdr, significant=reject,
+    ))
+
+_PROJECTIONS = [
+    ("ML", "AP", 1, 0),   # (xlabel, ylabel, x_col_idx, y_col_idx) -- coords columns = [AP, ML, DV]
+    ("DV", "AP", 2, 0),
+    ("ML", "DV", 1, 2),
+]
+def _fig_location_vs_dataset_overview(cluster_labels, coords, mouse_arr, sig_clusters, loc_df, baseline_centroid, out_dir):
+    fig, ax = plt.subplots(figsize=(7, 7))
+    ax.scatter(coords[:, 1], coords[:, 0], s=1, color="lightgrey", alpha=0.15, zorder=1)
+    ax.scatter(baseline_centroid[1], baseline_centroid[0], marker="+", s=200,
+               color="black", linewidths=2, zorder=4, label="Dataset centroid")
+
+    dmax = max(loc_df["centroid_distance"].max(), 1e-3)
+    for i, k in enumerate(sig_clusters):
+        row = loc_df.iloc[i]
+        c, _ = _mouse_level_centroid(coords, mouse_arr, cluster_labels == k)
+        if c is None:
+            continue
+        size = 60 + 300 * (row["centroid_distance"] / dmax)
+        if row["significant"]:
+            ax.scatter(c[1], c[0], s=size, facecolors="crimson", edgecolors="black",
+                       linewidths=0.5, zorder=3)
+            ax.annotate(f"{k+1}", (c[1], c[0]), fontsize=7, ha="center", va="center", zorder=5)
+        else:
+            ax.scatter(c[1], c[0], s=30, facecolors="none", edgecolors="grey",
+                       linewidths=0.8, zorder=2)
+
+    ax.set_xlabel("ML (CCF)"); ax.set_ylabel("AP (CCF)")
+    ax.set_title("Cluster centroid location vs. dataset baseline\n"
+                  "(filled = significant deviation, size ∝ centroid distance, mouse-level permutation)")
+    ax.legend(loc="upper right", fontsize=8, frameon=False)
+    ax.invert_yaxis()
+    fig.tight_layout()
+    fig.savefig(out_dir / "location_vs_dataset_overview.png", dpi=150)
+    plt.close(fig)
+
+def _fig_location_by_rewardgroup_old(cluster_labels, coords, mouse_arr, reward_arr,
+                                  sig_clusters, rg_loc_df, out_dir):
+    """One row per cluster, one column per projection (AP-ML, AP-DV, ML-DV)."""
+    n_sig = len(sig_clusters)
+    fig, axes = plt.subplots(n_sig, 3, figsize=(9, 2.8 * n_sig), squeeze=False)
+
+    for row, k in enumerate(sig_clusters):
+        neurons_k = cluster_labels == k
+        rp_mask = neurons_k & (reward_arr == "R+")
+        rm_mask = neurons_k & (reward_arr == "R-")
+        rg_row = rg_loc_df.iloc[row]
+        star = "*" if rg_row["significant"] else "ns"
+
+        for col, (xlabel, ylabel, xi, yi) in enumerate(_PROJECTIONS):
+            ax = axes[row, col]
+            ax.scatter(coords[rp_mask, xi], coords[rp_mask, yi], s=8, color=rplus_color, alpha=0.6, label="R+")
+            ax.scatter(coords[rm_mask, xi], coords[rm_mask, yi], s=8, color=rminus_color, alpha=0.6, label="R-")
+            ax.set_xlabel(xlabel, fontsize=8); ax.set_ylabel(ylabel, fontsize=8)
+            ax.tick_params(labelsize=7)
+            if yi == 0:  # AP on y-axis in this projection -> anatomical "up" convention
+                ax.invert_yaxis()
+            if col == 0:
+                ax.set_title(f"Cluster {k+1}: {rg_row['within_cluster_distance']:.0f} vs "
+                              f"{rg_row['global_dataset_distance']:.0f} μm baseline ({star})",
+                              fontsize=8, loc="left")
+            if row == 0 and col == 0:
+                ax.legend(fontsize=7, frameon=False)
+
+    fig.suptitle("Within-cluster R+ vs. R− centroid location, all three projections\n"
+                  "(subplot title: within-cluster centroid distance vs. dataset-wide R+/R- baseline gap)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "location_by_rewardgroup_3proj.png", dpi=150)
+    plt.close(fig)
+
+
+def _fig_location_vs_dataset_detail(cluster_labels, coords, mouse_arr, sig_clusters,
+                                     loc_df, baseline_centroid, out_dir):
+    """Per-cluster (Q2) detail: all neurons in grey, cluster neurons colored,
+    dataset centroid (cross) vs. cluster centroid (dot), all three projections."""
+    n_sig = len(sig_clusters)
+    fig, axes = plt.subplots(n_sig, 3, figsize=(9, 2.8 * n_sig), squeeze=False)
+
+    for row, k in enumerate(sig_clusters):
+        neurons_k = cluster_labels == k
+        centroid, _ = _mouse_level_centroid(coords, mouse_arr, neurons_k)
+        loc_row = loc_df.iloc[row]
+        star = "*" if loc_row["significant"] else "ns"
+
+        for col, (xlabel, ylabel, xi, yi) in enumerate(_PROJECTIONS):
+            ax = axes[row, col]
+            ax.scatter(coords[:, xi], coords[:, yi], s=2, color="lightgrey", alpha=0.2, zorder=1)
+            ax.scatter(coords[neurons_k, xi], coords[neurons_k, yi], s=8, color="steelblue", alpha=0.6, zorder=2)
+            ax.scatter(baseline_centroid[xi], baseline_centroid[yi], marker="+", s=120,
+                       color="black", linewidths=2, zorder=4)
+            if centroid is not None:
+                ax.scatter(centroid[xi], centroid[yi], marker="o", s=60,
+                           color="crimson", edgecolors="black", linewidths=0.5, zorder=4)
+            ax.set_xlabel(xlabel, fontsize=8); ax.set_ylabel(ylabel, fontsize=8)
+            ax.tick_params(labelsize=7)
+            if yi == 0:
+                ax.invert_yaxis()
+            if col == 0:
+                ax.set_title(f"Cluster {k+1}: {loc_row['centroid_distance']:.0f} μm from "
+                              f"dataset centroid ({star})", fontsize=8, loc="left")
+
+    fig.suptitle("Cluster centroid location vs. dataset baseline, all three projections\n"
+                  "(cross = dataset centroid, red dot = cluster centroid)")
+    fig.tight_layout()
+    fig.savefig(out_dir / "location_vs_dataset_3proj.png", dpi=150)
+    plt.close(fig)
+
+def _reorder_coords_for_brainrender(coords):
+    """coords columns are [AP, ML, DV] (this pipeline's convention). brainrender
+    / bg-atlasapi expects [AP, DV, ML] in microns for allen_mouse atlases.
+    Sanity-check axis order once against a known landmark before trusting this
+    (e.g. bregma AP should be near the atlas's AP midpoint, DV should increase
+    ventrally, ML should be symmetric around the midline) — print a quick
+    range summary to catch an accidental unit or axis-order mismatch early.
+    """
+    reordered = coords[:, [0, 2, 1]]  # AP, DV, ML
+    print(f"  brainrender coords range — AP: [{reordered[:,0].min():.0f}, {reordered[:,0].max():.0f}]  "
+          f"DV: [{reordered[:,1].min():.0f}, {reordered[:,1].max():.0f}]  "
+          f"ML: [{reordered[:,2].min():.0f}, {reordered[:,2].max():.0f}]  (μm, verify against known landmarks)")
+    return reordered
+
+import vedo
+vedo.settings.use_depth_peeling = True  # fixes VTK's default incorrect ordering
+                                       # of overlapping semi-transparent actors
+                                       # (root mesh + points) — without this,
+                                       # points can render invisible behind a
+                                       # low-alpha root mesh even though both
+                                       # are logically in the scene
+
+
+def _brainrender_multiview_screenshots(build_actor_fn, tmp_dir, tag):
+    from brainrender import Scene
+    paths = {}
+    for label, camera in _BRAINRENDER_VIEWS:
+        scene = Scene(atlas_name="allen_mouse_25um", title=None, inset=False)
+        scene.add_brain_region("root", alpha=0.1, color="grey")  # bumped 0.06->0.1
+        build_actor_fn(scene)
+        scene.render(camera=camera, interactive=False, zoom=1.3)
+        out_path = tmp_dir / f"{tag}_{camera}.png"
+        scene.screenshot(name=str(out_path.with_suffix("")))
+        scene.close()
+        paths[label] = out_path if out_path.exists() else out_path.with_suffix(".png")
+    return paths
+
+
+def render_cluster_location_and_density_grid_old(cluster_labels, coords_ccf, sig_clusters, out_dir,
+                                              cluster_selection="significant"):
+    try:
+        from brainrender.actors import Points, PointsDensity
+    except ImportError:
+        print("  brainrender not installed — skipping location/density grid renders.")
+        return
+
+    br_dir = out_dir / "brainrender"
+    tmp_dir = br_dir / "_tmp_views"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    coords_br = _reorder_coords_for_brainrender(coords_ccf)
+
+    clusters_to_render = (np.unique(cluster_labels) if cluster_selection == "all" else sig_clusters)
+    print(f"  Rendering location+density grids for {len(clusters_to_render)} cluster(s)")
+
+    for k in clusters_to_render:
+        mask = (cluster_labels == k) & ~np.isnan(coords_br).any(axis=1)
+        if mask.sum() < 10:
+            print(f"  Cluster {k+1}: too few valid-coordinate neurons ({mask.sum()}), skipping")
+            continue
+        pts = coords_br[mask]
+
+        loc_paths = _brainrender_multiview_screenshots(
+            # radius bumped 25->40, alpha set to fully opaque (was 0.85) so
+            # points aren't stacking transparency with the root mesh
+            lambda scene, p=pts: scene.add(Points(p, radius=40, colors="crimson", alpha=1.0)),
+            tmp_dir, tag=f"cl{k+1:03d}_loc")
+        dens_paths = _brainrender_multiview_screenshots(
+            lambda scene, p=pts: scene.add(PointsDensity(p, colors=_DENSITY_CMAP)),
+            tmp_dir, tag=f"cl{k+1:03d}_dens")
+
+        fig, axes = plt.subplots(2, 4, figsize=(14, 7))
+        for col, (label, _) in enumerate(_BRAINRENDER_VIEWS):
+            for row, paths, row_label in [(0, loc_paths, "Cell locations"), (1, dens_paths, "Density")]:
+                ax = axes[row, col]
+                img_path = paths[label]
+                if img_path.exists():
+                    ax.imshow(plt.imread(img_path))
+                else:
+                    ax.text(0.5, 0.5, "render failed", ha="center", va="center", fontsize=8)
+                ax.axis("off")
+                if row == 0:
+                    ax.set_title(label, fontsize=10)
+                if col == 0:
+                    ax.text(-0.05, 0.5, row_label, transform=ax.transAxes, fontsize=10,
+                             rotation=90, va="center", ha="right")
+
+        fig.suptitle(f"Cluster {k+1} (n={int(mask.sum())} neurons)", fontsize=12)
+        fig.tight_layout()
+        fig.savefig(br_dir / f"cluster_{k+1:03d}_location_density_grid.png", dpi=180)
+        plt.close(fig)
+
+    for f in tmp_dir.glob("*"):
+        f.unlink()
+    tmp_dir.rmdir()
+    print(f"  Saved location+density grids → {br_dir}")
+
+def render_cluster_locations_brainrender_old(cluster_labels, coords, sig_clusters, out_dir,
+                                          atlas_name="allen_mouse_25um", one_scene_per_cluster=True):
+    """Static 3D brainrender screenshots of significant clusters' neuron
+    locations against the Allen CCF brain outline. Runs off-screen (no
+    interactive window needed) and saves PNG screenshots.
+
+    Requires: pip install brainrender  (pulls in vedo + bg-atlasapi; the
+    atlas itself downloads on first use, ~100s of MB).
+    """
+    try:
+        from brainrender import Scene, settings
+        from brainrender.actors import Points
+    except ImportError:
+        print("  brainrender not installed — skipping 3D renders. "
+              "Install with: pip install brainrender")
+        return
+
+    settings.OFFSCREEN = True  # no display needed on a headless workstation
+    br_dir = out_dir / "brainrender"
+    br_dir.mkdir(parents=True, exist_ok=True)
+
+    coords_br = _reorder_coords_for_brainrender(coords)
+    cmap = plt.get_cmap("tab20")
+
+    if one_scene_per_cluster:
+        for i, k in enumerate(sig_clusters):
+            scene = Scene(atlas_name=atlas_name, title=f"Cluster {k+1}")
+            scene.add_brain_region("root", alpha=0.06, color="grey")
+            mask = cluster_labels == k
+            pts = Points(coords_br[mask], radius=25, colors="crimson", alpha=0.85)
+            scene.add(pts)
+            scene.render(interactive=False, zoom=1.3)
+            scene.screenshot(name=str(br_dir / f"cluster_{k+1:03d}_3d"))
+            scene.close()
+    else:
+        # all significant clusters in one scene, colored distinctly
+        scene = Scene(atlas_name=atlas_name, title="All significant clusters")
+        scene.add_brain_region("root", alpha=0.05, color="grey")
+        for i, k in enumerate(sig_clusters):
+            mask = cluster_labels == k
+            color = cmap(i % 20)[:3]
+            scene.add(Points(coords_br[mask], radius=20, colors=color, alpha=0.8, name=f"Cluster {k+1}"))
+        scene.render(interactive=False, zoom=1.3)
+        scene.screenshot(name=str(br_dir / "all_sig_clusters_3d"))
+        scene.close()
+
+    print(f"  Saved brainrender 3D screenshots → {br_dir}")
+
+import brainrender
+brainrender.settings.SHOW_AXES = False  # remove the default axes/ruler overlay, module-level, set once
+
+_BRAINRENDER_VIEWS = [
+    ("Angled", "three_quarters"),
+    ("Top",    "top"),
+    ("Frontal","frontal"),
+    ("Sagittal","sagittal"),
+]
+_DENSITY_CMAP = "magma"   # distinct from PiYG/Purples/tab20 used elsewhere in this pipeline
+
+
+def _brainrender_multiview_screenshots_old(build_actor_fn, tmp_dir, tag):
+    """Render one Scene per camera view (a fresh Scene per view avoids stale-
+    camera issues some brainrender versions have when reusing a Scene across
+    multiple scene.render(camera=...) calls) and return {view_label: path}."""
+    from brainrender import Scene
+    paths = {}
+    for label, camera in _BRAINRENDER_VIEWS:
+        scene = Scene(atlas_name="allen_mouse_25um", title=None)
+        scene.add_brain_region("root", alpha=0.06, color="grey")
+        build_actor_fn(scene)
+        scene.render(camera=camera, interactive=False, zoom=1.3)
+        out_path = tmp_dir / f"{tag}_{camera}.png"
+        scene.screenshot(name=str(out_path.with_suffix("")))
+        scene.close()
+        paths[label] = out_path if out_path.exists() else out_path.with_suffix(".png")
+    return paths
+
+
+def render_cluster_location_and_density_grid(cluster_labels, coords_ccf, sig_clusters, out_dir,
+                                              cluster_selection="significant"):
+    """For each cluster: a single combined figure, 2 rows x 4 columns —
+    row 1 = actual cell locations (Points), row 2 = density (PointsDensity,
+    unique colormap) — each column a different camera view (angled/top/
+    frontal/sagittal). Off-screen, static screenshots stitched via matplotlib.
+    """
+    try:
+        from brainrender.actors import Points, PointsDensity
+    except ImportError:
+        print("  brainrender not installed — skipping location/density grid renders.")
+        return
+
+    br_dir = out_dir / "brainrender"
+    tmp_dir = br_dir / "_tmp_views"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+
+    coords_br = _reorder_coords_for_brainrender(coords_ccf)  # AP,ML,DV -> AP,DV,ML
+
+    if cluster_selection == "all":
+        clusters_to_render = np.unique(cluster_labels)
+    elif cluster_selection == "significant":
+        clusters_to_render = sig_clusters
+    else:
+        raise ValueError('cluster_selection must be "significant" or "all"')
+    print(f"  Rendering location+density grids for {len(clusters_to_render)} cluster(s)")
+
+    for k in clusters_to_render:
+        mask = (cluster_labels == k) & ~np.isnan(coords_br).any(axis=1)
+        if mask.sum() < 10:
+            print(f"  Cluster {k+1}: too few valid-coordinate neurons ({mask.sum()}), skipping")
+            continue
+        pts = coords_br[mask]
+
+        loc_paths = _brainrender_multiview_screenshots(
+            lambda scene, p=pts: scene.add(Points(p, radius=50, colors="crimson", alpha=0.85)),
+            tmp_dir, tag=f"cl{k+1:03d}_loc")
+        dens_paths = _brainrender_multiview_screenshots(
+            lambda scene, p=pts: scene.add(PointsDensity(p, colors=_DENSITY_CMAP, radius=100)),
+            tmp_dir, tag=f"cl{k+1:03d}_dens")
+
+        fig, axes = plt.subplots(2, 4, figsize=(14, 7))
+        for col, (label, _) in enumerate(_BRAINRENDER_VIEWS):
+            for row, paths, row_label in [(0, loc_paths, "Cell locations"), (1, dens_paths, "Density")]:
+                ax = axes[row, col]
+                img_path = paths[label]
+                if img_path.exists():
+                    ax.imshow(plt.imread(img_path))
+                else:
+                    ax.text(0.5, 0.5, "render failed", ha="center", va="center", fontsize=8)
+                ax.axis("off")
+                if row == 0:
+                    ax.set_title(label, fontsize=10)
+                if col == 0:
+                    ax.text(-0.05, 0.5, row_label, transform=ax.transAxes, fontsize=10,
+                             rotation=90, va="center", ha="right")
+
+        fig.suptitle(f"Cluster {k+1} (n={int(mask.sum())} neurons)", fontsize=12)
+        fig.tight_layout()
+        fig.savefig(br_dir / f"cluster_{k+1:03d}_location_density_grid.png", dpi=180)
+        plt.close(fig)
+
+    for f in tmp_dir.glob("*"):
+        f.unlink()
+    tmp_dir.rmdir()
+    print(f"  Saved location+density grids → {br_dir}")
+
+def render_cluster_density_brainrender(cluster_labels, coords_ccf, sig_clusters, out_dir,
+                                        atlas_name="allen_mouse_25um",
+                                        cluster_selection="significant"):
+    """Volumetric density maps in true CCF atlas space, one per cluster plus
+    a dataset-wide reference density. Off-screen, static screenshots.
+
+    cluster_selection: "significant" -> only sig_clusters (as passed in);
+                        "all"        -> every cluster present in cluster_labels.
+
+    Requires: pip install brainrender  (pulls in vedo + bg-atlasapi; the
+    atlas downloads on first use).
+    """
+    try:
+        from brainrender import Scene, settings
+        from brainrender.actors import PointsDensity
+    except ImportError:
+        print("  brainrender not installed — skipping density renders. "
+              "Install with: pip install brainrender")
+        return
+
+    settings.OFFSCREEN = True
+    br_dir = out_dir / "brainrender" / "density"
+    br_dir.mkdir(parents=True, exist_ok=True)
+
+    coords_br = _reorder_coords_for_brainrender(coords_ccf)  # AP,ML,DV -> AP,DV,ML
+
+    if cluster_selection == "all":
+        clusters_to_render = np.unique(cluster_labels)
+        print(f"  Rendering density for ALL {len(clusters_to_render)} clusters")
+    elif cluster_selection == "significant":
+        clusters_to_render = sig_clusters
+        print(f"  Rendering density for {len(clusters_to_render)} significant cluster(s)")
+    else:
+        raise ValueError('cluster_selection must be "significant" or "all"')
+
+    # dataset-wide density (reference, always rendered)
+    valid_all = ~np.isnan(coords_br).any(axis=1)
+    scene = Scene(atlas_name=atlas_name, title="Dataset density")
+    scene.add_brain_region("root", alpha=0.05, color="grey")
+    scene.add(PointsDensity(coords_br[valid_all]))
+    scene.render(interactive=False, zoom=1.3)
+    scene.screenshot(name=str(br_dir / "dataset_density"))
+    scene.close()
+
+    for k in clusters_to_render:
+        mask = (cluster_labels == k) & ~np.isnan(coords_br).any(axis=1)
+        if mask.sum() < 10:
+            print(f"  Cluster {k+1}: too few valid-coordinate neurons ({mask.sum()}) for a density map, skipping")
+            continue
+        scene = Scene(atlas_name=atlas_name, title=f"Cluster {k+1} density")
+        scene.add_brain_region("root", alpha=0.05, color="grey")
+        scene.add(PointsDensity(coords_br[mask]))
+        scene.render(interactive=False, zoom=1.3)
+        scene.screenshot(name=str(br_dir / f"cluster_{k+1:03d}_density"))
+        scene.close()
+
+    print(f"  Saved brainrender density maps → {br_dir}")
+
+import tifffile
+
+VOXEL_SIZE_UM = 10.0  # must match the resolution of REF_PATH's atlas
+
+def load_reference(atlas_path) -> np.ndarray:
+    """Load and normalize the atlas reference volume (axis order: AP, DV, ML),
+    for the grayscale background of the three projection panels."""
+    ref = tifffile.imread(atlas_path / "reference.tiff").astype(np.float32)
+    ref = (ref - ref.min()) / (ref.max() - ref.min())
+    return ref
+
+def load_annotation_mask(atlas_path) -> np.ndarray:
+    """Boolean mask, True = inside the brain, from the atlas annotation
+    volume (nonzero structure ID = brain tissue, 0 = background)."""
+    ann = tifffile.imread(atlas_path / "annotation.tiff")
+    return ann != 0
+
+def _filter_points_inside_brain(pts_px, brain_mask):
+    """pts_px: (N, 3) neuron coords in voxel-index units, columns AP,DV,ML,
+    same order/scale as brain_mask's axes. Returns points whose voxel index
+    falls inside the mask (out-of-bounds also treated as outside)."""
+    idx = np.round(pts_px).astype(int)
+    inside = np.zeros(len(pts_px), dtype=bool)
+    valid_bounds = (
+        (idx[:, 0] >= 0) & (idx[:, 0] < brain_mask.shape[0]) &
+        (idx[:, 1] >= 0) & (idx[:, 1] < brain_mask.shape[1]) &
+        (idx[:, 2] >= 0) & (idx[:, 2] < brain_mask.shape[2])
+    )
+    inside[valid_bounds] = brain_mask[
+        idx[valid_bounds, 0], idx[valid_bounds, 1], idx[valid_bounds, 2]]
+    return inside
+
+def _voxelize_cluster_occupancy(coords_atlas, mask, ref_shape, voxel_size_um):
+    """Boolean occupancy volume (shape = ref_shape) marking every voxel that
+    contains >=1 neuron of this cluster. coords_atlas columns must already be
+    in the SAME axis order as ref (AP, DV, ML), true CCF atlas-space microns —
+    NOT bregma-relative, and NOT the (AP, ML, DV) order used elsewhere in this
+    pipeline for the matplotlib bregma-relative figures."""
+    pts = coords_atlas[mask]
+    pts = pts[~np.isnan(pts).any(axis=1)]
+    if len(pts) == 0:
+        return np.zeros(ref_shape, dtype=bool)
+    idx = np.round(pts / voxel_size_um).astype(int)
+    for d in range(3):
+        idx[:, d] = np.clip(idx[:, d], 0, ref_shape[d] - 1)
+    occ = np.zeros(ref_shape, dtype=bool)
+    occ[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+    return occ
+
+import colorsys
+from scipy.stats import gaussian_kde
+
+
+def _generate_bright_colors(n, seed=None):
+    """Randomly pick n bright, mutually separable colors — golden-ratio hue
+    stepping from a random start hue guarantees even hue spacing (so colors
+    stay visually distinguishable even for large n), with saturation/value
+    randomized within a bright, saturated range so it still reads as
+    'randomly picked' rather than a fixed palette."""
+    rng = np.random.default_rng(seed)
+    golden_ratio_conj = 0.618033988749895
+    hue = rng.random()
+    colors = []
+    for _ in range(n):
+        hue = (hue + golden_ratio_conj) % 1.0
+        s = rng.uniform(0.65, 0.95)
+        v = rng.uniform(0.85, 1.0)
+        colors.append(colorsys.hsv_to_rgb(hue, s, v))
+    return colors
+
+
+def _translucent_gray_rgba(ref_slice, brain_alpha_max=0.85):
+    """RGBA image: alpha scales with tissue intensity (outside-brain stays
+    transparent), tissue itself rendered as a darker, more visible gray."""
+    rgba = np.zeros((*ref_slice.shape, 4), dtype=np.float32)
+    rgba[..., 0] = rgba[..., 1] = rgba[..., 2] = 1.0 - 0.75 * ref_slice  # darker than before (was 0.55)
+    rgba[..., 3] = np.clip(ref_slice, 0, 1) * brain_alpha_max            # 0.85 max opacity (was 0.7)
+    return rgba
+
+
+def _kde_density_bands_on_ax(ax, x, y, color, grid_n=150, min_points=10):
+    """Two shaded density bands (50-80% and 80-100% of peak KDE density) plus
+    a single solid contour line at the 80% isoline — no cluster label."""
+    valid = np.isfinite(x) & np.isfinite(y)
+    x, y = x[valid], y[valid]
+    if len(x) < min_points or np.std(x) == 0 or np.std(y) == 0:
+        return
+    try:
+        kde = gaussian_kde(np.vstack([x, y]))
+    except np.linalg.LinAlgError:
+        return
+    pad_x = 0.15 * (x.max() - x.min() + 1e-9)
+    pad_y = 0.15 * (y.max() - y.min() + 1e-9)
+    xx, yy = np.meshgrid(np.linspace(x.min() - pad_x, x.max() + pad_x, grid_n),
+                          np.linspace(y.min() - pad_y, y.max() + pad_y, grid_n))
+    zz = kde(np.vstack([xx.ravel(), yy.ravel()])).reshape(xx.shape)
+    zz = zz / zz.max()  # normalize to peak density = 1.0
+
+    from matplotlib.colors import LinearSegmentedColormap
+    band_cmap = LinearSegmentedColormap.from_list("band_cmap", ["white", color])
+    ax.contourf(xx, yy, zz, levels=[0.5, 0.8, 1.0], cmap=band_cmap, alpha=0.35, zorder=2)
+    ax.contour(xx, yy, zz, levels=[0.8], colors=[color], linewidths=1.4, alpha=0.95, zorder=3)
+
+
+def _fig_cluster_atlas_projections(cluster_labels, coords_ccf, sig_clusters, out_dir, atlas_path,
+                                    voxel_size_um=VOXEL_SIZE_UM, seed=None):
+    ref = load_reference(atlas_path)
+    brain_mask  = load_annotation_mask(atlas_path)
+    coords_atlas = _reorder_coords_for_brainrender(coords_ccf)
+    px = coords_atlas / voxel_size_um
+
+    ref_coronal    = ref.max(axis=0)
+    ref_sagittal   = ref.max(axis=2).T
+    ref_transverse = ref.max(axis=1).T
+
+    out_dir = Path(out_dir) / "atlas_proj"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    colors = _generate_bright_colors(len(sig_clusters), seed=seed)
+
+    for i, k in enumerate(sig_clusters):
+        mask = cluster_labels == k
+        pts = px[mask]
+        pts = pts[~np.isnan(pts).any(axis=1)]
+        n_before = len(pts)
+        inside = _filter_points_inside_brain(pts, brain_mask)   # brain_mask loaded once outside the loop
+        pts = pts[inside]
+        n_outside = n_before - len(pts)
+        if n_outside:
+            print(f"  Cluster {k+1}: excluded {n_outside}/{n_before} neurons outside brain mask")
+        n_k = len(pts)
+        if n_k == 0:
+            print(f"  Cluster {k+1}: no valid coordinates, skipping")
+            continue
+        ap_p, dv_p, ml_p = pts[:, 0], pts[:, 1], pts[:, 2]
+        clr = colors[i]
+
+        fig, (ax_cor, ax_sag, ax_tra) = plt.subplots(1, 3, figsize=(13, 4.5))
+        fig.patch.set_facecolor("#f7f7f7")
+        for ax, img in [(ax_cor, ref_coronal), (ax_sag, ref_sagittal), (ax_tra, ref_transverse)]:
+            ax.set_facecolor("#f7f7f7")
+            ax.imshow(_translucent_gray_rgba(img), origin="upper", interpolation="nearest", zorder=1)
+            ax.axis("off")
+            # titles removed
+
+        centroid_kw = dict(marker="+", s=320, linewidths=3.0, color=clr,
+                            edgecolors="black", zorder=5)
+        dot_kw = dict(s=14, color=clr, alpha=0.7, edgecolors="none", zorder=4)  # slightly smaller
+
+        # Coronal: x=ML, y=DV
+        ax_cor.scatter(ml_p, dv_p, **dot_kw)
+        _kde_density_bands_on_ax(ax_cor, ml_p, dv_p, clr)
+        ax_cor.scatter([ml_p.mean()], [dv_p.mean()], **centroid_kw)
+
+        # Sagittal: x=AP, y=DV
+        ax_sag.scatter(ap_p, dv_p, **dot_kw)
+        _kde_density_bands_on_ax(ax_sag, ap_p, dv_p, clr)
+        ax_sag.scatter([ap_p.mean()], [dv_p.mean()], **centroid_kw)
+
+        # Transverse: x=AP, y=ML
+        ax_tra.scatter(ap_p, ml_p, **dot_kw)
+        _kde_density_bands_on_ax(ax_tra, ap_p, ml_p, clr)
+        ax_tra.scatter([ap_p.mean()], [ml_p.mean()], **centroid_kw)
+
+        fig.suptitle(f"Cluster {k+1} (n={n_k} neurons) — Allen reference atlas projections", fontsize=12)
+        fig.tight_layout()
+        fig.savefig(out_dir / f"cluster_{k+1:03d}_atlas_proj.png", dpi=200,
+                    bbox_inches="tight", facecolor=fig.get_facecolor())
+        plt.close(fig)
+
+    print(f"  Saved {len(sig_clusters)} per-cluster atlas projection figures → {out_dir}")
+
+def compute_cluster_centroid_deviation(cluster_labels, coords, mouse_arr, clusters_to_test,
+                                        n_perm=2000, rng=None):
+    """Mouse-level permutation test: does each cluster's centroid (mean
+    AP/ML/DV, equal-weight-averaged across contributing mice) deviate from
+    the dataset-wide baseline centroid more than expected by chance, given
+    each mouse's own spatial sampling?
+
+    coords: (n_neurons, 3) array, columns = AP, ML, DV (any consistent units
+    — bregma-relative or CCF atlas space, just be consistent).
+    clusters_to_test: list/array of cluster IDs (0-indexed, matching
+    cluster_labels) to test — pass whichever selection you want (e.g.
+    BH-FDR-significant reward-group clusters, or any custom subset).
+
+    Returns a DataFrame with one row per cluster: centroid_distance (effect
+    size, same units as coords), n_mice, p_raw, p_fdr, significant.
+    """
+    if rng is None:
+        rng = np.random.default_rng()
+
+    valid = ~np.isnan(coords).any(axis=1)
+    baseline_centroid, n_mice_baseline = _mouse_level_centroid(coords, mouse_arr, valid)
+    print(f"  Dataset baseline centroid (AP, ML, DV) = "
+          f"({baseline_centroid[0]:.0f}, {baseline_centroid[1]:.0f}, {baseline_centroid[2]:.0f}), "
+          f"averaged over {n_mice_baseline} mice")
+
+    mice_all = np.unique(mouse_arr[valid])
+    mouse_pool_idx = {m: np.where((mouse_arr == m) & valid)[0] for m in mice_all}
+
+    rows = []
+    for k in clusters_to_test:
+        neurons_k = cluster_labels == k
+        obs_centroid, n_mice_k = _mouse_level_centroid(coords, mouse_arr, neurons_k & valid)
+        if obs_centroid is None:
+            rows.append(dict(cluster=k + 1, centroid_distance=np.nan, n_mice=0,
+                              p_raw=1.0))
+            continue
+        obs_dist = np.linalg.norm(obs_centroid - baseline_centroid)
+
+        contrib = {m: int((neurons_k & (mouse_arr == m) & valid).sum())
+                   for m in mice_all if (neurons_k & (mouse_arr == m) & valid).sum() > 0}
+
+        null_dist = np.empty(n_perm)
+        for p in range(n_perm):
+            per_mouse = []
+            for m, n_km in contrib.items():
+                pool = mouse_pool_idx[m]
+                if len(pool) < n_km:
+                    continue
+                sub_idx = rng.choice(pool, size=n_km, replace=False)
+                per_mouse.append(coords[sub_idx].mean(axis=0))
+            if not per_mouse:
+                null_dist[p] = np.nan
+                continue
+            perm_centroid = np.array(per_mouse).mean(axis=0)
+            null_dist[p] = np.linalg.norm(perm_centroid - baseline_centroid)
+
+        valid_null = ~np.isnan(null_dist)
+        p_raw = (1 + np.sum(null_dist[valid_null] >= obs_dist)) / (valid_null.sum() + 1)
+        rows.append(dict(cluster=k + 1, centroid_distance=obs_dist, n_mice=n_mice_k, p_raw=p_raw))
+
+    df = pd.DataFrame(rows)
+    df["p_fdr"], df["significant"] = _bh_correction(df["p_raw"].to_numpy(), alpha=0.05)
+    return df, baseline_centroid
+
+
+def _fig_cluster_centroid_deviation(dev_df, out_dir, unit_label="μm"):
+    """Bar/point plot: first xtick = dataset baseline (reference, distance
+    0), subsequent xticks = each cluster's centroid distance from baseline.
+    Significant clusters (BH-FDR) are annotated with a star."""
+    n = len(dev_df)
+    fig, ax = plt.subplots(figsize=(max(6, 0.6 * (n + 1)), 4.5))
+
+    x = np.arange(n + 1)
+    values = np.concatenate([[0.0], dev_df["centroid_distance"].to_numpy()])
+    colors = ["black"] + ["crimson" if sig else "lightgrey" for sig in dev_df["significant"]]
+
+    ax.bar(x, values, color=colors, edgecolor="black", linewidth=0.5, width=0.6)
+
+    for xi, (dist, sig, p) in enumerate(zip(dev_df["centroid_distance"], dev_df["significant"],
+                                             dev_df["p_fdr"]), start=1):
+        if sig:
+            ax.text(xi, dist, "*", ha="center", va="bottom", fontsize=14, fontweight="bold")
+
+    labels = ["Dataset\n(reference)"] + [f"Cluster {c}" for c in dev_df["cluster"]]
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
+    ax.set_ylabel(f"Centroid distance from dataset baseline ({unit_label})")
+    ax.set_title("Cluster centroid deviation from dataset baseline\n"
+                  "(mouse-level permutation test, * = significant BH-FDR α=0.05)")
+    ax.axhline(0, color="black", lw=0.8)
+    fig.tight_layout()
+    fig.savefig(out_dir / "cluster_centroid_deviation.png", dpi=150)
+    plt.close(fig)
+    print(f"  Saved centroid deviation figure → {out_dir / 'cluster_centroid_deviation.png'}")
 
 
 # ── stats-only entry point ───────────────────H─────────────────────────────────
 
-def run_stats_only(out_folder: str | Path) -> dict:
+def run_stats_only(out_folder: str | Path,  cfg: dict, unit_table: pd.DataFrame) -> dict:
     """Re-run the reward-group enrichment analysis on an existing embedding.
 
     Use this when you want to run or re-run statistics without recomputing
@@ -1975,7 +3803,8 @@ def run_stats_only(out_folder: str | Path) -> dict:
     Same dict as run_reward_group_stats.
     """
     out_folder = Path(out_folder)
-    emb_path   = out_folder / "cv_embedding_results.npz"
+    cv_result_file = [f for f in os.listdir(out_folder) if f.endswith('results_cv.npz')][0]
+    emb_path = out_folder / cv_result_file
     if not emb_path.exists():
         raise FileNotFoundError(
             f"No embedding_results.npz found at:\n  {emb_path}\n"
@@ -1991,7 +3820,7 @@ def run_stats_only(out_folder: str | Path) -> dict:
                     "regenerate the embedding with metadata included.")
 
     print(f"Running stats-only pipeline on {out_folder} ...")
-    return run_reward_group_stats(out_folder)
+    return run_reward_group_stats(out_folder, cfg, unit_table)
 
 # ── config loading ─────────────────────────────────────────────────────────────
 

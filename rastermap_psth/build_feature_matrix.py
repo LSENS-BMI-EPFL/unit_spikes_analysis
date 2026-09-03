@@ -157,7 +157,8 @@ def fig4_sample_neurons(unit_ids, st_map, mouse_map, session_map,
         if acol not in seen: seen.add(acol); align_types.append(acol)
     align_idx = {a: i for i, a in enumerate(align_types)}
     align_titles = {"start_time": "Stimulus-aligned",
-                    "jaw_onset_time": "Jaw-aligned", "lick_time": "Lick-aligned"}
+                    "jaw_onset_time": "Jaw-aligned",
+                    "lick_time": "Lick-aligned"}
 
     fig, axes = plt.subplots(n, len(align_types),
                              figsize=(3.5 * len(align_types), 2.8 * n),
@@ -242,21 +243,27 @@ def run_build_feature_matrix(
 
     # ── filters ───────────────────────────────────────────────────────────────
     mouse_info = pd.read_excel(MOUSE_INFO)
-    valid_mice = mouse_info[mouse_info["learning_category"].isin(
-                    ["good", "moderate", "bad"])]["mouse_id"].unique()
+    valid_mice_rplus = mouse_info[(mouse_info['reward_group']=='R+')&(mouse_info["learning_category"].isin(["good", "moderate"]))]["mouse_id"].unique()
+    valid_mice_rminus = mouse_info[(mouse_info['reward_group']=='R-')&(mouse_info["learning_category"].isin(["good", "moderate","bad"]))]["mouse_id"].unique()
+    #valid_mice = mouse_info[mouse_info["learning_category"].isin(["good", "moderate"])]["mouse_id"].unique()
+    valid_mice = np.concatenate([valid_mice_rplus, valid_mice_rminus])
+
     units["firing_rate"] = units["firing_rate"].astype(float)
     units_raw = units.copy()
     units     = units[units.firing_rate > cfg["global_fr_hz"]]
     trials    = trials[trials.mouse_id.isin(valid_mice)]
+    lick_df = lick_df[lick_df.mouse_id.isin(valid_mice)]
+    print('here', len(trials), len(valid_mice), len(units))
 
     period = cfg["period"]
     if period in ("passive", "passive_active"):
         trials = assign_passive_context(trials, cfg["mouse_id_col"], cfg["session_id_col"])
     if period in ("active", "passive_active"):
         trials = assign_active_context(trials)
+        print('here trials', len(trials))
 
-    units_good = units[units.bc_label.isin(["good", "mua"])]
-    #units_good = units_good[units_good[cfg["area_col"]].isin(["DLS", "DMS", "VS", "TS", "VTA"])]
+    units_good = units[units.quality_label.isin(cfg["unit_quality_label"])]
+    print('here units good', len(units_good))
     all_ids    = units_good.index.tolist()
 
     st_map      = {uid: get_spike_times(units_good.loc[uid]) for uid in all_ids}
@@ -282,13 +289,25 @@ def run_build_feature_matrix(
 
     unit_ids, fr_map = apply_fr_filter(all_ids, st_map, mouse_map, session_map, event_map, cfg)
 
+    # Count trials per condition and filter based on count (cross-validated)
     trial_counts_df = table1b_trial_counts_per_mouse(event_map, cfg, diag_dir)
-    too_few = trial_counts_df.groupby(["mouse_id", "condition"]).filter(
-        lambda x: x["n_odd"].sum() < cfg["n_min_trial_per_condition"]
-    )["mouse_id"].unique()
+    min_trials = cfg["n_min_trial_per_condition"]
+    cond_sums = trial_counts_df.groupby(["mouse_id", "condition"])["n_odd"].sum().reset_index()
+    failing = cond_sums[cond_sums["n_odd"] < min_trials]
+
+    too_few = failing["mouse_id"].unique()
+
     if len(too_few):
+        for mouse_id in too_few:
+            reasons = failing[failing["mouse_id"] == mouse_id]
+            reason_str = "; ".join(
+                f"{row.condition}: {row.n_odd} < {min_trials}"
+                for row in reasons.itertuples()
+            )
+            print(f"  dropping {mouse_id} — {reason_str}")
         unit_ids = [u for u in unit_ids if mouse_map[u] not in too_few]
-    print(f"  {len(unit_ids)} units pass all filters")
+
+    print(f"  {len(unit_ids)} units pass all filters, removed mice {list(too_few)}")
 
     # ── metadata ──────────────────────────────────────────────────────────────
     reward_map = {uid: ("R+" if r == 1 else "R-" if r == 0 else "unknown")
@@ -421,8 +440,10 @@ def run_build_feature_matrix(
         "session_id":      [session_map[u] for u in unit_ids],
         "cluster_id":      [cid_map.get(u)  for u in unit_ids],
         "electrode_group": [egrp_map.get(u) for u in unit_ids],
-        "reward_group":    reward_arr, "area_acronym": area_arr,
-        "area_group":      area_group_arr, "waveform_type": waveform_arr,
+        "reward_group":    reward_arr,
+        cfg["area_col"]: area_arr,
+        "area_group":      area_group_arr,
+        "waveform_type": waveform_arr,
         "layer_number":    layer_arr,
         "odd_even_r":      odd_even_r,
     })

@@ -28,7 +28,7 @@ LOAD_CCGS toggle:
 import os
 import sys
 
-import neural_utils
+import neural_utils_old
 
 sys.path.append(r"M:\analysis\Axel_Bisi\Github\allen_utils")
 import allen_utils
@@ -400,7 +400,7 @@ def merge_nwb_allen_labels(neurons, session_id):
     merged = merged.drop(columns=["_merge", "fr_round"])
 
     # Step 3: process_allen_labels on the merged (neurons + NWB) data
-    merged = allen_utils.process_allen_labels(merged, subdivide_areas=True)
+    merged = allen_utils.process_allen_labels(merged, split_merge_areas=True)
     if len(merged) != n_before:
         raise RuntimeError(
             f"{session_id}: allen_utils.process_allen_labels changed row count "

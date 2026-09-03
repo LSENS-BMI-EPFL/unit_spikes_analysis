@@ -25,15 +25,13 @@ from pathlib import Path
 import sys
 
 project_root = Path(__file__).resolve().parent.parent.parent
-sys.path.append(str(project_root / "allen_utils"))
-import allen_utils
 
 project_root = Path(__file__).resolve().parent.parent
 sys.path.append(str(project_root))
 
-import allen_utils as allen
-import neural_utils
-import plotting_utils as putils
+import ephys_utilities.allen_utils.allen_utils as allen
+import ephys_utilities.neural_utils.neural_utils as neural_utils
+import ephys_utilities.plotting_utils.plotting_utils as putils
 from roc_analysis_utils import (
     filter_process_data,
     fdr_bh,
@@ -1381,7 +1379,7 @@ def main():
     nwb_list = [os.path.join(NWB_PATH, f) for f in os.listdir(NWB_PATH)
                 if any(m in f for m in valid_mice)]
     _, unit_table, _ = neural_utils.combine_ephys_nwb(nwb_list, max_workers=n_workers)
-    unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
+    unit_table = allen.process_allen_labels(unit_table, split_merge_areas=True)
 
     # ------------------------------------------------------------------
     # LOAD ROC DATA FROM ALL SESSIONS
@@ -1447,7 +1445,7 @@ def main():
         KEEP_SHARED_AREAS     = True
 
         roc_df = roc_df_in[~roc_df_in['area'].isin(allen.get_excluded_areas())]
-        roc_df = allen.process_allen_labels(roc_df, subdivide_areas=True)
+        roc_df = allen.process_allen_labels(roc_df, split_merge_areas=True)
         # filter_process_data uses area_acronym_custom + mouse_id internally
         roc_df = filter_process_data(
             roc_df,

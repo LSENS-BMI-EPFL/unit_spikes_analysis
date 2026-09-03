@@ -79,7 +79,7 @@ from matplotlib.colors import ListedColormap
 import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 
-import plotting_utils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
 
 # ── config ─────────────────────────────────────────────────────────────────────
 # TODO: Implement trad spectral emb/GMM approach and compare clustering / have it in different script for all the methods

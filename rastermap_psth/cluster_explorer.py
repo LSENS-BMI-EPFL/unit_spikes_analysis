@@ -19,6 +19,7 @@ unit-table row into embedding_results.npz at pipeline time, e.g.:
     save_dict["session_ids"] = unit_table["session_id"].values
     save_dict["unit_table_idx"] = unit_table.index.values
 """
+import ephys_utilities
 
 # ── user config ────────────────────────────────────────────────────────────────
 EMBEDDING_PATH = r"M:\analysis\Axel_Bisi\combined_results\rastermap_psth_jaw_test\n_clusters_100\both\zscore\whisker_auditory\combined\embedding_results.npz"
@@ -63,9 +64,9 @@ import matplotlib.gridspec as gridspec
 from matplotlib.lines import Line2D
 from scipy.ndimage import gaussian_filter1d
 
-import allen_utils
-import neural_utils as nutils
-from load_helpers import load_jaw_onset_data
+import ephys_utilities.allen_utils as allen_utils
+import ephys_utilities.neural_utils as nutils
+from ephys_utilities.helpers.load_helpers import load_jaw_onset_data
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -88,7 +89,7 @@ def load_all_data(nwb_paths: list[Path]):
     )
     print(unit_table.reward_group.unique())
     print(trial_table.reward_group.unique())
-    unit_table = allen_utils.process_allen_labels(unit_table, subdivide_areas=True)
+    unit_table = allen_utils.process_allen_labels(unit_table, split_merge_areas=True)
 
     jaw_onset_table = load_jaw_onset_data(nwb_neural_files, max_workers=N_WORKERS)
     trial_table = trial_table.merge(

@@ -2,7 +2,7 @@
 """
 @author: Axel Bisi
 @project: brain_wide_analysis
-@file: neural_utils.py
+@file: neural_utils_old.py
 @time: 2/11/2024 9:41 PM
 """
 # Imports
@@ -80,6 +80,7 @@ def process_single_nwb(nwb, day_to_analyze = 0):
         trial_table['reward_group'] = reward_group
         trial_table['context'] = trial_table['context'].astype(str)
         trial_table['day'] = day
+        trial_table['behaviour'] = beh_type
 
         if trial_table['context'].str.contains('nan').all():
             trial_table['context'] = 'active'
@@ -92,6 +93,7 @@ def process_single_nwb(nwb, day_to_analyze = 0):
         unit_table['session_id'] = session_id
         unit_table['reward_group'] = reward_group
         unit_table['day'] = day
+        unit_table['behaviour'] = beh_type
         print('Warning: number of root neurons :', mouse_id, len(unit_table[unit_table.ccf_acronym=='root']))
 
         unit_table = convert_electrode_group_object_to_columns(unit_table)
@@ -136,8 +138,9 @@ def combine_ephys_nwb(nwb_list,day_to_analyze=0, max_workers=24):
     unit_table = pd.concat(unit_table_list, ignore_index=True) if unit_table_list else pd.DataFrame()
 
     if not unit_table.empty:
-        print('Removing excluded areas from unit table and creating global unit IDs...')
-        unit_table = unit_table[~unit_table['ccf_atlas_acronym'].isin(allen.get_excluded_areas())]
+        #print('Removing excluded areas from unit table and creating global unit IDs...')
+        #unit_table = unit_table[~unit_table['ccf_atlas_acronym'].isin(allen.get_excluded_areas())]
+        print('Creating global unit IDs...')
         unit_table = unit_table.reset_index(drop=True)
         unit_table['unit_id'] = unit_table.index            # global unit identifier
 
@@ -1305,11 +1308,22 @@ DEFAULT_BOMBCELL_THRESHOLDS = { #min/max thresholds for good unit classification
     "presenceRatio":                     (0.7,    None),
     #"rawAmplitude":                      (20,    None), # too dependent on recording
     #"signalToNoiseRatio":                (20,    None),
-    "isolationDistance" :                (None,    None),
-    "Lratio":                            (None,  None),
+    "isolationDistance" :                (20,    None),
+    "Lratio":                            (None,  0.3),
+}
+ROUTE_TRESHOLDS = {
+   # "nSpikes": "noise",
+    "percentageSpikesMissing_gaussian": "mua",
+    "percentageSpikesMissing_symmetric": "mua",
+    "fractionRPVs_estimatedTauR": "mua",
+    "presenceRatio": "mua",
+    "isolationDistance": "mua",
+    "Lratio": "mua",
+    #"coverageRatio": "mua",
+    #"driftIndependence": "mua",
 }
 
-def classify_units_bombcell(unit_table: pd.DataFrame,
+def classify_units_bombcell_metrics(unit_table: pd.DataFrame,
                              thresholds: dict = None,
                              label_col: str = "bc_label") -> pd.DataFrame:
     """

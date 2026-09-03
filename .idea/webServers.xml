@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="8ea3a08c-d7fb-434e-8da0-b31a9e843565" name="Haas">
+        <fileTransfer accessType="SFTP" host="haas056.rcp.epfl.ch" port="22" sshConfigId="b17f5e09-0a49-4bda-bd4d-d25641eec3c4" sshConfig="bisi@haas056.rcp.epfl.ch:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+      <webServer id="afc490b5-7706-426b-81ff-71f110c2a158" name="HHAS">
+        <fileTransfer accessType="SFTP" host="haas056.rcp.epfl.ch" port="22" sshConfigId="b17f5e09-0a49-4bda-bd4d-d25641eec3c4" sshConfig="bisi@haas056.rcp.epfl.ch:22 password">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" passiveMode="true" shareSSLContext="true" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

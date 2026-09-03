@@ -36,7 +36,8 @@ from joblib import Parallel, delayed
 from scipy.stats import fisher_exact, kruskal, mannwhitneyu
 import matplotlib.patches as mpatches
 
-import plotting_utils
+import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
+from ephys_utilities.allen_utils.allen_utils import get_custom_area_groups, get_custom_area_groups_colors
 from rastermap_psth.rastermap_utils import (
     load_cfg, N_WORKERS,
     get_conditions, get_cond_infos,
@@ -47,12 +48,6 @@ from rastermap_psth.rastermap_utils import (
     build_anatomy_cmaps,
     run_reward_group_stats, _bh_correction
 )
-
-try:
-    from allen_utils import get_custom_area_groups, get_custom_area_groups_colors
-    _HAS_ALLEN = True
-except Exception:
-    _HAS_ALLEN = False
 
 from rastermap_psth.rastermap_utils import (
     DEFAULT_CFG,
@@ -992,7 +987,7 @@ def run_clustering(
     meta_df = pd.read_csv(data_folder / "neuron_metadata.csv")
     print(f"  X={X.shape}  X_odd={X_odd.shape}  X_even={X_even.shape}")
 
-    group_colors_map = get_custom_area_groups_colors() if _HAS_ALLEN else {}
+    group_colors_map = get_custom_area_groups_colors()
     anatomy_cmaps    = build_anatomy_cmaps(axon_arr, harris_arr, gao_arr) if axon_arr is not None else None
     vmax    = np.nanpercentile(np.abs(X), cfg["vmax_pct"])
     vmax_cv = np.nanpercentile(np.abs(X_odd), cfg["vmax_pct"])

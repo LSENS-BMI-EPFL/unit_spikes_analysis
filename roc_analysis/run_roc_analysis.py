@@ -26,18 +26,16 @@ import sys
 # Determine project root dynamically
 project_root = Path(__file__).resolve().parent.parent.parent
 
-sys.path.append(str(project_root / "allen_utils"))
-import allen_utils
+#sys.path.append(str(project_root / "allen_utils"))
 #from statannotations.Annotator import Annotator
 project_root = Path(__file__).resolve().parent.parent   
 print(project_root)
 sys.path.append(str(project_root))
 
 
-import allen_utils as allen
-import neural_utils
-import plotting_utils
-import plotting_utils as putils
+import ephys_utilities.allen_utils.allen_utils as allen
+import ephys_utilities.neural_utils.neural_utils as neural_utils
+import ephys_utilities.plotting_utils.plotting_utils as putils
 from roc_analysis_utils import *
 from selectivity_grid import plot_selectivity
 
@@ -1006,7 +1004,7 @@ def main():
     nwb_list = [os.path.join(NWB_PATH, f) for f in os.listdir(NWB_PATH) if any(m in f for m in valid_mice)]
     #nwb_list = nwb_list[:200]
     _, unit_table, _ = neural_utils.combine_ephys_nwb(nwb_list, max_workers=n_workers)
-    unit_table = allen.process_allen_labels(unit_table, subdivide_areas=True)
+    unit_table = allen.process_allen_labels(unit_table, split_merge_areas=True)
 
     print('Loading ROC data...')
     data_path_axel = os.path.join(DATA_PATH, 'Myriam_Hamon', 'combined_results')
@@ -1072,7 +1070,7 @@ def main():
 
     # Remove excluded areas
     roc_df = roc_df[~roc_df['area'].isin(allen.get_excluded_areas())]
-    roc_df = allen_utils.process_allen_labels(roc_df, subdivide_areas=True)
+    roc_df = allen_utils.process_allen_labels(roc_df, split_merge_areas=True)
     roc_df = filter_process_data(roc_df, n_units_min=N_UNITS_MIN, n_mice_per_area_min=N_MICE_PER_AREA_MIN,
                                  n_units_per_mouse_min=N_UNITS_PER_MOUSE_MIN, keep_shared=KEEP_SHARED_AREAS)
 
@@ -1901,7 +1899,7 @@ def main():
                             ax.set_xlabel('Hierarchy score')
 
                         ax.set_ylabel('Fraction significant (%)')
-                        plotting_utils.remove_top_right_frame(ax)
+                        putils.remove_top_right_frame(ax)
 
                         plot_idx += 1
 
