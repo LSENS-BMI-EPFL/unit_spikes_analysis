@@ -79,9 +79,10 @@ GLM_CONFIG = {
     # Per-unit, per-trial probe drift as an extra predictor (+ a 'no_drift' ablation), from this
     # session's motion: ROOT_PATH/<mouse>/<session_id>/imec<N>/motion/motion (see get_unit_drift_matrix).
     'compute_drift': True,
+    'no_drift_model': False,  # fit the 'no_drift' ablation
     # Temporal split of event kernels into `number_of_whisker_kernel` kernels
     'whisker_kernels': True,
-    'number_of_whisker_kernel': 1,
+    'number_of_whisker_kernel': 2,
     # Design-matrix variants: which event types get split ('full' drives the main model)
     'kernel_split_configs': {
         'full': ['whisker_hits', 'whisker_misses', 'auditory_stim'],
@@ -90,13 +91,13 @@ GLM_CONFIG = {
         # 'auditory_split': ['auditory_stim'],
     },
     # Control draws for the split: events reassigned to kernels at random / by circular shift
-    'random_split': False,
+    'random_split': True,
     'linear_shift_split': False,
     'n_control_draws': 5,
     # One reward kernel per stimulus type (added model)
     'reward_kernels': False,
     # One 'whisker_stim' kernel for all whisker stimuli instead of separate whisker hit / miss kernels
-    'merge_whisker': True,
+    'merge_whisker': False,
     # Reward event: 'lick_time' = the trial's first response lick (valve opens within a few ms),
     # 'piezo' = previous behaviour (second piezo_lick_times event in the trial window)
     'reward_align': 'lick_time',
@@ -132,7 +133,7 @@ GLM_CONFIG = {
     'iti_bout_quiet_s': 1.0,
     'iti_bout_min_n': 20,
     # Other lick kernels fitted next to 'full' (model_added, full-model lambdas), named lick_<kind>
-    'lick_kernel_variants': ['none'],
+    'lick_kernel_variants': [],
     # Extra models with other reward / lick designs, fitted next to 'full' with its lambdas (model_added):
     # reward_piezo_no_lick, reward_licktime_no_lick, reward_constant, reward_cosine (with reward_basis None),
     # reward_bins (free lags, with reward_basis 'cosine')
@@ -151,9 +152,11 @@ GLM_CONFIG = {
     # Trial-history predictors, each fit as its own added model (None to skip)
     'add_perf_pred': None,
     # Reduced (ablation) models to fit, see REDUCED_MODEL_DEFINITIONS in the pipeline
-    'reduced_models': ['whisker_encoding', 'auditory_encoding', 'reward_encoding', 'jaw_onset_encoding',
-                       'motor_encoding', 'session_progress_encoding', 'sum_rewards',
-                       'whisker_first_bin', 'auditory_first_bin', 'lick_encoding', 'licking_encoding'],
+    # Sensory reduced models only; '_half<k>' = only the kernels of session half k (temporal split) removed
+    'reduced_models': ['whisker_encoding', 'whisker_encoding_half0', 'whisker_encoding_half1',
+                       'whisker_first_bin', 'whisker_first_bin_half0', 'whisker_first_bin_half1',
+                       'auditory_encoding', 'auditory_encoding_half0', 'auditory_encoding_half1',
+                       'auditory_first_bin', 'auditory_first_bin_half0', 'auditory_first_bin_half1'],
     # Outer cross-validation
     'cv_outer_folds': 5,
     'cv_random_state': 42,
@@ -2627,6 +2630,16 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10, save_predic
             'whisker_first_bin': [f for f in feature_namess if ('whisker_hits_stim' in f or 'whisker_misses_stim' in f
                                                                    or 'whisker_stim' in f) and f.endswith('_t+0.00s')],
             'auditory_first_bin': [f for f in feature_namess if 'auditory_stim' in f and f.endswith('_t+0.00s')],
+            # One session half of the split stimulus kernels (whisker_hits_stim_<k>_t, whisker_misses_stim<k>_t,
+            # auditory_stim<k>_t)
+            **{f'whisker_encoding_half{k}': [f for f in feature_namess if f.startswith((f'whisker_hits_stim_{k}_t', f'whisker_misses_stim{k}_t'))]
+               for k in range(number_of_whisker_kernel)},
+            **{f'whisker_first_bin_half{k}': [f for f in feature_namess if f.startswith((f'whisker_hits_stim_{k}_t', f'whisker_misses_stim{k}_t'))
+                                              and f.endswith('_t+0.00s')] for k in range(number_of_whisker_kernel)},
+            **{f'auditory_encoding_half{k}': [f for f in feature_namess if f.startswith(f'auditory_stim{k}_t')]
+               for k in range(number_of_whisker_kernel)},
+            **{f'auditory_first_bin_half{k}': [f for f in feature_namess if f.startswith(f'auditory_stim{k}_t') and f.endswith('_t+0.00s')]
+               for k in range(number_of_whisker_kernel)},
             'sum_rewards': ['sum_reward_scaled'],
             'lick_encoding': [f for f in feature_namess if f.startswith(('lick_piezo_t',) + LICK_KERNEL_PREFIXES)],
             # Licking as a whole: lick kernel + jaw distance (the jaw-onset kernel, before the first lick, stays)
@@ -2683,7 +2696,7 @@ def run_unit_glm_pipeline_with_pool(nwb_path, output_dir, n_jobs=10, save_predic
             # Append reduced model to all models
             # model_res_df_outer.append(results_reduced_df)  # disabled: already saved per-fold below
 
-        if drift_matrix is not None:
+        if drift_matrix is not None and cfg['no_drift_model']:
             # "no_drift" ablation: same design matrix as full, just without the drift column
             results_no_drift = parallel_fit_glms(spikes_trainval=spikes_trainval,
                                                  X_trainval=X_trainval_r,
