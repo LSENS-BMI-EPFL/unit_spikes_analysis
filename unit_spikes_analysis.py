@@ -27,6 +27,7 @@ from roc_analysis.roc_analysis_utils import load_roc_results
 from raster_utils import plot_rasters
 from noise_unit_detection import identify_noise_units
 from roc_analysis.roc_utils_new import compute_unit_roc
+from zeta_analysis.zeta_utils import compute_unit_zeta
 from task_modulation_utils import task_modulation_analysis
 from waveform_utils import plot_waveforms, classify_rsu_vs_fsu, classify_striatal_units
 from unit_desc_utils import *
@@ -79,6 +80,8 @@ def process_subject(subject_id, nwb_neural_files, mouse_results_path_root, analy
                     plot_waveforms(nwb_file, folder_results_path)
                 elif analysis_type == 'roc_analysis':
                     compute_unit_roc(nwb_file, folder_results_path, make_psth_plots=True)
+                elif analysis_type == 'zeta':
+                    compute_unit_zeta(nwb_file, folder_results_path)
                 elif analysis_type == 'task_modulation':
                     task_modulation_analysis(nwb_file, folder_results_path)
                 elif analysis_type == 'noise_correlation':
@@ -98,6 +101,7 @@ VALID_SINGLE_ANALYSES = [
     'noise_correlation',
     'xcorr_analysis',
     'unit_glm',
+    'zeta',
 ]
 
 VALID_MULTI_ANALYSES = [
