@@ -7,7 +7,7 @@ project_root = Path(__file__).resolve().parent.parent
 
 # Add helper repos to sys.path
 sys.path.append(str(project_root / "NWB_reader"))
-sys.path.append(str(project_root / "allen_utils"))
+sys.path.append(str(project_root / "ephys_utilities" / "ephys_utilities" / "allen_utils"))
 import re
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -28,13 +28,97 @@ import matplotlib
 matplotlib.use('Agg') # 'TkAgg' 'Agg' 'Qt5Agg'
 from multiprocessing import Pool
 import json
+import hashlib
 from scipy.stats import gaussian_kde
 
 ROOT_PATH = os.path.join(r'\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'combined_results')
 
-def compute_density_safe(x, y):
+REWARD_GROUP_COLORS = {1: '#00b400', 0: '#c800c8'}  # reward_group: 1 = R+, 0 = R-
+
+# Short labels for kernel base names, used to keep generated filenames/paths
+# below Windows' path-length limit (long UNC network paths run out of room fast).
+_KERNEL_ABBREV = {
+    'whisker_hits_stim': 'whHit',
+    'whisker_misses_stim': 'whMiss',
+    'whisker_stim': 'wh',
+    'auditory_stim': 'aud',
+    'piezo_reward_au': 'rewAud',
+    'piezo_reward': 'rewWh',
+    'hit_minus_miss': 'hitMiss',
+}
+
+
+def _abbrev_kernel_name(kernel_name):
+    """'whisker_hits_stim_1' -> 'whHit_1'; falls back to the original name if unrecognized."""
+    match = re.match(r'^(.+?)_?(\d+)$', kernel_name)
+    base, idx = (match.group(1), match.group(2)) if match else (kernel_name, '')
+    label = _KERNEL_ABBREV.get(base, base)
+    return f"{label}_{idx}" if idx else label
+
+
+def _abbrev_kernel_pair(kernel_1, kernel_0):
+    """Compact 'X - Y' label for a kernel pair, e.g. ('whisker_hits_stim_1', 'whisker_hits_stim_0') -> 'whHit_1v0'."""
+    m1 = re.match(r'^(.+?)_?(\d+)$', kernel_1)
+    m0 = re.match(r'^(.+?)_?(\d+)$', kernel_0)
+    base1, idx1 = (m1.group(1), m1.group(2)) if m1 else (kernel_1, '')
+    base0, idx0 = (m0.group(1), m0.group(2)) if m0 else (kernel_0, '')
+    if base1 == base0:
+        label = _KERNEL_ABBREV.get(base1, base1)
+        return f"{label}_{idx1}v{idx0}" if (idx1 or idx0) else label
+    return f"{_abbrev_kernel_name(kernel_1)}_v_{_abbrev_kernel_name(kernel_0)}"
+
+
+def _winlong(path):
     """
-    Compute density for scatter plot using KDE, with fallback to histogram if KDE fails.
+    Extended-length ('\\\\?\\') form of `path` so Windows file APIs aren't capped at
+    MAX_PATH (260 chars). The long bombcell filter-set folder names combined with a long
+    UNC share path can exceed that even for *reading* a summary file -- when they do,
+    os.path.exists()/os.stat() silently fail (return False / raise FileNotFoundError) even
+    though the file is really there. Only affects Windows; a no-op elsewhere.
+    """
+    if os.name != 'nt':
+        return path
+    path = os.path.abspath(path)
+    if path.startswith('\\\\?\\'):
+        return path
+    if path.startswith('\\\\'):
+        return '\\\\?\\UNC\\' + path[2:]
+    return '\\\\?\\' + path
+
+
+# Human-editable short aliases for bombcell filter-set folder names (the
+# 'excl_<metric>+<metric>+...' subfolders under unit_glm/{git_version}/). These names come
+# straight from the bombcell exclusion config and can run 100+ characters, which blows past
+# Windows' 260-char path limit once combined with a long UNC share path and nested output
+# folders. Add an entry here whenever a new filter combination shows up on disk -- the
+# "[INFO] Filter set: ..." log line printed by over_mouse_glm_results_new gives the exact
+# string to key off of. Anything not listed here falls back to a short deterministic hash
+# so the pipeline never breaks on an unmapped filter set, just with a less readable name.
+FILTER_SET_ALIASES = {
+    'excl_Lratio+isolationDistance+maxDriftEstimate+presenceRatio': 'good_units',
+    'excl_Lratio+fractionRPVs_estimatedTauR+isolationDistance+maxDriftEstimate+percentageSpikesMissing_gaussian+presenceRatio': 'good_mua',
+}
+
+
+def _short_filter_set_name(filter_set_name):
+    """Compact, filesystem-safe stand-in for a (potentially very long) filter-set folder name."""
+    if filter_set_name in FILTER_SET_ALIASES:
+        return FILTER_SET_ALIASES[filter_set_name]
+    short = f"filt_{hashlib.md5(filter_set_name.encode()).hexdigest()[:8]}"
+    print(f"[WARNING] No short alias for filter set {filter_set_name!r} - using {short!r}. "
+          f"Add an entry to FILTER_SET_ALIASES for a more readable name.")
+    return short
+
+
+def compute_density_safe(x, y, bins=200, sigma_bins=2.0):
+    """
+    Density at each point of a scatter, for colouring it.
+
+    Estimated from a 2D histogram (bins x bins over the data range) smoothed
+    with a Gaussian of sigma_bins bins and read off at each point's bin, then
+    normalized to a probability density. Visually equivalent to evaluating a
+    Gaussian KDE at every point, but linear in the number of points instead of
+    quadratic (a KDE took minutes per plot at ~100k neurons).
 
     Parameters
     ----------
@@ -44,36 +128,77 @@ def compute_density_safe(x, y):
     Returns
     -------
     x, y, z : arrays
-        Sorted coordinates and density values
+        Coordinates and density values, sorted by density so the densest
+        points are drawn last (on top).
     """
-    try:
-        xy = np.vstack([x, y])
-        z = gaussian_kde(xy)(xy)
-        idx = z.argsort()
-        return x[idx], y[idx], z[idx]
-    except np.linalg.LinAlgError:
-        # Fallback: use 2D histogram to compute density
-        H, xedges, yedges = np.histogram2d(x, y, bins=50)
-        # Get bin indices for each point
-        xi = np.digitize(x, xedges) - 1
-        yi = np.digitize(y, yedges) - 1
-        # Clip to valid range
-        xi = np.clip(xi, 0, H.shape[0] - 1)
-        yi = np.clip(yi, 0, H.shape[1] - 1)
-        # Assign density based on histogram
-        z = H[xi, yi]
-        idx = z.argsort()
-        return x[idx], y[idx], z[idx]
+    from scipy.ndimage import gaussian_filter
+
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+    if len(x) == 0:
+        return x, y, np.array([])
+    H, xedges, yedges = np.histogram2d(x, y, bins=bins)
+    H = gaussian_filter(H, sigma_bins)
+    bin_area = np.diff(xedges)[0] * np.diff(yedges)[0]
+    if bin_area > 0:
+        H = H / (len(x) * bin_area)
+    xi = np.clip(np.digitize(x, xedges) - 1, 0, H.shape[0] - 1)
+    yi = np.clip(np.digitize(y, yedges) - 1, 0, H.shape[1] - 1)
+    z = H[xi, yi]
+    idx = z.argsort()
+    return x[idx], y[idx], z[idx]
+
+_REQUIRED_MODEL_RESULT_COLS = ['coef', 'predictors', 'model_name']
+
 
 def post_hoc_load_model_results(filename, output_dir):
+    """Load one model-results parquet file, with a pyarrow fallback.
+
+    fastparquet has been observed (empirically, not just in theory) to come
+    back with a successfully-parsed but INCOMPLETE dataframe — missing a
+    whole column with no exception raised — when reading these files under
+    whatever concurrency/network conditions the full pipeline runs under
+    (isolated repro attempts against the same files always succeeded; the
+    failure only shows up inside the full mouse_glm_results call, right
+    after combine_ephys_nwb's own parallel NWB loading). Rather than chase
+    that further, detect it directly by checking for a few required columns
+    and retry with pyarrow, which has been reliable against these same files
+    in every test.
+
+    'y_test'/'y_pred' are deliberately NOT in the required list: some older
+    git_versions (e.g. 747e708) never saved raw trial-by-trial predictions at
+    all — confirmed structurally absent from every fold/model_type file for
+    that version, not a read glitch — so treating them as "required" produced
+    a false-positive [ERROR] for every single file of those versions.
+    mouse_glm_results already handles a missing 'y_test'/'y_pred' column
+    gracefully (skips the derived *_array columns with one warning instead of
+    crashing); only 'coef'/'predictors'/'model_name' are universal across
+    every git_version and therefore meaningful corruption signals here.
+    """
     file_path = os.path.join(output_dir, f"{filename}_results.parquet")
     try:
-        return pd.read_parquet(file_path, engine = 'fastparquet')
+        df = pd.read_parquet(file_path, engine='fastparquet')
     except FileNotFoundError:
         return None
     except Exception as e:
-        print(f"[ERROR] reading {file_path}: {e}")
-        return None
+        print(f"[ERROR] reading {file_path} with fastparquet: {e}")
+        df = None
+
+    missing = [c for c in _REQUIRED_MODEL_RESULT_COLS if df is None or c not in df.columns]
+    if missing:
+        print(f"[WARNING] {file_path}: fastparquet read missing columns {missing} "
+              f"(or failed outright) — retrying with pyarrow.")
+        try:
+            df = pd.read_parquet(file_path, engine='pyarrow')
+        except Exception as e:
+            print(f"[ERROR] reading {file_path} with pyarrow fallback: {e}")
+            return None
+        still_missing = [c for c in _REQUIRED_MODEL_RESULT_COLS if c not in df.columns]
+        if still_missing:
+            print(f"[ERROR] {file_path}: still missing columns {still_missing} after "
+                  f"pyarrow fallback — file may be genuinely corrupted/incomplete.")
+
+    return df
 
 def load_models(mouse, models_path, git_version):
     pattern = re.compile(rf'^{git_version}_model_(full|reduced|added)_fold(\d+)_results\.parquet$')
@@ -357,9 +482,36 @@ def mouse_glm_results(nwb_list, model_path, plots, output_path, git_version, inf
     mouse_info_df['reward_group'] = mouse_info_df['reward_group'].astype(int)
     unit_table = unit_table.merge(mouse_info_df[['mouse_id', 'reward_group']], on='mouse_id', how='left')
 
-    df_git['y_test_array'] = df_git['y_test'].map(lambda s: np.array(json.loads(s)))
-    df_git['y_pred_array'] = df_git['y_pred'].map(lambda s: np.array(json.loads(s)))
-    print(df_git['predictors'])
+    # Some older git_versions' saved model results never included raw trial-by-trial
+    # y_test/y_pred arrays at all (only summary stats + coef/predictors) — confirmed
+    # empirically for git_version 747e708, where every single fold/model file across
+    # 'full', 'reduced' and 'added' lacks both columns entirely (not a read-engine
+    # issue: reproduced identically with both pyarrow and fastparquet). Plot types
+    # that need real trial-level predictions (e.g. average_predictions_per_trial_types)
+    # simply can't be produced for such a git_version — but don't hard-crash the whole
+    # function over it; other plot types that don't touch these arrays can still run.
+    if 'y_test' in df_git.columns:
+        df_git['y_test_array'] = df_git['y_test'].map(lambda s: np.array(json.loads(s)))
+    else:
+        print(f"[WARNING] git_version {git_version}: no 'y_test' column in the loaded "
+              f"model results — trial-level prediction plots will be unavailable.")
+    if 'y_pred' in df_git.columns:
+        df_git['y_pred_array'] = df_git['y_pred'].map(lambda s: np.array(json.loads(s)))
+    else:
+        print(f"[WARNING] git_version {git_version}: no 'y_pred' column in the loaded "
+              f"model results — trial-level prediction plots will be unavailable.")
+
+    # 'random_split' rows come from a since-fixed fitting code path (git version
+    # 7d4f560) that had a serialization bug: 'predictors' was saved as the literal
+    # string 'feature_namess' instead of the JSON-encoded predictor list. 'random_split'
+    # is fit on the same fixed feature set as 'full' (identical across every neuron and
+    # fold, just a randomly permuted train/test split rather than a reduced feature set),
+    # so backfill it with any single 'full' predictors string rather than joining on
+    # (neuron_id, fold) — some neurons/folds have no 'full' row at all (failed fits).
+    mask_random_split = df_git['model_name'] == 'random_split'
+    if mask_random_split.any():
+        df_git.loc[mask_random_split, 'predictors'] = df_git.loc[df_git['model_name'] == 'full', 'predictors'].iloc[0]
+
     df_git['predictors'] = df_git['predictors'].apply(lambda s: np.array(json.loads(s)))
 
     merged_df = pd.merge(df_git, unit_table, how='inner', on=["mouse_id", "neuron_id"])
@@ -977,20 +1129,469 @@ def _discover_models(merged_df):
     return dfs, model_labels
 
 
-def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_version, day_to_analyze = 0):
+def _discover_filter_sets(subject_ids, output_path, git_version):
+    """
+    Find bombcell filter-set subfolders under unit_glm/{git_version}/ that contain a
+    summary_{mouse}_unit_glm_{git_version}.parquet (directly, or under a nested 'test'
+    subfolder).
 
+    Returns a sorted list of filter-set names, or [None] if no such subfolders exist
+    (legacy flat layout: summary_{mouse}_unit_glm_{git_version}.parquet sits directly
+    under unit_glm/{git_version}/, or only under unit_glm/{git_version}/test/).
+    """
+    filter_set_names = set()
+    for mouse in subject_ids:
+        mouse_glm_path = _winlong(os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version))
+        if not os.path.isdir(mouse_glm_path):
+            continue
+        fname = f"summary_{mouse}_unit_glm_{git_version}.parquet"
+        for entry in os.listdir(mouse_glm_path):
+            entry_path = os.path.join(mouse_glm_path, entry)
+            if entry == 'test' or not os.path.isdir(entry_path):
+                continue
+            if (os.path.exists(os.path.join(entry_path, fname))
+                    or os.path.exists(os.path.join(entry_path, 'test', fname))):
+                filter_set_names.add(entry)
+    return sorted(filter_set_names) if filter_set_names else [None]
+
+
+def _load_merged_summary_df(subject_ids, output_path, git_version, filter_set_name=None):
     dfs = []
     for mouse in subject_ids:
-        mouse_results_path = os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version) #, 'test'
-        fpath = os.path.join(mouse_results_path, f"summary_{mouse}_unit_glm_{git_version}.parquet")
+        mouse_results_path = _winlong(os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version))
+        fname = f"summary_{mouse}_unit_glm_{git_version}.parquet"
+        if filter_set_name is None:
+            fpath = os.path.join(mouse_results_path, fname)
+            fpath_test = os.path.join(mouse_results_path, 'test', fname)
+        else:
+            fpath = os.path.join(mouse_results_path, filter_set_name, fname)
+            fpath_test = os.path.join(mouse_results_path, filter_set_name, 'test', fname)
         if not os.path.exists(fpath):
-            print(f"[WARNING] Summary not found: {fpath}")
-            continue
-        df = pd.read_parquet(fpath)
-        dfs.append(df)
-    merged_df = pd.concat(dfs, ignore_index=True)
+            if not os.path.exists(fpath_test):
+                print(f"[WARNING] Summary not found: {fpath}")
+                continue
+            fpath = fpath_test
+        dfs.append(pd.read_parquet(fpath))
+    if not dfs:
+        return None
+    return pd.concat(dfs, ignore_index=True)
 
-    output_path = os.path.join(output_path, 'unit_glm', git_version, 'test2')
+
+def over_mouse_glm_results_new(subject_ids, nwb_list, plots, output_path, git_version, day_to_analyze=0):
+
+    for filter_set_name in _discover_filter_sets(subject_ids, output_path, git_version):
+        merged_df = _load_merged_summary_df(subject_ids, output_path, git_version, filter_set_name)
+        if merged_df is None:
+            print(f"[WARNING] No summaries found for filter set {filter_set_name!r} - skipping.")
+            continue
+        if filter_set_name:
+            print(f"[INFO] Filter set: {filter_set_name}")
+        _run_glm_result_plots(merged_df, subject_ids, plots, output_path, git_version, filter_set_name)
+
+
+def _process_kernel_consistency_pair(
+        k0, k1, merged_df_path, full_vs_random_path, area_groups, area_colors,
+        area_groups_flat, area_group_from_name, kernel_consistency_output_folder,
+        performance_csv, n_perm=5000, min_neurons_per_mouse=5):
+    """Run the full kernel_consistency analysis (5 population subsets x 4
+    change metrics x 3 analysis types, plus a per-subset kernel-shape
+    overlay) for one (k0, k1) kernel pair.
+
+    Factored out of the 'kernel_consistency' plots block so each pair's work
+    (independent of every other pair) can be dispatched to its own worker
+    process via joblib.Parallel.
+
+    `merged_df_path`/`full_vs_random_path` are paths to pickled (slimmed)
+    dataframes rather than the dataframes themselves: passing large
+    dataframes directly as Parallel/delayed arguments ships them through a
+    Windows named pipe, which fails above ~2 GB (OSError: [WinError 87]).
+    Loading from disk in each worker avoids that transport limit entirely.
+
+    Returns this pair's stats ledger (see _bh_fdr_export) as a DataFrame so
+    the parent process can concatenate every kernel pair's tests into one
+    combined file after Parallel(...) returns.
+    """
+    with open(merged_df_path, 'rb') as f:
+        merged_df = pickle.load(f)
+    with open(full_vs_random_path, 'rb') as f:
+        full_vs_random_table = pickle.load(f)
+
+    df_full = merged_df[merged_df['model_name'] == 'full']
+    sample_preds = df_full.iloc[0]['predictors_full'] if len(df_full) > 0 else []
+    has_k0 = any(p.startswith(k0 + '_t') for p in sample_preds)
+    has_k1 = any(p.startswith(k1 + '_t') for p in sample_preds)
+    if (k0, k1) != _HIT_MISS_DELTA and (not has_k0 or not has_k1):
+        print(f"[kernel_consistency] Skipping {k0} vs {k1}: not found in predictors.")
+        return pd.DataFrame(columns=_STATS_LEDGER_COLS)
+
+    kernel_pair_name = f"{k1}_vs_{k0}"
+    pair_folder = os.path.join(kernel_consistency_output_folder, kernel_pair_name)
+    os.makedirs(pair_folder, exist_ok=True)
+
+    perf_df = None
+    if performance_csv is not None and os.path.exists(performance_csv):
+        perf_df = pd.read_csv(performance_csv)
+        perf_df = perf_df[['mouse_id'] + [c for c in _PERFORMANCE_METRICS if c in perf_df.columns]]
+    elif performance_csv is not None:
+        print(f"[kernel_consistency] WARNING: performance_csv not found: {performance_csv}")
+
+    print(f"[kernel_consistency] Building change table: {k0} -> {k1} ...")
+    neuron_df = _neuron_table_for_pair(merged_df, k0, k1)
+    if neuron_df.empty:
+        print(f"[WARNING] No neurons found with both '{k0}' and '{k1}'.")
+        return pd.DataFrame(columns=_STATS_LEDGER_COLS)
+    neuron_df = _add_area_group_column(neuron_df, area_group_from_name)
+    excluded = neuron_df['area_group'].fillna('').str.lower().isin(EXCLUDED_AREA_GROUPS)
+    neuron_df = neuron_df[~excluded].reset_index(drop=True)
+    area_groups_flat = {g: v for g, v in area_groups_flat.items() if g.lower() not in EXCLUDED_AREA_GROUPS}
+    print(f"[kernel_consistency] {len(neuron_df)} neurons analysed for {kernel_pair_name} "
+          f"({int(excluded.sum())} dropped in excluded area groups).")
+
+    reward_groups = [1, 0]
+    reward_group_labels = {1: 'R+', 0: 'R-'}
+    stats_records = []
+
+    for subset_name in _KERNEL_CONSISTENCY_SUBSETS:
+        sub_df, n_before, n_after = _apply_population_subset(
+            neuron_df, merged_df, subset_name, full_vs_random_table)
+        print(f"[kernel_consistency] {kernel_pair_name} / {subset_name}: {n_after}/{n_before} neurons.")
+        if sub_df.empty:
+            continue
+        subset_output_folder = os.path.join(pair_folder, subset_name)
+        os.makedirs(subset_output_folder, exist_ok=True)
+
+        _plot_kernel_shape_overlay(
+            sub_df, area_groups, area_colors,
+            _area_groups_with_enough_mice(sub_df, area_groups_flat, min_neurons_per_mouse),
+            os.path.join(subset_output_folder, 'kernel_shape_overlay'),
+            k0, k1, reward_groups, reward_group_labels)
+
+        for metric_col, metric_tag, metric_label in _KERNEL_CONSISTENCY_METRICS:
+            _run_kernel_consistency_analysis(
+                sub_df, kernel_pair_name, subset_name, metric_col, metric_tag, metric_label,
+                subset_output_folder, area_groups, area_groups_flat, reward_group_labels,
+                perf_df, min_neurons_per_mouse, n_perm, stats_records, area_colors=area_colors)
+
+    return _bh_fdr_export(stats_records, os.path.join(pair_folder, 'all_stats.txt'))
+
+
+# Area groups left out of the kernel-consistency analysis (matched case-insensitively),
+# and the minimum number of mice per reward group for an area group to get a panel.
+EXCLUDED_AREA_GROUPS = {
+    'somatosensory-body', 'cortical subplate', 'amygdala and hypothalamus',
+    'pons and medulla', 'insular areas', 'olfactory areas',
+}
+MIN_MICE_PER_REWARD_GROUP = 4  # i.e. more than 3 mice in each reward group
+
+
+def _area_groups_with_enough_mice(neuron_df, area_groups_flat, min_neurons_per_mouse,
+                                  min_mice=MIN_MICE_PER_REWARD_GROUP):
+    """Subset of area_groups_flat whose neurons in neuron_df come from at least
+    min_mice mice in each reward group (R+ and R-), counting only mice with at
+    least min_neurons_per_mouse neurons in that group."""
+    keep = {}
+    for group, members in area_groups_flat.items():
+        sub = _filter_min_neurons_per_mouse(neuron_df[neuron_df['area_group'] == group], min_neurons_per_mouse)
+        n_mice = sub.groupby('reward_group')['mouse_id'].nunique() if not sub.empty else pd.Series(dtype=int)
+        if all(n_mice.get(rg, 0) >= min_mice for rg in (0, 1)):
+            keep[group] = members
+    return keep
+
+
+# Per-mouse behaviour columns (from the whisker_session_rates CSV) correlated with
+# the kernel-change metrics; outcome_w_change = whisker hit rate, half 2 - half 1.
+_PERFORMANCE_METRICS = ['outcome_w', 'd_prime_w', 'outcome_w_change']
+
+
+# LRT reduced models whose significant neurons form one selectivity group each
+# (groups overlap: a neuron significant for several models appears in each).
+_SELECTIVITY_GROUP_MODELS = [
+    'whisker_encoding', 'auditory_encoding', 'motor_encoding', 'reward_encoding',
+    'jaw_onset_encoding', 'session_progress_encoding', 'sum_rewards',
+]
+_CCF_COLS = ['ccf_atlas_ap', 'ccf_atlas_ml', 'ccf_atlas_dv']
+
+# Atlas-slice plotting lives in visualize_quantity.py (standalone, also used for
+# the ROC analysis); the functions below adapt it to the GLM summaries.
+import visualize_quantity as vq
+
+_atlas_coronal_slices = vq.atlas_coronal_slices
+_draw_atlas_outline = vq.draw_atlas_outline
+
+
+def _plot_metric_brain_slices(
+        neuron_df, metric_col, metric_label, output_folder, title, reward_group_labels,
+        ap_positions=vq.DEFAULT_AP_POSITIONS, slab_um=1000,
+        fold_hemispheres=True, atlas_name=vq.DEFAULT_ATLAS):
+    """One figure per reward group: coronal slabs, one dot per neuron coloured
+    by metric_col (see visualize_quantity.plot_value_on_slices). The colour
+    scale is +/- the metric's bound (_metric_bound) with a half-range version,
+    or percentile-based for the unbounded metrics.
+    """
+    vq.plot_value_on_slices(
+        neuron_df, metric_col, metric_label, output_folder, title, row_labels=reward_group_labels,
+        ap_positions=ap_positions, slab_um=slab_um, bound=_metric_bound(metric_col),
+        fold_hemispheres=fold_hemispheres, atlas_name=atlas_name)
+
+
+def plot_selectivity_space_density(
+        merged_df, output_folder,
+        ap_positions=vq.DEFAULT_AP_POSITIONS,
+        slab_um=1000, bin_um=50, sigma_um=100, fold_hemispheres=True,
+        atlas_name=vq.DEFAULT_ATLAS, sampled_radius_um=100):
+    """Spatial distribution of each LRT selectivity group on coronal atlas
+    slices: all neurons, then every reduced model of the fits with
+    lrt_significant == True (_SELECTIVITY_GROUP_MODELS first; groups overlap),
+    then the JOINT_SIGNIFICANCE_CLASSES (e.g. reward_not_lick). Density, points and
+    density-over-sampled-space versions, per reward group and pooled - see
+    visualize_quantity.plot_group_density for the details.
+    """
+    missing = [c for c in _CCF_COLS if c not in merged_df.columns]
+    if missing:
+        print(f"[selectivity_space_density] Summaries lack {missing} - re-run create_summary. Skipping.")
+        return
+    groups = {}
+    if 'lrt_significant' in merged_df.columns:
+        # Every reduced model of the fit version: the usual ones first, then the others.
+        fitted = [m for m in merged_df['model_name'].dropna().unique() if m != 'full']
+        models = ([m for m in _SELECTIVITY_GROUP_MODELS if m in fitted]
+                  + sorted(m for m in fitted if m not in _SELECTIVITY_GROUP_MODELS))
+        sig = merged_df.loc[merged_df['lrt_significant'] == True, ['model_name', 'mouse_id', 'neuron_id']]
+        sig_ids = {m: df[['mouse_id', 'neuron_id']].drop_duplicates() for m, df in sig.groupby('model_name')}
+        for model in models:
+            if model in sig_ids:
+                groups[model] = sig_ids[model]
+            else:
+                print(f"[selectivity_space_density] No neuron significant for {model}. No map.")
+        # Joint classes (e.g. reward_not_lick): significant for all required, none of the excluded models.
+        for name, (required, excluded) in JOINT_SIGNIFICANCE_CLASSES.items():
+            if not all(m in fitted for m in required + excluded):
+                continue
+            ids = sig_ids.get(required[0], pd.DataFrame(columns=['mouse_id', 'neuron_id']))
+            for m in required[1:]:
+                ids = ids.merge(sig_ids.get(m, ids.iloc[:0]), on=['mouse_id', 'neuron_id'])
+            for m in excluded:
+                if m in sig_ids:
+                    ids = ids.merge(sig_ids[m], on=['mouse_id', 'neuron_id'], how='left', indicator=True)
+                    ids = ids.loc[ids['_merge'] == 'left_only', ['mouse_id', 'neuron_id']]
+            if not ids.empty:
+                groups[name] = ids
+    # Summary rows are duplicated per model / kernel pair; plot_group_density keeps one per neuron.
+    neurons = merged_df[['mouse_id', 'neuron_id', 'reward_group'] + _CCF_COLS]
+    vq.plot_group_density(
+        neurons, groups, output_folder, ap_positions=ap_positions, slab_um=slab_um, bin_um=bin_um,
+        sigma_um=sigma_um, fold_hemispheres=fold_hemispheres, atlas_name=atlas_name,
+        sampled_radius_um=sampled_radius_um, file_prefix='selectivity')
+
+
+
+def plot_kernel_change_whisker_vs_auditory(wh_df, au_df, merged_df, full_vs_random_table, output_folder,
+                                           area_groups, min_neurons_per_mouse=5):
+    """Scatter of the kernel change (kernel 1 − kernel 0) for whisker hits (x) vs
+    auditory stim (y), for all neurons pooled and per area group, coloured by
+    reward group. Two versions per scope: density (both reward groups, then
+    one figure each) and one point per mouse (mean over that mouse's neurons).
+
+    wh_df / au_df: the kernel_consistency per-neuron change tables
+    (_build_neuron_change_table + area_group) of the whisker-hit and auditory
+    pairs. Run for every _KERNEL_CONSISTENCY_SUBSETS subset and every
+    _KERNEL_CONSISTENCY_METRICS metric. 'consistent' keeps neurons consistent
+    for at least one of the two kernel pairs; the other subsets don't depend
+    on the pair. Output: {output_folder}/{subset}/{metric}/{version}/.
+    """
+    import itertools
+    from scipy.stats import gaussian_kde
+    import matplotlib.colors as mcolors
+
+    if wh_df.empty or au_df.empty:
+        print("[kernel_consistency] whisker_vs_auditory_change: whisker-hit or auditory change table "
+              "missing. Skipping.")
+        return
+
+    metric_cols = [m[0] for m in _KERNEL_CONSISTENCY_METRICS]
+    id_cols = ['mouse_id', 'neuron_id']
+    df_all = wh_df[id_cols + ['area_group', 'reward_group'] + metric_cols].merge(
+        au_df[id_cols + metric_cols], on=id_cols, suffixes=('_wh', '_au'))
+    rg_labels = {1: 'R+', 0: 'R-'}
+    rgs = [rg for rg in (0, 1) if (df_all['reward_group'] == rg).any()]
+
+    def _subset_ids(subset_name):
+        wh_s = _apply_population_subset(wh_df, merged_df, subset_name, full_vs_random_table)[0]
+        au_s = _apply_population_subset(au_df, merged_df, subset_name, full_vs_random_table)[0]
+        how = 'outer' if subset_name == 'consistent' else 'inner'
+        return wh_s[id_cols].merge(au_s[id_cols], on=id_cols, how=how).drop_duplicates()
+
+    def _style(ax, lim, metric_label):
+        ax.plot([-lim, lim], [-lim, lim], color='#999999', linewidth=0.7, linestyle='--', zorder=1)
+        ax.axhline(0, color='#cccccc', linewidth=0.6, zorder=0)
+        ax.axvline(0, color='#cccccc', linewidth=0.6, zorder=0)
+        ax.set_xlim(-lim, lim)
+        ax.set_ylim(-lim, lim)
+        ax.set_aspect('equal')
+        ax.set_xlabel(f"Whisker hits\n{metric_label}", fontsize=7)
+        ax.set_ylabel(f"Auditory\n{metric_label}", fontsize=7)
+        ax.tick_params(labelsize=6.5)
+        ax.spines[['top', 'right']].set_visible(False)
+
+    def _save(fig, ax, title, folder, filename):
+        ax.set_title(title, fontsize=8)
+        ax.legend(fontsize=6, frameon=False, loc='upper left', bbox_to_anchor=(1.0, 1.0))
+        fig.tight_layout(pad=0.5)
+        os.makedirs(folder, exist_ok=True)
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=filename,
+                                        output_dir=folder)
+        plt.close(fig)
+
+    scopes = [('all_neurons', None)] + [(g, g) for g in area_groups.keys()]
+    for subset_name, (metric_col, metric_tag, metric_label) in itertools.product(
+            _KERNEL_CONSISTENCY_SUBSETS, _KERNEL_CONSISTENCY_METRICS):
+        df = df_all.merge(_subset_ids(subset_name), on=id_cols)
+        if df.empty:
+            continue
+        xcol, ycol = f'{metric_col}_wh', f'{metric_col}_au'
+        metric_folder = os.path.join(output_folder, subset_name, metric_tag)
+        bound = _metric_bound(metric_col)
+
+        for scope_name, group in scopes:
+            sub = df if group is None else df[df['area_group'] == group]
+            sub = sub.dropna(subset=[xcol, ycol])
+            sub = _filter_min_neurons_per_mouse(sub, min_neurons_per_mouse)
+            if sub.empty:
+                continue
+            safe = scope_name.replace(' ', '_').replace('/', '-')
+            vals = np.abs(sub[[xcol, ycol]].to_numpy())
+            lim = bound * 1.05 if bound is not None else max(np.percentile(vals, 98) * 1.15, 1e-6)
+            groups = {rg: sub[sub['reward_group'] == rg] for rg in rgs}
+            groups = {rg: g for rg, g in groups.items() if not g.empty}
+
+            # Density only: both reward groups together, then one figure each.
+            # Only the highest-density region holding 95 % of the density is drawn.
+            grid = np.linspace(-lim, lim, 150)
+            xx, yy = np.meshgrid(grid, grid)
+            grid_pts = np.vstack([xx.ravel(), yy.ravel()])
+            densities = {}
+            for rg, g in groups.items():
+                x, y = g[xcol].to_numpy(), g[ycol].to_numpy()
+                if len(x) < 4 or np.ptp(x) == 0 or np.ptp(y) == 0:
+                    continue
+                try:
+                    density = gaussian_kde(np.vstack([x, y]))(grid_pts).reshape(xx.shape)
+                except np.linalg.LinAlgError:
+                    continue
+                ranked = np.sort(density.ravel())[::-1]
+                mass = np.cumsum(ranked) / ranked.sum()
+                level_95 = ranked[min(np.searchsorted(mass, 0.95), len(ranked) - 1)]
+                if density.max() <= level_95:
+                    continue
+                densities[rg] = (density, np.linspace(level_95, density.max(), 8), x.mean(), y.mean(), len(g))
+
+            def _draw_density(rgs_to_draw, filename):
+                fig, ax = plt.subplots(figsize=(8.5 / 2.54, 6 / 2.54), dpi=300)
+                _style(ax, lim, metric_label)
+                for rg in rgs_to_draw:
+                    density, levels, x_mean, y_mean, n = densities[rg]
+                    color = REWARD_GROUP_COLORS.get(rg, '#888888')
+                    rgb = mcolors.to_rgb(color)
+                    cmap = mcolors.LinearSegmentedColormap.from_list(
+                        f'rg{rg}_density', [(*rgb, 0.0), (*rgb, 0.55)])
+                    ax.contourf(xx, yy, density, levels=levels, cmap=cmap, zorder=2)
+                    ax.contour(xx, yy, density, levels=levels, colors=[color], linewidths=0.35, zorder=3)
+                    ax.scatter(x_mean, y_mean, s=40, marker='X', color=color, edgecolors='black',
+                               linewidths=0.7, zorder=6, label=f"{rg_labels.get(rg, rg)} (n={n})")
+                _save(fig, ax, scope_name, os.path.join(metric_folder, 'density'), filename)
+
+            if densities:
+                _draw_density(list(densities), f'kernel_change_wh_vs_au_{safe}_density')
+                for rg in densities:
+                    rg_tag = {1: 'Rplus', 0: 'Rminus'}.get(rg, f'rg{rg}')
+                    _draw_density([rg], f'kernel_change_wh_vs_au_{safe}_density_{rg_tag}')
+
+            # One point per mouse
+            per_mouse = sub.groupby(['mouse_id', 'reward_group'])[[xcol, ycol]].mean().reset_index()
+            fig, ax = plt.subplots(figsize=(8.5 / 2.54, 6 / 2.54), dpi=300)
+            lim_m = max(np.nanmax(np.abs(per_mouse[[xcol, ycol]].to_numpy())) * 1.2, 1e-6)
+            _style(ax, lim_m, metric_label)
+            for rg in rgs:
+                g = per_mouse[per_mouse['reward_group'] == rg]
+                if g.empty:
+                    continue
+                color = REWARD_GROUP_COLORS.get(rg, '#888888')
+                ax.scatter(g[xcol], g[ycol], s=14, color=color, alpha=0.7, edgecolors='#222222',
+                           linewidths=0.4, zorder=3, label=f"{rg_labels.get(rg, rg)} (n={len(g)} mice)")
+                sem = g[[xcol, ycol]].sem().fillna(0) if len(g) > 1 else pd.Series({xcol: 0, ycol: 0})
+                ax.errorbar(g[xcol].mean(), g[ycol].mean(), xerr=sem[xcol], yerr=sem[ycol],
+                            fmt='X', color=color, markeredgecolor='black', markeredgewidth=0.7,
+                            markersize=6, ecolor='black', elinewidth=0.8, zorder=6)
+            _save(fig, ax, scope_name, os.path.join(metric_folder, 'per_mouse'),
+                  f'kernel_change_wh_vs_au_{safe}_per_mouse')
+
+    print(f"[kernel_consistency] whisker_vs_auditory_change → {output_folder}")
+
+
+def export_unit_selection_table(merged_df, kernel_pairs, output_path, area_group_from_name):
+    """One row per unit (mouse_id, neuron_id), for selecting units elsewhere
+    (e.g. cicada psth_per_mouse_with_barplots: neuron_id is the unit_table id it
+    matches against its own unit_id).
+
+    Columns:
+      mouse_id, neuron_id, reward_group (1 = R+, 0 = R-), area_acronym_custom, area_group
+      whisker_selective, auditory_selective : LRT significance of the
+          whisker_encoding / auditory_encoding reduced models (False if not tested)
+      {pair}_{metric}          : the change metric for that kernel pair, e.g.
+                                 whHit_1v0_mean_pct_change (all _KERNEL_CONSISTENCY_METRICS)
+      {pair}_{metric}_increase : 1 if the change is > 0, 0 if < 0, empty if
+                                 0 or the metric is missing for that unit
+    Metrics are empty for units dropped from a pair's change table (all-zero
+    kernel). Written as a tab-separated .txt (output_path) and a .parquet.
+    """
+    id_cols = ['mouse_id', 'neuron_id']
+    units = (merged_df[merged_df['model_name'] == 'full']
+             [id_cols + ['reward_group', 'area_acronym_custom']]
+             .drop_duplicates(subset=id_cols)
+             .reset_index(drop=True))
+    # Summaries can carry these as floats; integers so they match unit_table ids.
+    units['neuron_id'] = units['neuron_id'].astype('Int64')
+    units['reward_group'] = units['reward_group'].astype('Int64')
+    units['area_group'] = units['area_acronym_custom'].map(area_group_from_name)
+
+    for model, col in (('whisker_encoding', 'whisker_selective'), ('auditory_encoding', 'auditory_selective')):
+        if 'lrt_significant' in merged_df.columns:
+            sig = merged_df.loc[(merged_df['model_name'] == model) & (merged_df['lrt_significant'] == True),
+                                id_cols].drop_duplicates()
+            units[col] = units.set_index(id_cols).index.isin(sig.set_index(id_cols).index)
+        else:
+            units[col] = False
+
+    metric_cols = [m[0] for m in _KERNEL_CONSISTENCY_METRICS]
+    for k0, k1 in kernel_pairs:
+        table = _neuron_table_for_pair(merged_df, k0, k1)
+        if table.empty:
+            continue
+        pair = _abbrev_kernel_pair(k1, k0)
+        values = table[id_cols + metric_cols].rename(columns={m: f'{pair}_{m}' for m in metric_cols})
+        values['neuron_id'] = values['neuron_id'].astype('Int64')
+        for m in metric_cols:
+            v = values[f'{pair}_{m}'].astype(float)
+            values[f'{pair}_{m}_increase'] = pd.Series(np.where(v > 0, 1, np.where(v < 0, 0, np.nan)),
+                                                       index=values.index).astype('Int8')
+        units = units.merge(values, on=id_cols, how='left')
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    units.to_csv(output_path, sep='\t', index=False)
+    units.to_parquet(os.path.splitext(output_path)[0] + '.parquet', index=False)
+    print(f"[kernel_consistency] Unit selection table ({len(units)} units, {units.shape[1]} columns) -> {output_path}")
+    return units
+
+
+def _run_glm_result_plots(merged_df, subject_ids, plots, base_output_path, git_version, filter_set_name=None):
+
+    if filter_set_name:
+        output_path = os.path.join(base_output_path, 'unit_glm_learners_only', git_version, _short_filter_set_name(filter_set_name))
+    else:
+        output_path = os.path.join(base_output_path, 'unit_glm_learners_only', git_version) #unit_glm_learners_only
+    # Long-path-safe from here on: every os.path.join(output_path, ...) further down inherits
+    # the '\\?\' prefix, so nested plot subfolders/filenames can't hit Windows' 260-char cap.
+    output_path = _winlong(output_path)
     if not os.path.exists(output_path):
         os.makedirs(output_path)
     area_groups = allen.get_custom_area_groups()
@@ -1011,6 +1612,8 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             os.makedirs(output_folder)
 
         compare_full_vs_reduced_models(merged_df, output_folder)
+        plot_full_model_test_corr_distribution(merged_df, os.path.join(output_folder, 'test_corr_full_model'),
+                                               list(area_groups.keys()), area_group_from_name)
         # plot_kde_full_vs_reduced(merged_df, output_folder)
         # plot_test_corr_vs_firing_rate(merged_df[merged_df['model_name'] == 'full'], output_folder)
         # plot_testcorr_per_mouse_reward( merged_df[merged_df['model_name'] == 'full'], output_folder)
@@ -1044,8 +1647,15 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             # plot_test_corr_vs_firing_rate(merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder)
             # plot_testcorr_per_mouse_reward( merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder)
             merged_df_reward_lrt = merged_df_reward[merged_df_reward['model_name'] != 'full']
-            merged_df_reward_lrt = allen.merge_liu_avg_ipsi(merged_df_reward_lrt)
-            merged_df_reward_lrt = allen.merge_harris_hierarchy(merged_df_reward_lrt)
+            # The Liu / Harris merges key on the raw CCF acronym; skip them (and their
+            # correlation plots) when the summaries don't carry it.
+            has_ccf_acronym = 'ccf_atlas_acronym_no_layer' in merged_df_reward_lrt.columns
+            if has_ccf_acronym:
+                merged_df_reward_lrt = allen.merge_liu_avg_ipsi(merged_df_reward_lrt)
+                merged_df_reward_lrt = allen.merge_harris_hierarchy(merged_df_reward_lrt)
+            else:
+                print("[metrics] Summaries lack 'ccf_atlas_acronym_no_layer' - skipping the "
+                      "Liu ipsi / Harris hierarchy correlation plots.")
             # plot_lrt_significance_overlap(merged_df_reward_lrt, output_folder)
             # print(merged_df_reward_lrt.keys())
             # plot_lrt_significance_per_area_per_model(
@@ -1054,8 +1664,9 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             #     area_colors=area_colors,
             #     output_folder=output_folder
             # )
-            plot_lrt_ipsi_correlation(merged_df_reward_lrt, output_folder)
-            plot_lrt_harris_correlation(merged_df_reward_lrt, output_folder)
+            if has_ccf_acronym:
+                plot_lrt_ipsi_correlation(merged_df_reward_lrt, output_folder)
+                plot_lrt_harris_correlation(merged_df_reward_lrt, output_folder)
             plot_lrt_significance_heatmap(merged_df_reward_lrt, area_groups, area_colors,
                                   output_folder, annotate=False)
             
@@ -1070,8 +1681,9 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
                 area_colors=area_colors,
                 output_folder=output_folder_sub
             )
-            plot_lrt_ipsi_correlation(lrt_subset, output_folder_sub)
-            plot_lrt_harris_correlation(lrt_subset, output_folder_sub)
+            if has_ccf_acronym:
+                plot_lrt_ipsi_correlation(lrt_subset, output_folder_sub)
+                plot_lrt_harris_correlation(lrt_subset, output_folder_sub)
             plot_lrt_significance_heatmap(lrt_subset, area_groups, area_colors,
                                   output_folder_sub, annotate=False)
             output_folder_sub = os.path.join(output_folder_sub, 'per_area')
@@ -1090,45 +1702,30 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
 
     if 'average_kernels_by_region' in plots :
         output_folder = os.path.join(output_path, 'average_kernels_by_region')
-        if not os.path.exists(output_folder):
-            os.makedirs(output_folder)
-        if git_version == '1cce900':
-            lags =  np.array([-0.3, -0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
-        else:
-            lags = np.array([-0.2, -0.1, 0.0, 0.1, 0.2, 0.3, 0.4])
-        # plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_stim', 'auditory_stim', 'jaw_onset', 'piezo_reward'],
-        #     lags=lags, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
-        for reward_group in [0,1]:
-
-            merged_df_reward = merged_df[merged_df['reward_group'] == reward_group]
-            # print(merged_df_reward['predictors_full'].iloc[0])
+        os.makedirs(output_folder, exist_ok=True)
+        # Kernels are read from the fits' predictor names, so this works for any
+        # model layout (one kernel per stimulus, or split kernels). Same area
+        # exclusions as the kernel-consistency analysis.
+        full_df = merged_df[merged_df['model_name'] == 'full']
+        kernels = detect_kernels(full_df)
+        print(f"[average_kernels_by_region] Kernels in the {git_version} fits: {kernels}")
+        area_groups_kept = {g: a for g, a in area_groups.items() if g.lower() not in EXCLUDED_AREA_GROUPS}
+        # Pooled over areas (excluded area groups left out): all neurons, and split by LRT significance.
+        excluded_areas = {a for g, areas in area_groups.items() if g.lower() in EXCLUDED_AREA_GROUPS for a in areas}
+        full_kept = full_df[~full_df['area_acronym_custom'].isin(excluded_areas)]
+        plot_average_kernels_all_neurons(full_kept, output_folder, kernels)
+        plot_kernels_by_significance(full_kept, merged_df, os.path.join(output_folder, 'by_significance'), kernels)
+        for reward_group in [0, 1]:
+            full_rg = full_df[full_df['reward_group'] == reward_group]
+            if full_rg.empty:
+                continue
             output_folder_reward_group = os.path.join(output_folder, str(reward_group))
-            if not os.path.exists(output_folder_reward_group):
-                os.makedirs(output_folder_reward_group)
-            plot_average_kernels_by_region_new(  merged_df_reward[merged_df_reward['model_name'] == 'full'], output_folder_reward_group, ['whisker_hits_stim_0','whisker_hits_stim_1', 'auditory_stim_0','auditory_stim_1','whisker_misses_stim_0','whisker_misses_stim_1','jaw_onset', 'piezo_reward_0','piezo_reward_1','piezo_reward_au_0','piezo_reward_au_1'],
-                lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
-            plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder_reward_group, ['whisker_stim','auditory_stim','jaw_onset','piezo_reward'],
-                lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
-            # plot_average_kernels_by_region_new(  merged_df[merged_df['model_name'] == 'full'], output_folder, ['whisker_hits_stim_0','whisker_hits_stim_1','auditory_stim_0','auditory_stim_1','whisker_misses_stim_0','whisker_misses_stim_1','jaw_onset','piezo_reward_0','piezo_reward_1','piezo_reward_au_0','piezo_reward_au_1'],
-            #     lags=None, area_groups=area_groups, area_colors=area_colors, n_cols=3, threshold = None, git_handle=git_version)
+            os.makedirs(output_folder_reward_group, exist_ok=True)
+            plot_average_kernels_by_region_new(full_rg, output_folder_reward_group, kernels,
+                                               area_groups=area_groups_kept, area_colors=area_colors, n_cols=3)
+            plot_all_kernels_by_region(full_rg, output_folder_reward_group,
+                                       area_groups=area_groups_kept, area_colors=area_colors, n_cols=3)
 
-            plot_all_kernels_by_region(
-                df= merged_df_reward[merged_df_reward['model_name'] == 'full'],
-                output_folder=output_folder_reward_group,
-                kernels_to_plot= ['whisker_hits_stim_0','whisker_hits_stim_1', 'whisker_misses_stim_0','whisker_misses_stim_1', 'auditory_stim_0','auditory_stim_1'],
-                area_groups=area_groups,
-                area_colors=area_colors,
-                kernel_colors={
-                    'whisker_hits_stim_0': 'lightgreen',
-                    'whisker_hits_stim_1': 'green',
-                    'whisker_misses_stim_0': 'salmon',
-                    'whisker_misses_stim_1': 'red',
-                    'auditory_stim_0': 'lightblue',
-                    'auditory_stim_1': 'blue',
-                },
-                n_cols=3,
-                threshold=None
-            )
 
     if 'kernel_consistency' in plots:
         output_folder = os.path.join(output_path, 'kernel_consistency')
@@ -1141,101 +1738,142 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             ('whisker_misses_stim_0', 'whisker_misses_stim_1'),
             ('auditory_stim_0',       'auditory_stim_1'),
             ('auditory_stim0',       'auditory_stim1'),
-            ('piezo_reward_0', 'piezo_reward_1'),
-            ('piezo_reward_au_0', 'piezo_reward_au_1')
+            # ('piezo_reward_0', 'piezo_reward_1'),
+            # ('piezo_reward_au_0', 'piezo_reward_au_1'),
+            # Hit vs miss within each half (miss = reference), both naming variants
+            # of the miss kernels; pairs absent from the predictors are skipped.
+            # ('whisker_misses_stim0', 'whisker_hits_stim_0'),
+            # ('whisker_misses_stim_0', 'whisker_hits_stim_0'),
+            # ('whisker_misses_stim1', 'whisker_hits_stim_1'),
+            # ('whisker_misses_stim_1', 'whisker_hits_stim_1'),
+            # Change of that hit-vs-miss difference from half 0 to half 1.
+            # _HIT_MISS_DELTA,
         ]
 
-        # Use the full-model rows only to check which kernels are present
-        df_full = merged_df[merged_df['model_name'] == 'full']
+        # full_vs_random needs FOLD-LEVEL test_corr for a paired test, but the
+        # summary dataframe (merged_df) only keeps the across-fold MEAN
+        # test_corr per neuron (no 'fold' column) — load the raw per-fold
+        # 'full'/'random_split' rows from each mouse's model-result files
+        # instead. Kernel-pair-independent, so this only needs to happen ONCE
+        # here, not redundantly inside every one of the 7 per-pair workers.
+        # Disabled for now: reading every per-fold model file is too slow.
+        # With full_vs_random_table=None the 'full_vs_random' subset is skipped.
+        # _raw_fold_frames = []
+        # for _mouse in subject_ids:
+        #     _model_path_mouse = os.path.join(base_output_path, _mouse, 'whisker_0', 'unit_glm', 'models')
+        #     _df_mouse = load_models_one_mouse(_mouse, _model_path_mouse, git_version)
+        #     if _df_mouse is None or _df_mouse.empty:
+        #         continue
+        #     _keep_cols = [c for c in ['mouse_id', 'neuron_id', 'model_name', 'fold', 'test_corr']
+        #                  if c in _df_mouse.columns]
+        #     _raw_fold_frames.append(
+        #         _df_mouse[_df_mouse['model_name'].isin(['full', 'random_split'])][_keep_cols])
+        # raw_fold_df = (pd.concat(_raw_fold_frames, ignore_index=True) if _raw_fold_frames
+        #               else pd.DataFrame(columns=['mouse_id', 'neuron_id', 'model_name', 'fold', 'test_corr']))
+        #
+        # full_vs_random_table = _compute_full_vs_random_table(raw_fold_df, merged_df)
+        # full_vs_random_table.to_csv(
+        #     os.path.join(output_folder, 'full_vs_random_neuron_table.txt'), sep='\t', index=False)
+        full_vs_random_table = None
 
-        for k0, k1 in kernel_pairs_to_compare:
-            # Check that both kernels are present in this dataset
-            sample_preds = df_full.iloc[0]['predictors_full'] if len(df_full) > 0 else []
-            has_k0 = any(p.startswith(k0 + '_t') for p in sample_preds)
-            has_k1 = any(p.startswith(k1 + '_t') for p in sample_preds)
-            if not has_k0 or not has_k1:
-                print(f"[kernel_consistency] Skipping {k0} vs {k1}: not found in predictors.")
-                continue
+        # Each pair's work is independent (own output subfolder, own subset of
+        # kernel columns), so dispatch pairs across worker processes.
+        #
+        # merged_df carries heavy per-fold columns (y_test/y_pred arrays etc.)
+        # that _process_kernel_consistency_pair never touches, so slim to only
+        # the columns this code path actually reads. That alone isn't enough
+        # to avoid OSError: [WinError 87] though — loky/multiprocessing ships
+        # each task's arguments to its worker through a Windows named pipe via
+        # a single WriteFile call, which fails outright above ~2 GB regardless
+        # of how many workers there are (joblib surfaces this as a misleading
+        # PicklingError). So instead of passing the dataframes in-memory
+        # (pickled through the pipe once per task), pickle them to a temp file
+        # ONCE and pass the (tiny) file paths to each worker, which loads its
+        # own copy from disk — ordinary file I/O has no such single-write
+        # size limit.
+        import tempfile
+        import shutil
 
-            pair_folder = os.path.join(output_folder, f"{k1}_vs_{k0}")
-            # Pass the full merged_df (all model_names) so that the LRT encoding
-            # profile can access lrt_significant from the reduced-model rows.
-            # _build_neuron_change_table filters to model_name=='full' internally.
-            plot_kernel_consistency_by_area(
-                df=merged_df,
-                kernel_0=k0,
-                kernel_1=k1,
-                area_groups=area_groups,
-                area_colors=area_colors,
-                output_folder=pair_folder,
-                reward_groups=[1, 0],
-                thresholds=[1, 5, 10],
-                n_cols=3,
-                performance_csv=r'M:\analysis\Myriam_Hamon\combined_results\whisker_session_rates\whisker_session_rates.csv',
+        _kc_cols = ['mouse_id', 'neuron_id', 'model_name', 'coef_full_mean', 'coef_full_std',
+                    'predictors_full', 'area_acronym_custom', 'reward_group',
+                    'kernel_pair', 'is_consistent', 'consistency_score',
+                    'lrt_significant'] + _CCF_COLS
+        merged_df_slim = merged_df[[c for c in _kc_cols if c in merged_df.columns]]
+
+        tmp_dir = tempfile.mkdtemp(prefix='kernel_consistency_')
+        merged_df_path = os.path.join(tmp_dir, 'merged_df_slim.pkl')
+        full_vs_random_path = os.path.join(tmp_dir, 'full_vs_random_table.pkl')
+        with open(merged_df_path, 'wb') as f:
+            pickle.dump(merged_df_slim, f, protocol=pickle.HIGHEST_PROTOCOL)
+        with open(full_vs_random_path, 'wb') as f:
+            pickle.dump(full_vs_random_table, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+        # Whisker-vs-auditory change scatter first: it only needs the two change
+        # tables, which are cheap to build here, so it doesn't wait for the
+        # per-pair analyses below.
+        def _change_table(pairs):
+            for k0, k1 in pairs:
+                table = _build_neuron_change_table(merged_df_slim, k0, k1)
+                if not table.empty:
+                    return _add_area_group_column(table, area_group_from_name).drop(columns=['w0', 'w1', 'lags'])
+            return pd.DataFrame()
+
+        export_unit_selection_table(
+            merged_df_slim, kernel_pairs_to_compare,
+            os.path.join(output_folder, 'unit_selection_table.txt'), area_group_from_name)
+
+        try:
+            # Disabled for now.
+            # plot_kernel_change_whisker_vs_auditory(
+            #     _change_table([('whisker_hits_stim_0', 'whisker_hits_stim_1')]),
+            #     _change_table([('auditory_stim_0', 'auditory_stim_1'),
+            #                    ('auditory_stim0', 'auditory_stim1')]),
+            #     merged_df_slim, full_vs_random_table,
+            #     os.path.join(output_folder, 'whisker_vs_auditory_change'), area_groups)
+
+            n_jobs = min(len(kernel_pairs_to_compare), max(1, multiprocessing.cpu_count() - 1))
+            pair_stats = Parallel(n_jobs=n_jobs, backend='loky', verbose=5)(
+                delayed(_process_kernel_consistency_pair)(
+                    k0, k1, merged_df_path, full_vs_random_path, area_groups, area_colors,
+                    area_groups_flat, area_group_from_name, output_folder,
+                    r'M:\analysis\Myriam_Hamon\combined_results_ks4\whisker_session_rates\whisker_session_rates_1000trials.csv',
+                )
+                for k0, k1 in kernel_pairs_to_compare
             )
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
-            # Grouped-by-area-group version
-            pair_folder_grouped = os.path.join(pair_folder, 'by_area_group')
-            plot_kernel_consistency_by_area(
-                df=merged_df_grouped,
-                kernel_0=k0,
-                kernel_1=k1,
-                area_groups=area_groups_flat,
-                area_colors=area_colors,
-                output_folder=pair_folder_grouped,
-                reward_groups=[1, 0],
-                thresholds=[1, 5, 10],
-                n_cols=3,
-                performance_csv=r'M:\analysis\Myriam_Hamon\combined_results\whisker_session_rates\whisker_session_rates.csv',
-            )
+        non_empty = [df for df in pair_stats if df is not None and not df.empty]
+        if non_empty:
+            pd.concat(non_empty, ignore_index=True).to_csv(
+                os.path.join(output_folder, 'all_pairs_stats_combined.txt'), sep='\t', index=False)
 
-            # Repeat for whisker-encoding-only and auditory-encoding-only neurons
-            if 'lrt_significant' in merged_df.columns:
-                for encoding_model, encoding_label in [
-                    ('whisker_encoding', 'wsk'),
-                    ('auditory_encoding', 'aud'),
-                ]:
-                    sig_ids = merged_df[
-                        (merged_df['model_name'] == encoding_model) &
-                        (merged_df['lrt_significant'] == True)
-                    ][['mouse_id', 'neuron_id']].drop_duplicates()
-                    if sig_ids.empty:
-                        print(f"[kernel_consistency] No {encoding_model} neurons found, skipping {encoding_label}.")
-                        continue
-                    merged_df_encoding = merged_df.merge(sig_ids, on=['mouse_id', 'neuron_id'])
-                    pair_folder_encoding = os.path.join(pair_folder, encoding_label)
-                    plot_kernel_consistency_by_area(
-                        df=merged_df_encoding,
-                        kernel_0=k0,
-                        kernel_1=k1,
-                        area_groups=area_groups,
-                        area_colors=area_colors,
-                        output_folder=pair_folder_encoding,
-                        reward_groups=[1, 0],
-                        thresholds=[1, 5, 10],
-                        n_cols=3,
-                    )
+    if 'selectivity_space_density' in plots:
+        plot_selectivity_space_density(
+            merged_df, os.path.join(output_path, 'selectivity_space_density'))
+        # Same figures with 2000 um slabs centred on AP 3500, 5000, 7000 and 9000 um
+        # (2500-4500, 4000-6000, 6000-8000, 8000-10000). The first two overlap by
+        # 500 um, so neurons at 4000-4500 um appear in both.
+        plot_selectivity_space_density(
+            merged_df, os.path.join(output_path, 'selectivity_space_density', 'slab_2000um'),
+            ap_positions=(3500, 5000, 7000, 9000), slab_um=2000)
 
-                    # Grouped-by-area-group version for encoding subsets
-                    merged_df_grouped_encoding = merged_df_grouped.merge(sig_ids, on=['mouse_id', 'neuron_id'])
-                    if not merged_df_grouped_encoding.empty:
-                        pair_folder_encoding_grouped = os.path.join(pair_folder_grouped, encoding_label)
-                        plot_kernel_consistency_by_area(
-                            df=merged_df_grouped_encoding,
-                            kernel_0=k0,
-                            kernel_1=k1,
-                            area_groups=area_groups_flat,
-                            area_colors=area_colors,
-                            output_folder=pair_folder_encoding_grouped,
-                            reward_groups=[1, 0],
-                            thresholds=[1, 5, 10],
-                            n_cols=3,
-                        )
+    if 'glm_roc_overlap' in plots:
+        # Neurons identified by the GLM (LRT) vs the ROC analysis (whisker_0), and
+        # GLM drop in performance vs ROC |selectivity|. See neuron_set_overlap.py.
+        import neuron_set_overlap
+        # Same folder as running neuron_set_overlap.py directly.
+        overlap_out = os.path.join(base_output_path, 'neuron_set_overlap', git_version,
+                                   _short_filter_set_name(filter_set_name) if filter_set_name else '',
+                                   'glm_roc_overlap')
+        neuron_set_overlap.run_glm_vs_roc(
+            merged_df, _winlong(overlap_out),
+            peth=neuron_set_overlap._peth_for_filter_set(filter_set_name, merged_df['mouse_id'].unique()),
+            area_group_from_name=area_group_from_name, area_order=list(area_groups.keys()),
+            area_colors=area_colors, excluded_area_groups=EXCLUDED_AREA_GROUPS)
 
-
-                
     if 'compare_kernels' in plots:
-        output_folder = os.path.join(output_path, 'compare_kernels_claude')
+        output_folder = os.path.join(output_path, 'compare_kernels')
         os.makedirs(output_folder, exist_ok=True)
 
 
@@ -1297,7 +1935,7 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
             )
 
             # 3. First-weight amplitude evolution + per-kernel amplitude differences
-            output_folder_first_weight = os.path.join(output_folder_reward, 'first_weight_amplitude_evolution')
+            output_folder_first_weight = os.path.join(output_folder_reward, 'first_weight_amp')
             os.makedirs(output_folder_first_weight, exist_ok=True)
             # compare_kernel_amplitude_evolution_2(
             #     dfs=dfs,
@@ -1558,17 +2196,18 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
         os.makedirs(output_folder_pred, exist_ok=True)
 
         pred_dfs = []
-        # output_path was reassigned to {base}/unit_glm/{git_version}; go up two levels
-        base_output_path = os.path.dirname(os.path.dirname(os.path.dirname(output_path)))
         for mouse in subject_ids:
-            mouse_results_path = os.path.join(
-                base_output_path, mouse, 'whisker_0', 'unit_glm', git_version, 'test'
-            )
-            pred_fpath = os.path.join(mouse_results_path,
-                                      f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet")
+            mouse_glm_path = _winlong(os.path.join(base_output_path, mouse, 'whisker_0', 'unit_glm', git_version))
+            mouse_results_path = (os.path.join(mouse_glm_path, filter_set_name)
+                                   if filter_set_name else mouse_glm_path)
+            pred_fname = f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet"
+            pred_fpath = os.path.join(mouse_results_path, pred_fname)
             if not os.path.exists(pred_fpath):
-                print(f"[WARNING] Predictions summary not found: {pred_fpath}")
-                continue
+                pred_fpath_test = os.path.join(mouse_results_path, 'test', pred_fname)
+                if not os.path.exists(pred_fpath_test):
+                    print(f"[WARNING] Predictions summary not found: {pred_fpath}")
+                    continue
+                pred_fpath = pred_fpath_test
             pred_df = pd.read_parquet(pred_fpath)
             pred_dfs.append(pred_df)
 
@@ -1694,15 +2333,18 @@ def over_mouse_glm_results_new(subject_ids,nwb_list, plots, output_path, git_ver
         os.makedirs(output_folder_corr, exist_ok=True)
 
         pred_dfs = []
-        base_output_path = os.path.dirname(os.path.dirname(output_path))
         for mouse in subject_ids:
-            mouse_results_path = os.path.join(
-                base_output_path, mouse, 'whisker_0', 'unit_glm', git_version)
-            pred_fpath = os.path.join(mouse_results_path,
-                                      f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet")
+            mouse_glm_path = _winlong(os.path.join(base_output_path, mouse, 'whisker_0', 'unit_glm', git_version))
+            mouse_results_path = (os.path.join(mouse_glm_path, filter_set_name)
+                                   if filter_set_name else mouse_glm_path)
+            pred_fname = f"predictions_summary_{mouse}_unit_glm_{git_version}.parquet"
+            pred_fpath = os.path.join(mouse_results_path, pred_fname)
             if not os.path.exists(pred_fpath):
-                print(f"[WARNING] Predictions summary not found: {pred_fpath}")
-                continue
+                pred_fpath_test = os.path.join(mouse_results_path, 'test', pred_fname)
+                if not os.path.exists(pred_fpath_test):
+                    print(f"[WARNING] Predictions summary not found: {pred_fpath}")
+                    continue
+                pred_fpath = pred_fpath_test
             pred_dfs.append(pd.read_parquet(pred_fpath))
 
         if pred_dfs:
@@ -1730,8 +2372,11 @@ def over_mouse_compare_git_results_new(subject_ids, plots,info_path, output_path
             mouse_results_path = os.path.join(output_path, mouse, 'whisker_0', 'unit_glm', git_version)
             fpath = os.path.join(mouse_results_path, f"summary_{mouse}_unit_glm_{git_version}.parquet")
             if not os.path.exists(fpath):
-                print(f"[WARNING] Summary not found: {fpath}")
-                continue
+                fpath_test = os.path.join(mouse_results_path, 'test', f"summary_{mouse}_unit_glm_{git_version}.parquet")
+                if not os.path.exists(fpath_test):
+                    print(f"[WARNING] Summary not found: {fpath}")
+                    continue
+                fpath = fpath_test
             df = pd.read_parquet(fpath)
             dfs.append(df)
     df_models = pd.concat(dfs, ignore_index=True)
@@ -2179,6 +2824,174 @@ import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
 
+def plot_full_model_test_corr_distribution(merged_df, output_folder, area_group_order, area_group_from_name,
+                                           n_perm=5000, min_neurons_per_mouse=5):
+    """Distribution of the full model's test correlation (Pearson r between
+    predicted and actual spike counts on held-out trials, mean over folds),
+    one value per neuron, R+ vs R-.
+
+    Figures in output_folder:
+      test_corr_global_hist / _cdf        all neurons
+      test_corr_by_area_group_hist / _cdf one panel per area group
+      test_corr_per_mouse                 one box per mouse (its neurons), by reward group
+      test_corr_per_mouse_medians         one dot per mouse (median over its neurons)
+    R+ vs R- is tested with the mouse-level permutation test used elsewhere
+    (_mouse_block_permutation_test: difference of means and KS distance,
+    permuting whole mice), BH-FDR across area groups. Neurons are pooled in the
+    distributions, so mice with many neurons weigh more there; the per-mouse
+    figures show each mouse separately. Stats in test_corr_stats.txt.
+    """
+    full = merged_df[merged_df['model_name'] == 'full']
+    if full.empty or 'test_corr' not in full.columns:
+        print("[metrics] No full-model test_corr in the summaries. Skipping test_corr distribution.")
+        return
+    df = (full[['mouse_id', 'neuron_id', 'reward_group', 'area_acronym_custom', 'test_corr']]
+          .drop_duplicates(subset=['mouse_id', 'neuron_id']).copy())
+    df['test_corr'] = pd.to_numeric(df['test_corr'], errors='coerce')
+    df = df.dropna(subset=['test_corr', 'reward_group'])
+    df = df[df['reward_group'].isin([0, 1])]
+    if df.empty:
+        return
+    df['area_group'] = df['area_acronym_custom'].map(area_group_from_name)
+    os.makedirs(output_folder, exist_ok=True)
+    rg_labels = {1: 'R+', 0: 'R-'}
+    bins = np.linspace(min(df['test_corr'].min(), -0.05), df['test_corr'].quantile(0.995), 50)
+    stats_rows = []
+
+    def _test(sub, scope):
+        a, b = sub[sub['reward_group'] == 0], sub[sub['reward_group'] == 1]
+        res = _mouse_block_permutation_test(a['test_corr'].values, a['mouse_id'].values,
+                                            b['test_corr'].values, b['mouse_id'].values, n_perm=n_perm)
+        stats_rows.append(dict(scope=scope, n_neurons_R_minus=res['n_a'], n_neurons_R_plus=res['n_b'],
+                               n_mice_R_minus=res['n_mice_a'], n_mice_R_plus=res['n_mice_b'],
+                               median_R_minus=a['test_corr'].median(), median_R_plus=b['test_corr'].median(),
+                               mean_diff_R_plus_minus_R_minus=res['mean_diff_obs'], p_mean_diff=res['mean_diff_p'],
+                               ks_d=res['ks_d_obs'], p_ks=res['ks_d_p']))
+        return res
+
+    def _draw(ax, sub, res, cumulative, show_xlabel=True):
+        for rg in (1, 0):
+            vals = sub.loc[sub['reward_group'] == rg, 'test_corr'].to_numpy()
+            if not len(vals):
+                continue
+            color = REWARD_GROUP_COLORS[rg]
+            label = f"{rg_labels[rg]} (n={len(vals)}, {sub.loc[sub['reward_group'] == rg, 'mouse_id'].nunique()} mice)"
+            if cumulative:
+                ax.step(np.sort(vals), np.arange(1, len(vals) + 1) / len(vals), where='post', color=color,
+                        lw=1.4, label=label)
+            else:
+                ax.hist(vals, bins=bins, density=True, color=color, alpha=0.45, edgecolor='none', label=label)
+                ax.axvline(np.median(vals), color=color, lw=1, ls='--')
+        ax.axvline(0, color='black', lw=0.6)
+        if cumulative:
+            ax.set_ylim(0, 1)
+        p = res['ks_d_p'] if cumulative else res['mean_diff_p']
+        if np.isfinite(p):
+            ax.text(0.97, 0.05 if cumulative else 0.95, f"{'KS' if cumulative else 'mean diff'} p={p:.3g}",
+                    transform=ax.transAxes, ha='right', va='bottom' if cumulative else 'top', fontsize=6,
+                    bbox=dict(boxstyle='round,pad=0.2', fc='white', alpha=0.7, ec='lightgray'))
+        if show_xlabel:
+            ax.set_xlabel('Test correlation (full model)', fontsize=7)
+        ax.tick_params(labelsize=6)
+        ax.spines[['top', 'right']].set_visible(False)
+
+    # Global
+    res = _test(df, 'ALL')
+    for cumulative, suffix, ylabel in ((False, 'hist', 'Density'), (True, 'cdf', 'Cumulative fraction')):
+        fig, ax = plt.subplots(figsize=(4.5, 3.2))
+        _draw(ax, df, res, cumulative)
+        ax.set_ylabel(ylabel, fontsize=7)
+        ax.legend(fontsize=6, frameon=False, loc='upper left' if not cumulative else 'lower right',
+                  bbox_to_anchor=(0.0, 1.0) if not cumulative else (1.0, 0.15))
+        ax.set_title('Full model test correlation, all neurons', fontsize=8)
+        fig.tight_layout()
+        putils.save_figure_with_options(fig, ['png', 'pdf'], f'test_corr_global_{suffix}', output_dir=output_folder)
+        plt.close(fig)
+
+    # Per area group
+    groups = [g for g in area_group_order if (df['area_group'] == g).any()]
+    results = {g: _test(df[df['area_group'] == g], g) for g in groups}
+    if groups:
+        n_cols = min(5, len(groups))
+        n_rows = math.ceil(len(groups) / n_cols)
+        for cumulative, suffix in ((False, 'hist'), (True, 'cdf')):
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(2.8 * n_cols, 2.3 * n_rows), squeeze=False,
+                                     sharex=True)
+            for idx, g in enumerate(groups):
+                ax = axes[idx // n_cols][idx % n_cols]
+                sub = df[df['area_group'] == g]
+                _draw(ax, sub, results[g], cumulative, show_xlabel=idx // n_cols == n_rows - 1)
+                ax.set_title(f"{g}\nR+ n={int((sub.reward_group == 1).sum())}, "
+                             f"R- n={int((sub.reward_group == 0).sum())}", fontsize=7)
+            for idx in range(len(groups), n_rows * n_cols):
+                axes[idx // n_cols][idx % n_cols].set_visible(False)
+            fig.suptitle('Full model test correlation by area group (R+ green, R- magenta; '
+                         'p uncorrected, FDR in the stats file)', fontsize=9)
+            fig.tight_layout(rect=[0, 0, 1, 0.95])
+            putils.save_figure_with_options(fig, ['png', 'pdf'], f'test_corr_by_area_group_{suffix}',
+                                            output_dir=output_folder)
+            plt.close(fig)
+
+    # Per mouse: one box per mouse, and one median per mouse
+    per_mouse = (df.groupby(['mouse_id', 'reward_group'])['test_corr']
+                 .agg(['median', 'mean', 'size']).reset_index())
+    per_mouse = per_mouse[per_mouse['size'] >= min_neurons_per_mouse]
+    per_mouse = per_mouse.sort_values(['reward_group', 'median'], ascending=[False, True]).reset_index(drop=True)
+    if not per_mouse.empty:
+        fig, ax = plt.subplots(figsize=(max(5, 0.22 * len(per_mouse) + 1.5), 3.4))
+        data = [df.loc[df['mouse_id'] == m, 'test_corr'].to_numpy() for m in per_mouse['mouse_id']]
+        boxes = ax.boxplot(data, positions=np.arange(len(data)), widths=0.6, showfliers=False, patch_artist=True,
+                           medianprops=dict(color='black', lw=0.8), whiskerprops=dict(lw=0.6),
+                           capprops=dict(lw=0.6), boxprops=dict(lw=0.6))
+        for patch, rg in zip(boxes['boxes'], per_mouse['reward_group']):
+            patch.set_facecolor(REWARD_GROUP_COLORS[rg])
+            patch.set_alpha(0.6)
+        ax.axhline(0, color='black', lw=0.6)
+        ax.set_xticks(np.arange(len(data)))
+        ax.set_xticklabels(per_mouse['mouse_id'], rotation=90, fontsize=5)
+        ax.set_ylabel('Test correlation (full model)', fontsize=7)
+        ax.tick_params(axis='y', labelsize=6)
+        ax.set_title(f"Full model test correlation per mouse (box = its neurons, whiskers 1.5 IQR; "
+                     f"mice with >= {min_neurons_per_mouse} neurons)", fontsize=8)
+        ax.spines[['top', 'right']].set_visible(False)
+        fig.tight_layout()
+        putils.save_figure_with_options(fig, ['png', 'pdf'], 'test_corr_per_mouse', output_dir=output_folder)
+        plt.close(fig)
+
+        a, b = per_mouse[per_mouse['reward_group'] == 0], per_mouse[per_mouse['reward_group'] == 1]
+        res_m = _mouse_block_permutation_test(a['median'].values, a['mouse_id'].values,
+                                              b['median'].values, b['mouse_id'].values, n_perm=n_perm)
+        stats_rows.append(dict(scope='per_mouse_medians', n_mice_R_minus=len(a), n_mice_R_plus=len(b),
+                               median_R_minus=a['median'].median(), median_R_plus=b['median'].median(),
+                               mean_diff_R_plus_minus_R_minus=res_m['mean_diff_obs'],
+                               p_mean_diff=res_m['mean_diff_p'], ks_d=res_m['ks_d_obs'], p_ks=res_m['ks_d_p']))
+        fig, ax = plt.subplots(figsize=(2.4, 3.2))
+        rng = np.random.default_rng(0)
+        for x, (rg, g) in enumerate(((1, b), (0, a))):
+            ax.scatter(x + rng.uniform(-0.15, 0.15, len(g)), g['median'], s=12, color=REWARD_GROUP_COLORS[rg],
+                       edgecolors='#222222', linewidths=0.3, zorder=3)
+            ax.errorbar(x + 0.3, g['median'].mean(), yerr=g['median'].sem(), fmt='o', color='black',
+                        markersize=3, capsize=2, lw=0.8, zorder=4)
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels([f"R+\n({len(b)})", f"R-\n({len(a)})"], fontsize=7)
+        ax.set_ylabel('Median test correlation per mouse', fontsize=7)
+        ax.tick_params(axis='y', labelsize=6)
+        p = res_m['mean_diff_p']
+        ax.set_title(f"perm. p={p:.3g}" if np.isfinite(p) else '', fontsize=7)
+        ax.spines[['top', 'right']].set_visible(False)
+        fig.tight_layout()
+        putils.save_figure_with_options(fig, ['png', 'pdf'], 'test_corr_per_mouse_medians', output_dir=output_folder)
+        plt.close(fig)
+
+    stats = pd.DataFrame(stats_rows)
+    in_family = stats['scope'].isin(groups)
+    for col in ('p_mean_diff', 'p_ks'):
+        stats[f'{col}_fdr_across_area_groups'] = np.nan
+        stats.loc[in_family, f'{col}_fdr_across_area_groups'] = _bh_fdr(stats.loc[in_family, col].values)
+    stats.to_csv(os.path.join(output_folder, 'test_corr_stats.txt'), sep='\t', index=False)
+    print(f"[metrics] Full model test_corr distributions ({len(df)} neurons) -> {output_folder}")
+
+
 def compare_full_vs_reduced_models(df_models, output_folder):
     """
     Compare FULL model to all reduced models using:
@@ -2206,8 +3019,10 @@ def compare_full_vs_reduced_models(df_models, output_folder):
     all_models = sorted(df_models["model_name"].unique())
     reduced_models = [m for m in all_models if m != "full"]
 
-    # Base full model
-    df_full = df_models[df_models["model_name"] == "full"]
+    # Base full model. Summary rows can repeat a neuron (one row per kernel
+    # pair), so keep one row per neuron and model before merging.
+    df_full = (df_models[df_models["model_name"] == "full"]
+               .drop_duplicates(subset=['mouse_id', 'neuron_id']))
 
     if df_full.empty:
         raise ValueError("No rows found for model_name == 'full'")
@@ -2215,7 +3030,8 @@ def compare_full_vs_reduced_models(df_models, output_folder):
     for red_model in reduced_models:
         print(f"🔍 Comparing FULL vs {red_model}")
 
-        df_red = df_models[df_models["model_name"] == red_model]
+        df_red = (df_models[df_models["model_name"] == red_model]
+                  .drop_duplicates(subset=['mouse_id', 'neuron_id']))
         if df_red.empty:
             print(f"⚠️ No rows for reduced model {red_model}, skipping.")
             continue
@@ -2254,7 +3070,7 @@ def compare_full_vs_reduced_models(df_models, output_folder):
         fig = plt.figure(figsize=(6,6))
         ax = fig.add_subplot(111)
 
-        sc = ax.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none')
+        sc = ax.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none', rasterized=True)
 
         # Attach colorbar to figure explicitly
         cbar = fig.colorbar(sc, ax=ax)
@@ -2271,7 +3087,7 @@ def compare_full_vs_reduced_models(df_models, output_folder):
 
         # Zoom inset around the main data cluster
         axins = ax.inset_axes([0.48, 0.05, 0.50, 0.50])
-        axins.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none')
+        axins.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none', rasterized=True)
         _zoom = [0, min(0.20, float(np.percentile(np.concatenate([x, y]), 75)))]
         axins.plot(_zoom, _zoom, 'r--', linewidth=0.8)
         axins.set_xlim(_zoom)
@@ -2283,11 +3099,12 @@ def compare_full_vs_reduced_models(df_models, output_folder):
         plt.tight_layout()
         putils.save_figure_with_options(
             fig,
-            file_formats=["png", "pdf", "svg"],
+            file_formats=["png", "pdf"],
             filename=f"test_corr_density_full_vs_{red_model}",
             output_dir=output_folder,
             dark_background=True
         )
+        plt.close(fig)
 
         # ======================
         #  Delta distribution
@@ -2298,7 +3115,7 @@ def compare_full_vs_reduced_models(df_models, output_folder):
         if len(delta) >= 10:
             fig_d, ax_d = plt.subplots(figsize=(7, 5))
 
-            _RCOLORS = {1: 'forestgreen', 0: 'crimson'}
+            _RCOLORS = REWARD_GROUP_COLORS
             _RLABELS = {1: 'R+', 0: 'R−'}
             bins = np.linspace(delta.min(), delta.max(), 61)
             _annot_lines = []
@@ -2369,75 +3186,75 @@ def compare_full_vs_reduced_models(df_models, output_folder):
             )
             plt.close(fig_c)
 
- # Merge neuron-by-neuron
-        df_compare = pd.merge(
-            df_full[['mouse_id','neuron_id','explained_var']].rename(
-                columns={'explained_var': 'test_corr_full'
-                        }
-            ),
-            df_red[['mouse_id','neuron_id','explained_var']].rename(
-                columns={'explained_var': f'test_corr_{red_model}'
-                }
-            ),
-            on=['mouse_id','neuron_id']
-        )
-        print(df_full.keys())
-        if df_compare.empty:
-            print(f"⚠️ No overlapping neurons for model {red_model}, skipping.")
-            continue
+#  # Merge neuron-by-neuron
+#         df_compare = pd.merge(
+#             df_full[['mouse_id','neuron_id','explained_var']].rename(
+#                 columns={'explained_var': 'test_corr_full'
+#                         }
+#             ),
+#             df_red[['mouse_id','neuron_id','explained_var']].rename(
+#                 columns={'explained_var': f'test_corr_{red_model}'
+#                 }
+#             ),
+#             on=['mouse_id','neuron_id']
+#         )
+#         print(df_full.keys())
+#         if df_compare.empty:
+#             print(f"⚠️ No overlapping neurons for model {red_model}, skipping.")
+#             continue
 
-        # Δ metrics
-        df_compare["delta_corr"] = df_compare["test_corr_full"] - df_compare[f"test_corr_{red_model}"]
-        # df_compare["delta_ll"]   = df_compare["test_ll_full"]   - df_compare[f"test_ll_{red_model}"]
+#         # Δ metrics
+#         df_compare["delta_corr"] = df_compare["test_corr_full"] - df_compare[f"test_corr_{red_model}"]
+#         # df_compare["delta_ll"]   = df_compare["test_ll_full"]   - df_compare[f"test_ll_{red_model}"]
 
-        # Extract for plotting
-        x = df_compare["test_corr_full"].values
-        y = df_compare[f"test_corr_{red_model}"].values
-        mask = np.isfinite(x) & np.isfinite(y)
-        x, y = x[mask], y[mask]
+#         # Extract for plotting
+#         x = df_compare["test_corr_full"].values
+#         y = df_compare[f"test_corr_{red_model}"].values
+#         mask = np.isfinite(x) & np.isfinite(y)
+#         x, y = x[mask], y[mask]
 
-        # Density
-        x, y, z = compute_density_safe(x, y)
+#         # Density
+#         x, y, z = compute_density_safe(x, y)
 
-        # ======================
-        #  Density scatter plot
-        # ======================
-        fig, ax2 = plt.subplots(figsize=(6, 6))
-        sc = ax2.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none')
+#         # ======================
+#         #  Density scatter plot
+#         # ======================
+#         fig, ax2 = plt.subplots(figsize=(6, 6))
+#         sc = ax2.scatter(x, y, c=z, cmap='viridis', s=20, edgecolor='none')
 
-        # Add colorbar
-        cbar = fig.colorbar(sc, ax=ax2)
-        cbar.set_label("Density", rotation=90)
-        lims = [min(x.min(), y.min()), max(x.max(), y.max())]
-        ax2.plot(lims, lims, 'r--', label="unity line")
-        ax2.set_xlim(-0.2, 0.5)
-        ax2.set_ylim(-0.2, 0.5)
-        ax2.set_xlabel("Full model: explained variance")
-        ax2.set_ylabel(f"{red_model}: explained variance")
-        ax2.set_title(f"Density scatter: FULL vs {red_model}")
-        ax2.legend()
-        ax2.grid(linestyle="--", alpha=0.3)
+#         # Add colorbar
+#         cbar = fig.colorbar(sc, ax=ax2)
+#         cbar.set_label("Density", rotation=90)
+#         lims = [min(x.min(), y.min()), max(x.max(), y.max())]
+#         ax2.plot(lims, lims, 'r--', label="unity line")
+#         ax2.set_xlim(-0.2, 0.5)
+#         ax2.set_ylim(-0.2, 0.5)
+#         ax2.set_xlabel("Full model: explained variance")
+#         ax2.set_ylabel(f"{red_model}: explained variance")
+#         ax2.set_title(f"Density scatter: FULL vs {red_model}")
+#         ax2.legend()
+#         ax2.grid(linestyle="--", alpha=0.3)
 
-        # Zoom inset
-        axins2 = ax2.inset_axes([0.55, 0.05, 0.42, 0.42])
-        axins2.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none')
-        _zoom2 = [0, min(0.35, float(np.percentile(np.concatenate([x, y]), 95)))]
-        axins2.plot(_zoom2, _zoom2, 'r--', linewidth=0.8)
-        axins2.set_xlim(_zoom2)
-        axins2.set_ylim(_zoom2)
-        axins2.tick_params(labelsize=7)
-        axins2.grid(linestyle='--', alpha=0.3)
-        ax2.indicate_inset_zoom(axins2, edgecolor='gray', linewidth=0.8)
+#         # Zoom inset
+#         axins2 = ax2.inset_axes([0.55, 0.05, 0.42, 0.42])
+#         axins2.scatter(x, y, c=z, cmap='viridis', s=5, edgecolor='none')
+#         _zoom2 = [0, min(0.35, float(np.percentile(np.concatenate([x, y]), 95)))]
+#         axins2.plot(_zoom2, _zoom2, 'r--', linewidth=0.8)
+#         axins2.set_xlim(_zoom2)
+#         axins2.set_ylim(_zoom2)
+#         axins2.tick_params(labelsize=7)
+#         axins2.grid(linestyle='--', alpha=0.3)
+#         ax2.indicate_inset_zoom(axins2, edgecolor='gray', linewidth=0.8)
 
-        plt.tight_layout()
-        putils.save_figure_with_options(
-        fig,
-        file_formats=["png", "pdf", "svg"],
-        filename= f"test_variance_explained_density_full_vs_{red_model}",
-        output_dir=output_folder,
-        dark_background=True
-        )
-        plt.close()
+#         plt.tight_layout()
+#         putils.save_figure_with_options(
+#         fig,
+#         file_formats=["png", "pdf", "svg"],
+#         filename= f"test_variance_explained_density_full_vs_{red_model}",
+#         output_dir=output_folder,
+#         dark_background=True
+#         )
+#         plt.close()
 
 
 
@@ -2681,7 +3498,7 @@ def plot_testcorr_per_mouse_reward(df, output_folder):
     df_mouse = df_mouse.sort_values('reward_group', ascending=False).reset_index(drop=True)
 
     # Colors
-    df_mouse['color'] = df_mouse['reward_group'].apply(lambda x: 'forestgreen' if x==1 else 'crimson')
+    df_mouse['color'] = df_mouse['reward_group'].map(REWARD_GROUP_COLORS)
 
     # Plot
     fig, ax = plt.subplots(figsize=(max(6, len(df_mouse)*0.5), 5), dpi=300)
@@ -2706,7 +3523,7 @@ def plot_test_corr_vs_firing_rate (merged, output_folder):
     merged['firing_rate'] = pd.to_numeric(merged['firing_rate'], errors='coerce')
     merged['test_corr'] = pd.to_numeric(merged['test_corr'], errors='coerce')
 
-    color_map = {1: 'forestgreen', 0: 'crimson'}
+    color_map = REWARD_GROUP_COLORS
 
     fig, ax = plt.subplots(figsize=(6, 5), dpi=300)
 
@@ -5800,353 +6617,358 @@ def plot_average_kernels_by_region(df, output_folder, kernels_to_plot,
     return
 
 
-def plot_average_kernels_by_region_new(df, output_folder, kernels_to_plot,
-                                   lags=None, area_groups=None, area_colors=None, n_cols=3,  threshold = None, git_handle = None):
+_KERNEL_COLUMN_RE = re.compile(r"^(.+)_t([+-])(\d+\.\d+)s$")
+
+# Colours for known kernel names in the overlay plot; other kernels get tab10 colours.
+KERNEL_COLORS = {
+    'whisker_stim': 'green', 'auditory_stim': 'blue', 'auditory_stim0': 'blue',
+    'whisker_hits_stim_0': 'lightgreen', 'whisker_hits_stim_1': 'green',
+    'whisker_misses_stim_0': 'salmon', 'whisker_misses_stim_1': 'red',
+    'whisker_misses_stim0': 'salmon', 'whisker_misses_stim1': 'red',
+    'auditory_stim_0': 'lightblue', 'auditory_stim_1': 'blue', 'auditory_stim1': 'blue',
+    'reward': 'darkorange', 'lick': 'saddlebrown', 'jaw_onset': 'saddlebrown', 'piezo_reward': 'darkorange',
+}
+
+
+def reward_cosine_basis(n_lags=32, n_cosine=6):
+    """Reward kernel basis (glm_utils.reward_basis_transform): (n_cosine, n_lags), lags 0..1.55 s in 50 ms bins."""
+    lags = np.arange(n_lags)
+    centers = np.linspace(0, n_lags - 1, n_cosine)
+    width = 2 * (centers[1] - centers[0])
+    B = np.array([np.where(np.abs(lags - c) < width, 0.5 * (1 + np.cos(np.pi * (lags - c) / width)), 0.0)
+                  for c in centers])
+    return B, lags * 0.05
+
+
+def lick_cosine_basis(window_s=(-0.05, 0.1), n_bases=4, dt=0.001):
+    """Per-lick kernel basis (glm_utils.lick_raised_cosines): (n_bases, 150) at 1 ms, lags -0.05..0.099 s."""
+    lags = np.arange(int(round(window_s[0] / dt)), int(round(window_s[1] / dt))) * dt
+    centers = np.linspace(window_s[0], window_s[1], n_bases)
+    width = centers[1] - centers[0]
+    B = np.array([np.where(np.abs(lags - c) < width, 0.5 * (1 + np.cos(np.pi * (lags - c) / width)), 0.0)
+                  for c in centers])
+    return B, lags
+
+
+# Kernels fitted on a basis (one weight per basis function, not per lag):
+# kernel name -> (column prefix, basis function returning (B, lags_s)). The
+# kernel over time is weights @ B, rebuilt per neuron before averaging.
+BASIS_KERNELS = {
+    'reward': ('piezo_reward_cos', reward_cosine_basis),
+    'lick': ('lick_b', lick_cosine_basis),
+}
+
+
+def _basis_columns(predictors, kernel):
+    """Column positions of a basis kernel's weights (prefix0, prefix1, ...), or
+    None unless every basis function's column is present."""
+    prefix, basis_fn = BASIS_KERNELS[kernel]
+    n_basis = basis_fn()[0].shape[0]
+    pos = {p: i for i, p in enumerate(predictors)}
+    names = [f'{prefix}{k}' for k in range(n_basis)]
+    return [pos[n] for n in names] if all(n in pos for n in names) else None
+
+
+def detect_kernels(df, predictors_col='predictors_full'):
+    """Kernel names present in df, in first-seen order: every base name with
+    lag columns ('<name>_t+0.05s') in at least one row's predictor list, plus
+    the basis kernels of BASIS_KERNELS ('reward', 'lick') whose weight columns
+    are all present."""
+    seen = {}
+    for preds in df[predictors_col].dropna().apply(tuple).drop_duplicates():
+        for p in preds:
+            m = _KERNEL_COLUMN_RE.match(p)
+            if m:
+                seen.setdefault(m.group(1), None)
+        for kernel in BASIS_KERNELS:
+            if _basis_columns(preds, kernel) is not None:
+                seen.setdefault(kernel, None)
+    return list(seen)
+
+
+def _neuron_kernel(preds, coefs, kernel):
+    """(lags, kernel over time) of one neuron, or (None, None) if absent.
+    Lag kernels: one weight per lag. Basis kernels: weights @ basis."""
+    coefs = np.asarray(coefs, dtype=float)
+    if kernel in BASIS_KERNELS:
+        idx = _basis_columns(preds, kernel)
+        if idx is None:
+            return None, None
+        B, lags = BASIS_KERNELS[kernel][1]()
+        return lags, coefs[idx] @ B
+    lags, idx = _kernel_col_indices(preds, kernel)
+    return (None, None) if idx is None else (lags, coefs[idx])
+
+
+def _region_kernels(region_df, kernel):
+    """One kernel for every neuron of region_df (one row per mouse_id, neuron_id).
+
+    Returns (lags, kernels as an (n_neurons, n_lags) array, n_mice, n_skipped),
+    or (None, None, 0, 0) if no neuron has the kernel. Lag kernels: lags come
+    from each neuron's own predictor names. Basis kernels (BASIS_KERNELS) are
+    rebuilt over time per neuron. Neurons whose lag set differs from the most
+    common one in the region are left out and counted in n_skipped (they can't
+    be averaged with the others).
     """
-    Plot average kernels across neurons grouped by area_acronym_custom (regions),
-    one figure per kernel. Regions are colored by area group, ordered by area_groups.
+    import collections
 
-    For each neuron (per mouse), coefficients are averaged across folds first,
-    then mean ± SEM is computed across neurons in the region.
-
-    Kernel lengths are automatically detected from predictor names in the format:
-    'kernel_name_t+0.00s', 'kernel_name_t-0.50s', etc.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must include columns: ['mouse_id','neuron_id','area_acronym_custom','coef','predictors','fold']
-    output_folder : str
-    kernels_to_plot : list of str
-    lags : np.ndarray, optional
-        If provided, overrides auto-detected lags. Otherwise lags are inferred from predictor names.
-    area_groups : dict, optional
-    area_colors : dict, optional
-    n_cols : int, number of subplot columns
-    git_handle : str, optional
-        Deprecated parameter, kept for backward compatibility but no longer used for lag detection.
-    """
-
-    def extract_lags_from_predictors(predictors, kernel_name):
-        """
-        Extract lag values from predictor names like 'kernel_name_t+0.00s', 'kernel_name_t-0.50s'.
-
-        Parameters
-        ----------
-        predictors : list of str
-            List of predictor names
-        kernel_name : str
-            The kernel name to search for
-
-        Returns
-        -------
-        lags : np.ndarray or None
-            Array of unique lag values in seconds, sorted in ascending order. None if no matching predictors found.
-        """
-        import re
-        lag_values = []
-
-        # Pattern to match exact kernel name followed by _t and time
-        pattern = re.compile(rf"^{re.escape(kernel_name)}_t([+-])(\d+\.\d+)s$")
-
-        for pred in predictors:
-            match = pattern.match(pred)
-            if match:
-                sign = 1 if match.group(1) == '+' else -1
-                value = float(match.group(2))
-                lag_values.append(sign * value)
-
-        if not lag_values:
-            return None
-
-        # Sort, remove duplicates, and return as numpy array
-        return np.array(sorted(set(lag_values)))
-
-    # Map region -> color
-    region_to_color = {}
-    for group_name, areas in area_groups.items():
-        for area in areas:
-            region_to_color[area] = area_colors[group_name]
-
-    def get_region_color(region_name):
-        return region_to_color.get(region_name, 'gray')
-
-    # Order regions
-    ordered_regions = []
-    for group_name, areas in area_groups.items():
-        for area in areas:
-            if area in df['area_acronym_custom'].values:
-                ordered_regions.append(area)
-
-    n_rows = math.ceil(len(ordered_regions) / n_cols)
-    for kernel in kernels_to_plot:
-        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True)
-        axes = np.array(axes).reshape(-1)
-        # Auto-detect kernel lags – search one row per mouse until the kernel is found,
-        # because different sessions may have different predictor sets.
+    rows = region_df.drop_duplicates(subset=['mouse_id', 'neuron_id'])
+    per_neuron = []
+    for preds, coefs, mouse in zip(rows['predictors_full'], rows['coef_full_mean'], rows['mouse_id']):
+        lags, kernel_values = _neuron_kernel(list(preds), coefs, kernel)
         if lags is None:
-            kernel_lags = None
-            for _, probe_row in df.drop_duplicates(subset=['mouse_id']).iterrows():
-                kernel_lags = extract_lags_from_predictors(probe_row['predictors_full'], kernel)
-                if kernel_lags is not None:
-                    break
-            if kernel_lags is None:
-                print(f"[plot_average_kernels_by_region_new] Skipping '{kernel}': not present in any session.")
-                plt.close(fig)
+            continue
+        per_neuron.append((tuple(np.round(lags, 6)), kernel_values, mouse))
+    if not per_neuron:
+        return None, None, 0, 0
+    ref = collections.Counter(lags for lags, _, _ in per_neuron).most_common(1)[0][0]
+    kept = [(coefs, mouse) for lags, coefs, mouse in per_neuron if lags == ref]
+    return (np.array(ref), np.stack([c for c, _ in kept]), len({m for _, m in kept}),
+            len(per_neuron) - len(kept))
+
+
+# Joint significance classes for plot_kernels_by_significance:
+# name -> (models the neuron must be LRT-significant for, models it must not be).
+JOINT_SIGNIFICANCE_CLASSES = {
+    'reward_not_lick': (['reward_encoding'], ['licking_encoding']),
+}
+
+
+def plot_average_kernels_all_neurons(full_df, output_folder, kernels, reward_group_labels=None):
+    """Mean +/- SEM of each kernel over all neurons (no split by area), R+ and
+    R- overlaid, one panel per kernel. full_df: full-model summary rows."""
+    reward_group_labels = reward_group_labels or {1: 'R+', 0: 'R-'}
+    kernels = [k for k in kernels if k in detect_kernels(full_df)]
+    if not kernels:
+        return
+    fig, axes = plt.subplots(1, len(kernels), figsize=(3.2 * len(kernels), 2.8), squeeze=False)
+    for ax, kernel in zip(axes[0], kernels):
+        for rg in (1, 0):
+            k_lags, stack, n_mice, _ = _region_kernels(full_df[full_df['reward_group'] == rg], kernel)
+            if stack is None:
                 continue
+            mean_k, sem_k = stack.mean(axis=0), stack.std(axis=0, ddof=1) / np.sqrt(len(stack))
+            color = REWARD_GROUP_COLORS[rg]
+            ax.plot(k_lags, mean_k, color=color, lw=1.5,
+                    label=f"{reward_group_labels[rg]} (n={len(stack)}, {n_mice} mice)")
+            ax.fill_between(k_lags, mean_k - sem_k, mean_k + sem_k, color=color, alpha=0.25, lw=0)
+        ax.axhline(0, color='black', lw=0.5, ls='--', alpha=0.4)
+        ax.set_title(kernel, fontsize=9)
+        ax.set_xlabel('Lag (s)', fontsize=8)
+        ax.set_ylabel('Coef', fontsize=8)
+        ax.tick_params(labelsize=7)
+        ax.legend(fontsize=6, frameon=False)
+        ax.spines[['top', 'right']].set_visible(False)
+    fig.suptitle('Average kernels, all neurons', fontsize=10)
+    fig.tight_layout(rect=[0, 0, 1, 0.93])
+    putils.save_figure_with_options(fig, ['png', 'pdf'], 'average_kernels_all_neurons', output_dir=output_folder)
+    plt.close(fig)
+
+
+def plot_kernels_by_significance(full_df, merged_df, output_folder, kernels, joint_classes=None,
+                                 reward_group_labels=None, min_neurons=5):
+    """Average kernels (all neurons pooled over areas) split by LRT
+    significance: one figure per class, rows = reward group, one panel per
+    kernel, significant neurons (reward-group colour) overlaid on the others
+    (grey), mean +/- SEM.
+
+    Classes: every reduced model with LRT results in merged_df (significant =
+    lrt_significant for that model), plus joint_classes (default
+    JOINT_SIGNIFICANCE_CLASSES): {name: (models required significant, models
+    required not significant)}, compared against all other neurons. A neuron
+    without an LRT result for a model counts as not significant for it.
+    Classes with fewer than min_neurons neurons on a side are drawn without
+    that curve. Writes kernels_<class>.png/.pdf and a counts table.
+    """
+    reward_group_labels = reward_group_labels or {1: 'R+', 0: 'R-'}
+    joint_classes = JOINT_SIGNIFICANCE_CLASSES if joint_classes is None else joint_classes
+    kernels = [k for k in kernels if k in detect_kernels(full_df)]
+    if not kernels or 'lrt_significant' not in merged_df.columns:
+        return
+    id_cols = ['mouse_id', 'neuron_id']
+    neurons = full_df.drop_duplicates(subset=id_cols)
+    lrt = (merged_df[merged_df['model_name'] != 'full']
+           .dropna(subset=['lrt_significant'])
+           .drop_duplicates(subset=id_cols + ['model_name']))
+    sig = (lrt.assign(lrt_significant=lrt['lrt_significant'].astype(bool))
+           .pivot_table(index=id_cols, columns='model_name', values='lrt_significant', aggfunc='max'))
+    sig = neurons[id_cols].merge(sig.reset_index(), on=id_cols, how='left').set_index(id_cols)
+    sig = sig.fillna(False).astype(bool)
+    classes = {model: sig[model] for model in sig.columns}
+    for name, (required, excluded) in joint_classes.items():
+        if all(m in sig.columns for m in required + excluded):
+            classes[name] = sig[required].all(axis=1) & ~sig[excluded].any(axis=1)
         else:
-            kernel_lags = lags
-        for ax, region in zip(axes, ordered_regions):
-            region_df = df[df['area_acronym_custom'] == region]
+            print(f"[kernels_by_significance] Joint class {name!r} skipped: models "
+                  f"{[m for m in required + excluded if m not in sig.columns]} have no LRT results.")
 
-            # Group by mouse_id and neuron_id
-            neuron_groups = region_df.groupby(['mouse_id', 'neuron_id'])
-            kernels_list = []
+    os.makedirs(output_folder, exist_ok=True)
+    keyed = neurons.set_index(id_cols)
+    counts = []
+    for name, is_sig in classes.items():
+        reward_groups = [rg for rg in (1, 0) if (keyed['reward_group'] == rg).any()]
+        fig, axes = plt.subplots(len(reward_groups), len(kernels), squeeze=False,
+                                 figsize=(3.0 * len(kernels), 2.5 * len(reward_groups)))
+        for r, rg in enumerate(reward_groups):
+            in_rg = keyed['reward_group'] == rg
+            sides = [('significant', REWARD_GROUP_COLORS[rg], in_rg & is_sig),
+                     ('not significant', '#8c8c8c', in_rg & ~is_sig)]
+            for side, _, mask in sides:
+                counts.append(dict(significance_class=name, reward_group=reward_group_labels[rg], side=side,
+                                   n_neurons=int(mask.sum())))
+            for c, kernel in enumerate(kernels):
+                ax = axes[r, c]
+                for side, color, mask in sides:
+                    k_lags, stack, n_mice, _ = _region_kernels(keyed[mask].reset_index(), kernel)
+                    if stack is None or len(stack) < min_neurons:
+                        continue
+                    mean_k, sem_k = stack.mean(axis=0), stack.std(axis=0, ddof=1) / np.sqrt(len(stack))
+                    ax.plot(k_lags, mean_k, color=color, lw=1.5, label=f"{side} (n={len(stack)}, {n_mice} mice)")
+                    ax.fill_between(k_lags, mean_k - sem_k, mean_k + sem_k, color=color, alpha=0.25, lw=0)
+                ax.axhline(0, color='black', lw=0.5, ls='--', alpha=0.4)
+                ax.set_title(f"{reward_group_labels[rg]} - {kernel}", fontsize=8)
+                ax.set_xlabel('Lag (s)', fontsize=7)
+                ax.tick_params(labelsize=6)
+                ax.legend(fontsize=5.5, frameon=False)
+                ax.spines[['top', 'right']].set_visible(False)
+            axes[r, 0].set_ylabel('Coef', fontsize=7)
+        title = name if name not in joint_classes else (
+            f"{name}: significant for {joint_classes[name][0]}, not for {joint_classes[name][1]}")
+        fig.suptitle(f"Average kernels by LRT significance - {title}", fontsize=10)
+        fig.tight_layout(rect=[0, 0, 1, 0.94])
+        putils.save_figure_with_options(fig, ['png', 'pdf'], f'kernels_{name}', output_dir=output_folder)
+        plt.close(fig)
+    pd.DataFrame(counts).to_csv(os.path.join(output_folder, 'significance_class_counts.txt'), sep='\t', index=False)
 
-            for (_, _), grp in neuron_groups:
 
-                # Collect coefficients for this neuron across folds
-                neuron_kernels = []
+def _ordered_regions(df, area_groups):
+    return [area for areas in area_groups.values() for area in areas if area in df['area_acronym_custom'].values]
 
-                for _, row in grp.iterrows():
-                    coefs_list = row['coef_full_mean']
-                    predictors = row['predictors_full']
 
-                    # Extract predictor-coefficient pairs for this kernel, with lag values
-                    # Use exact matching pattern to avoid matching similar kernel names
-                    import re
-                    pattern = re.compile(rf"^{re.escape(kernel)}_t([+-])(\d+\.\d+)s$")
-                    kernel_data = []
+def plot_average_kernels_by_region_new(df, output_folder, kernels_to_plot=None,
+                                       lags=None, area_groups=None, area_colors=None, n_cols=3, threshold=None,
+                                       git_handle=None, min_neurons=5, min_mice=1):
+    """One figure per kernel: mean +/- SEM over neurons of the kernel, one panel
+    per region (area_acronym_custom), coloured by area group and ordered by
+    area_groups.
 
-                    for i, p in enumerate(predictors):
-                        match = pattern.match(p)
-                        if match:
-                            sign = 1 if match.group(1) == '+' else -1
-                            lag_value = sign * float(match.group(2))
-                            kernel_data.append((lag_value, coefs_list[i]))
+    df: full-model summary rows (mouse_id, neuron_id, area_acronym_custom,
+    coef_full_mean, predictors_full); one neuron counts once. kernels_to_plot:
+    kernel names, default every kernel in df (detect_kernels); names absent
+    from df are reported and skipped. Lags are read from each neuron's
+    predictor names ('<kernel>_t+0.05s'); `lags` and `git_handle` are ignored
+    (kept for old calls). Panels need at least min_neurons neurons from at
+    least min_mice mice; the others are left out and listed.
+    """
+    present = detect_kernels(df)
+    kernels_to_plot = present if kernels_to_plot is None else kernels_to_plot
+    missing = [k for k in kernels_to_plot if k not in present]
+    if missing:
+        print(f"[plot_average_kernels_by_region_new] Not in these fits, skipped: {missing}. Available: {present}")
+    region_to_color = {area: area_colors[g] for g, areas in area_groups.items() for area in areas}
+    regions = _ordered_regions(df, area_groups)
 
-                    # Sort by lag value and extract coefficients in order
-                    if kernel_data:
-                        kernel_data.sort(key=lambda x: x[0])
-                        sorted_coefs = np.array([coef for _, coef in kernel_data])
-                        neuron_kernels.append(sorted_coefs)
-
-                if neuron_kernels:
-                    # Average across folds for this neuron
-                    neuron_kernels = np.stack(neuron_kernels)
-                    kernels_list.append(neuron_kernels.mean(axis=0))
-
-            if len(kernels_list) == 0:
-                ax.set_visible(False)
+    for kernel in [k for k in kernels_to_plot if k in present]:
+        panels, too_small, n_skipped = [], [], 0
+        for region in regions:
+            k_lags, stack, n_mice, skipped = _region_kernels(df[df['area_acronym_custom'] == region], kernel)
+            n_skipped += skipped
+            if stack is None:
                 continue
-
-            kernels_stack = np.stack(kernels_list)
-            mean_kernel = kernels_stack.mean(axis=0)
-            sem_kernel = kernels_stack.std(axis=0, ddof=1) / np.sqrt(kernels_stack.shape[0])
-
-            color = get_region_color(region)
-
-            # Ensure lags match kernel length
-            if len(kernel_lags) != len(mean_kernel):
-                print(f"Warning: lag length ({len(kernel_lags)}) doesn't match kernel length ({len(mean_kernel)}) for {kernel} in {region}")
-                kernel_lags = np.linspace(kernel_lags[0], kernel_lags[-1], len(mean_kernel))
-
-            ax.plot(kernel_lags, mean_kernel, color=color)
-            ax.fill_between(kernel_lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel, color=color, alpha=0.3)
-
-            ax.set_title(f"{region} (n={len(kernels_list)})", fontsize=10)
+            if len(stack) < min_neurons or n_mice < min_mice:
+                too_small.append(region)
+                continue
+            panels.append((region, k_lags, stack, n_mice))
+        if n_skipped:
+            print(f"[plot_average_kernels_by_region_new] {kernel}: {n_skipped} neurons left out "
+                  f"(different lags from the rest of their region).")
+        if too_small:
+            print(f"[plot_average_kernels_by_region_new] {kernel}: regions with < {min_neurons} neurons "
+                  f"or < {min_mice} mice not shown: {too_small}")
+        if not panels:
+            continue
+        n_rows = math.ceil(len(panels) / n_cols)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3 * n_rows), sharex=True, squeeze=False)
+        axes = axes.reshape(-1)
+        for ax, (region, k_lags, stack, n_mice) in zip(axes, panels):
+            mean_k = stack.mean(axis=0)
+            sem_k = stack.std(axis=0, ddof=1) / np.sqrt(len(stack))
+            color = region_to_color.get(region, 'gray')
+            ax.plot(k_lags, mean_k, color=color)
+            ax.fill_between(k_lags, mean_k - sem_k, mean_k + sem_k, color=color, alpha=0.3)
+            ax.axhline(0, color='black', lw=0.5, ls='--', alpha=0.3)
+            ax.set_title(f"{region} (n={len(stack)}, {n_mice} mice)", fontsize=10)
             ax.set_xlabel("Lag (s)")
             ax.set_ylabel("Coef")
-            for spine in ["top", "right"]:
-                ax.spines[spine].set_visible(False)
-            ax.spines["left"].set_visible(True)
-            ax.spines["bottom"].set_visible(True)
-
-        # Hide unused axes
-        for ax in axes[len(ordered_regions):]:
+            ax.spines[["top", "right"]].set_visible(False)
+        for ax in axes[len(panels):]:
             ax.set_visible(False)
-
         plt.suptitle(f"{kernel} average kernels", fontsize=14)
         plt.tight_layout(rect=[0, 0, 1, 0.95])
-        name = f'average_kernel_{kernel}'
-        if threshold:
-            name += f'_threshold_{threshold}'
-        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                        filename=name,
-                                        output_dir=output_folder)
+        name = f'average_kernel_{kernel}' + (f'_threshold_{threshold}' if threshold else '')
+        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=name, output_dir=output_folder)
         plt.close(fig)
 
-    return
 
-
-def plot_all_kernels_by_region(df, output_folder, kernels_to_plot,
-                                lags=None, area_groups=None, area_colors=None,
-                                kernel_colors=None, n_cols=3, threshold=None):
+def plot_all_kernels_by_region(df, output_folder, kernels_to_plot=None,
+                               lags=None, area_groups=None, area_colors=None,
+                               kernel_colors=None, n_cols=3, threshold=None, min_neurons=5, min_mice=1):
+    """One figure, one panel per region, every kernel of kernels_to_plot
+    overlaid (mean +/- SEM over neurons). Default kernels: the stimulus-locked
+    ones in df (names containing 'stim'). Colours from kernel_colors, then
+    KERNEL_COLORS, then tab10. Same per-neuron lag reading and min_neurons /
+    min_mice rule as plot_average_kernels_by_region_new; `lags` is ignored.
     """
-    Plot all kernels for each region in a single subplot.
-    One figure with multiple subplots (one per region), each showing all kernels overlaid.
+    present = detect_kernels(df)
+    if kernels_to_plot is None:
+        kernels_to_plot = [k for k in present if 'stim' in k]
+    missing = [k for k in kernels_to_plot if k not in present]
+    if missing:
+        print(f"[plot_all_kernels_by_region] Not in these fits, skipped: {missing}. Available: {present}")
+    kernels_to_plot = [k for k in kernels_to_plot if k in present]
+    if not kernels_to_plot:
+        return
+    palette = plt.cm.tab10(np.linspace(0, 1, 10))
+    colors = {k: (kernel_colors or {}).get(k, KERNEL_COLORS.get(k, palette[i % 10]))
+              for i, k in enumerate(kernels_to_plot)}
+    regions = _ordered_regions(df, area_groups) if area_groups else sorted(df['area_acronym_custom'].unique())
 
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Must include columns: ['mouse_id','neuron_id','area_acronym_custom','coef','predictors','fold']
-    output_folder : str
-    kernels_to_plot : list of str
-        List of kernel names to plot
-    lags : np.ndarray, optional
-        If provided, overrides auto-detected lags. Otherwise lags are inferred from predictor names.
-    area_groups : dict, optional
-        Grouping of brain areas
-    area_colors : dict, optional
-        Colors for area groups (used for subplot titles/borders)
-    kernel_colors : dict, optional
-        Colors for each kernel. If None, will use default color cycle.
-    n_cols : int
-        Number of subplot columns
-    threshold : float, optional
-        Threshold value to include in filename
-    """
-
-    def extract_lags_from_predictors(predictors, kernel_name):
-        """Extract lag values from predictor names."""
-        import re
-        lag_values = []
-        pattern = re.compile(rf"^{re.escape(kernel_name)}_t([+-])(\d+\.\d+)s$")
-
-        for pred in predictors:
-            match = pattern.match(pred)
-            if match:
-                sign = 1 if match.group(1) == '+' else -1
-                value = float(match.group(2))
-                lag_values.append(sign * value)
-
-        if not lag_values:
-            return None
-
-        return np.array(sorted(set(lag_values)))
-
-    # Set default kernel colors if not provided
-    if kernel_colors is None:
-        default_colors = plt.cm.tab10(np.linspace(0, 1, len(kernels_to_plot)))
-        kernel_colors = {k: default_colors[i] for i, k in enumerate(kernels_to_plot)}
-
-    # Map region -> color for borders/titles
-    region_to_color = {}
-    if area_groups and area_colors:
-        for group_name, areas in area_groups.items():
-            for area in areas:
-                region_to_color[area] = area_colors[group_name]
-
-    def get_region_color(region_name):
-        return region_to_color.get(region_name, 'gray')
-
-    # Order regions
-    ordered_regions = []
-    if area_groups:
-        for group_name, areas in area_groups.items():
-            for area in areas:
-                if area in df['area_acronym_custom'].values:
-                    ordered_regions.append(area)
-    else:
-        ordered_regions = sorted(df['area_acronym_custom'].unique())
-
-    # Create figure with subplots (one per region)
-    n_rows = math.ceil(len(ordered_regions) / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), sharex=False, sharey=False)
-    axes = np.array(axes).reshape(-1)
-
-    for ax, region in zip(axes, ordered_regions):
+    panels = []
+    for region in regions:
         region_df = df[df['area_acronym_custom'] == region]
-
-        # Plot each kernel on this subplot
+        curves = []
         for kernel in kernels_to_plot:
-            # Auto-detect kernel lags
-            kernel_lags = None
-            if lags is None:
-                first_row = region_df.iloc[0]
-                predictors = first_row['predictors_full']
-                kernel_lags = extract_lags_from_predictors(predictors, kernel)
-
-                if kernel_lags is None:
-                    continue
-            else:
-                kernel_lags = lags
-
-            # Group by mouse_id and neuron_id
-            neuron_groups = region_df.groupby(['mouse_id', 'neuron_id'])
-            kernels_list = []
-
-            for (_, _), grp in neuron_groups:
-                neuron_kernels = []
-
-                for _, row in grp.iterrows():
-                    coefs_list = row['coef_full_mean']
-                    predictors = row['predictors_full']
-
-                    # Extract predictor-coefficient pairs for this kernel
-                    import re
-                    pattern = re.compile(rf"^{re.escape(kernel)}_t([+-])(\d+\.\d+)s$")
-                    kernel_data = []
-
-                    for i, p in enumerate(predictors):
-                        match = pattern.match(p)
-                        if match:
-                            sign = 1 if match.group(1) == '+' else -1
-                            lag_value = sign * float(match.group(2))
-                            kernel_data.append((lag_value, coefs_list[i]))
-
-                    if kernel_data:
-                        kernel_data.sort(key=lambda x: x[0])
-                        sorted_coefs = np.array([coef for _, coef in kernel_data])
-                        neuron_kernels.append(sorted_coefs)
-
-                if neuron_kernels:
-                    neuron_kernels = np.stack(neuron_kernels)
-                    kernels_list.append(neuron_kernels.mean(axis=0))
-
-            if len(kernels_list) == 0:
-                continue
-
-            kernels_stack = np.stack(kernels_list)
-            mean_kernel = kernels_stack.mean(axis=0)
-            sem_kernel = kernels_stack.std(axis=0, ddof=1) / np.sqrt(kernels_stack.shape[0])
-
-            # Ensure lags match kernel length
-            if len(kernel_lags) != len(mean_kernel):
-                kernel_lags = np.linspace(kernel_lags[0], kernel_lags[-1], len(mean_kernel))
-
-            # Plot this kernel
-            color = kernel_colors.get(kernel, 'gray')
-            ax.plot(kernel_lags, mean_kernel, color=color, label=kernel, linewidth=2)
-            ax.fill_between(kernel_lags, mean_kernel - sem_kernel, mean_kernel + sem_kernel,
-                          color=color, alpha=0.2)
-
-        # Style the subplot
-        n_neurons = len(region_df.groupby(['mouse_id', 'neuron_id']))
-        ax.set_title(f"{region} (n={n_neurons})", fontsize=11, fontweight='bold')
+            k_lags, stack, n_mice, _ = _region_kernels(region_df, kernel)
+            if stack is not None and len(stack) >= min_neurons and n_mice >= min_mice:
+                curves.append((kernel, k_lags, stack))
+        if curves:
+            panels.append((region, curves, region_df['mouse_id'].nunique(),
+                           len(region_df.drop_duplicates(['mouse_id', 'neuron_id']))))
+    if not panels:
+        return
+    n_rows = math.ceil(len(panels) / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
+    axes = axes.reshape(-1)
+    for ax, (region, curves, n_mice, n_neurons) in zip(axes, panels):
+        for kernel, k_lags, stack in curves:
+            mean_k = stack.mean(axis=0)
+            sem_k = stack.std(axis=0, ddof=1) / np.sqrt(len(stack))
+            ax.plot(k_lags, mean_k, color=colors[kernel], label=kernel, linewidth=2)
+            ax.fill_between(k_lags, mean_k - sem_k, mean_k + sem_k, color=colors[kernel], alpha=0.2)
+        ax.set_title(f"{region} (n={n_neurons}, {n_mice} mice)", fontsize=11, fontweight='bold')
         ax.set_xlabel("Lag (s)", fontsize=9)
         ax.set_ylabel("Coefficient", fontsize=9)
         ax.axhline(0, color='black', linewidth=0.5, linestyle='--', alpha=0.3)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        ax.spines[["top", "right"]].set_visible(False)
         ax.legend(fontsize=8, loc='best')
-
-    # Hide unused axes
-    for ax in axes[len(ordered_regions):]:
+    for ax in axes[len(panels):]:
         ax.set_visible(False)
-
     plt.suptitle("All kernels by region", fontsize=16, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.96])
-
-    name = 'all_kernels_by_region'
-    if threshold:
-        name += f'_threshold_{threshold}'
-    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                    filename=name,
-                                    output_dir=output_folder)
+    name = 'all_kernels_by_region' + (f'_threshold_{threshold}' if threshold else '')
+    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=name, output_dir=output_folder)
     plt.close(fig)
 
-    return
 
 
 import ast
@@ -6541,9 +7363,9 @@ def process_single_nwb(nwb, day_to_analyze = 0, git_version = None):
 
         trial_table = trial_table[(trial_table['context'] != 'passif') & (trial_table['perf'] != 6)].copy()
 
-        if git_version in ['4227ca6', 'b394470', '74987e2', '15127ae',  '935b6e1', '4802e47', 'a784830', 'c2eb670', 'f849441', '64beadc', '4465999', '55a7b9a', 'acbce87', '1b14083']:
-            trial_table = load_perf_blocks(trial_table,mouse_id)
-            trial_table = trial_table.reset_index(drop=True)
+        # if git_version in ['4227ca6', 'b394470', '74987e2', '15127ae',  '935b6e1', '4802e47', 'a784830', 'c2eb670', 'f849441', '64beadc', '4465999', '55a7b9a', 'acbce87', '1b14083']:
+        trial_table = load_perf_blocks(trial_table,mouse_id)
+        trial_table = trial_table.reset_index(drop=True)
         # passive trials were not modeled so we drop them
         trial_table["behav_type"] = trial_table.apply(classify_trial, axis=1)
         trial_table = trial_table.reset_index(drop=True)
@@ -6551,10 +7373,10 @@ def process_single_nwb(nwb, day_to_analyze = 0, git_version = None):
         unit_table = convert_electrode_group_object_to_columns(unit_table)
 
         # Only keep the neurons fitted for the glms
-        unit_table = allen.process_allen_labels(unit_table, split_merge_areas=False)
-        unit_table = unit_table[unit_table['bc_label'] == 'good']
-        unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
-        unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
+        unit_table = allen.process_allen_labels(unit_table, split_merge_areas=True)
+        # unit_table = unit_table[unit_table['bc_label'] == 'good']
+        # unit_table = unit_table[unit_table['firing_rate'].astype(float).ge(2.0)]
+        # unit_table = unit_table[~unit_table['ccf_acronym'].isin(allen_utils.get_excluded_areas())]
         unit_table['og_unit_table_id'] = unit_table.index
         unit_table = unit_table.reset_index(drop=True)
         unit_table['neuron_id'] = unit_table.index
@@ -8178,7 +9000,7 @@ def compare_kernel_amplitude_evolution(
 
     # Infer reward group color from the data (each call is pre-filtered to one group)
     _rg_vals = pd.concat(list(dfs.values()))['reward_group'].dropna().unique()
-    _REWARD_COLORS = {1: 'forestgreen', 0: 'crimson'}
+    _REWARD_COLORS = REWARD_GROUP_COLORS
     _bar_color = _REWARD_COLORS.get(int(_rg_vals[0]), 'steelblue') if len(_rg_vals) == 1 else 'steelblue'
 
     # Ordered regions following area_groups structure
@@ -8584,7 +9406,7 @@ def compare_kernel_amplitude_evolution(
             axes[0][0].legend(fontsize=7, frameon=False)
             plt.suptitle(f'Kernel waveforms: {model_label}  ({ka} vs {kb})', fontsize=12)
             plt.tight_layout(rect=[0, 0, 1, 0.96])
-            pair_tag = f"{ka}_vs_{kb}"
+            pair_tag = _abbrev_kernel_pair(ka, kb)
             putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                             filename=f"kernel_waveform_{model_key}_{pair_tag}",
                                             output_dir=output_folder)
@@ -9217,7 +10039,7 @@ def analyze_kernel_amplitude_differences_2(
 
                 # Map reward group values to labels
                 reward_group_labels = {1: 'R+', 0: 'R-'}
-                reward_group_colors = {1: 'forestgreen', 0: 'crimson'}
+                reward_group_colors = REWARD_GROUP_COLORS
 
                 # Get available reward groups
                 available_reward_groups = sorted(amplitude_diffs_by_reward.keys())
@@ -9574,7 +10396,7 @@ def analyze_kernel_amplitude_differences_2(
                              fontsize=14, fontweight='bold')
                 plt.tight_layout(rect=[0, 0, 1, 0.96])
 
-                fname = f"amplitude_diff_lag_avg_by_reward_per_area_{kernel_1}_minus_{kernel_0}_{model_key}"
+                fname = f"ampdiff_lagavg_perarea_{_abbrev_kernel_pair(kernel_1, kernel_0)}_{model_key}"
                 putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                                filename=fname,
                                                output_dir=output_folder)
@@ -9636,7 +10458,7 @@ def analyze_kernel_amplitude_differences_2(
                     ax.spines["right"].set_visible(False)
                     plt.tight_layout()
 
-                    fname = f"amplitude_diff_lag_avg_by_reward_all_areas_{kernel_1}_minus_{kernel_0}_{model_key}"
+                    fname = f"ampdiff_lagavg_allareas_{_abbrev_kernel_pair(kernel_1, kernel_0)}_{model_key}"
                     putils.save_figure_with_options(fig, file_formats=["png", "pdf"],
                                                    filename=fname,
                                                    output_dir=output_folder)
@@ -10097,7 +10919,7 @@ def identify_consistently_increasing_neurons(
 
                 plt.tight_layout()
 
-                fname = f"consistent_increase_heatmap_{kernel_1}_vs_{kernel_0}_{model_key}"
+                fname = f"consistent_increase_heatmap_{_abbrev_kernel_pair(kernel_1, kernel_0)}_{model_key}"
                 putils.save_figure_with_options(fig, file_formats=["png", 'pdf'],
                                               filename=fname,
                                               output_dir=output_folder)
@@ -10747,37 +11569,38 @@ def _plot_within_model_changes(metrics_df, top_neurons, dfs, model_labels, whisk
 # KERNEL CONSISTENCY PLOTTING
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _extract_kernel_vector(coef_full_mean, predictors_full, kernel_name):
-    """Extract sorted (by lag) coefficient vector for a named kernel.
+def _kernel_col_indices(predictors_full, kernel_name):
+    """Resolve a kernel's column positions (sorted by lag) within a predictor list.
 
     Parameters
     ----------
-    coef_full_mean : array-like
-        Mean coefficient vector for the neuron (across folds).
     predictors_full : list of str
-        Predictor names matching positions in coef_full_mean.
+        Predictor names, e.g. as they index columns of a coefficient vector.
     kernel_name : str
         Exact kernel base name (e.g. 'whisker_hits_stim_0').
 
     Returns
     -------
     lags : np.ndarray or None
-    coefs : np.ndarray or None
+    idx : np.ndarray or None
+        Column positions in `predictors_full`, sorted by `lags`. Index into
+        any coefficient vector aligned with `predictors_full` (e.g.
+        `coef_full_mean[idx]`, or `coef_matrix[:, idx]` for a stack of them).
     """
     pattern = re.compile(rf"^{re.escape(kernel_name)}_t([+-])(\d+\.\d+)s$")
-    kernel_data = []
+    matches = []
     for i, p in enumerate(predictors_full):
         m = pattern.match(p)
         if m:
             sign = 1 if m.group(1) == '+' else -1
             lag = sign * float(m.group(2))
-            kernel_data.append((lag, coef_full_mean[i]))
-    if not kernel_data:
+            matches.append((lag, i))
+    if not matches:
         return None, None
-    kernel_data.sort(key=lambda x: x[0])
-    lags = np.array([x[0] for x in kernel_data])
-    coefs = np.array([x[1] for x in kernel_data])
-    return lags, coefs
+    matches.sort(key=lambda x: x[0])
+    lags = np.array([x[0] for x in matches])
+    idx = np.array([x[1] for x in matches])
+    return lags, idx
 
 
 def _build_neuron_change_table(df, kernel_0, kernel_1):
@@ -10796,11 +11619,18 @@ def _build_neuron_change_table(df, kernel_0, kernel_1):
     If those columns are absent the function warns and falls back to checking
     the sign of every lag bin in the mean-coefficient delta.
 
-    The percent change is defined as::
+    The change metrics are defined as::
 
-        pct_change = mean(w1 - w0) / (mean(|w0|) + mean(|w1|) + ε) * 100
+        peak_modulation_index    = (max|w1| - max|w0|) / (max|w0| + max|w1|)
+        mean_pct_change    = (mean(w1) - mean(w0)) / (rms(w0) + rms(w1)) * 100
+        mean_change_fold_z = (mean(w1) - mean(w0)) / SD across folds (approx.)
+        mean_pct_change_absnorm = (mean(w1) - mean(w0)) / (mean|w0| + mean|w1|) * 100
+        absmean_modulation_index = (mean|w1| - mean|w0|) / (mean|w0| + mean|w1|)
 
-    Bounded in [-100 %, +100 %] by the triangle inequality.
+    The two modulation indices are bounded in [-1, +1] and the % metrics in
+    [-100 %, +100 %]; mean_raw_change and mean_change_fold_z are unbounded. Neurons with an exactly
+    all-zero kernel are dropped. ccf_atlas_ap/ml/dv are carried through when
+    the summaries have them (NaN otherwise).
 
     Parameters
     ----------
@@ -10811,14 +11641,42 @@ def _build_neuron_change_table(df, kernel_0, kernel_1):
     kernel_0, kernel_1 : str
         Kernel names to compare.
 
+    Also computed, as alternate per-neuron change metrics (see
+    ``_KERNEL_CONSISTENCY_METRICS`` / ``_run_kernel_consistency_analysis``):
+      - ``mean_raw_change``          : mean(w1) - mean(w0), all bins, NOT
+                                        normalized (raw coefficient units).
+      - ``mean_pct_change_0_100ms``  : same formula as ``mean_pct_change``
+                                        but restricted to lag bins in
+                                        [0, 0.1] s. NaN if no bins fall in
+                                        that window.
+      - ``mean_pct_change_0_50ms``   : same, restricted to [0, 0.05] s.
+
     Returns
     -------
     pd.DataFrame with columns:
         mouse_id, neuron_id, area_acronym_custom, reward_group,
-        pct_change, all_positive, all_negative, w0, w1, lags
+        peak_modulation_index, mean_pct_change, mean_raw_change, mean_pct_change_0_100ms,
+        all_positive, all_negative, w0, w1, lags
+
+    Notes
+    -----
+    Vectorized: kernel column positions are resolved once per distinct
+    predictor signature (usually once for the whole dataframe) instead of
+    per neuron, and the amplitude/mean statistics are computed with numpy
+    array ops over all neurons in that group at once instead of a per-row
+    Python loop.
     """
+    empty_cols = ['mouse_id', 'neuron_id', 'area_acronym_custom', 'reward_group',
+                  'peak_modulation_index', 'mean_pct_change', 'mean_raw_change',
+                  'mean_pct_change_0_100ms', 'mean_pct_change_0_50ms', 'mean_change_fold_z',
+                  'mean_pct_change_absnorm', 'absmean_modulation_index', 'all_positive', 'all_negative',
+                  'w0', 'w1', 'lags'] + _CCF_COLS
+
     pair_name = f"{kernel_1}_vs_{kernel_0}"
     df_full = df[df['model_name'] == 'full']
+    if df_full.empty:
+        return pd.DataFrame(columns=empty_cols)
+
     has_consistency = ('kernel_pair' in df_full.columns
                        and 'is_consistent' in df_full.columns
                        and 'consistency_score' in df_full.columns)
@@ -10827,1490 +11685,1263 @@ def _build_neuron_change_table(df, kernel_0, kernel_1):
               "Falling back to all-bins delta direction. "
               "Re-run create_summary to generate them.")
 
-    rows = []
-    for (mouse_id, neuron_id), grp in df_full.groupby(['mouse_id', 'neuron_id']):
-        # coef_full_mean and predictors_full are the same across all fold-rows
-        row = grp.iloc[0]
-        coef = np.array(row['coef_full_mean'])
-        preds = row['predictors_full']
-        area = row['area_acronym_custom']
-        reward_group = row['reward_group']
+    # coef_full_mean/predictors_full are the same across a neuron's fold-rows,
+    # so dedup to one row per neuron before doing any numeric work.
+    df_dedup = (df_full
+                .drop_duplicates(subset=['mouse_id', 'neuron_id'], keep='first')
+                .reset_index(drop=True))
 
-        lags, w0 = _extract_kernel_vector(coef, preds, kernel_0)
-        _, w1 = _extract_kernel_vector(coef, preds, kernel_1)
+    # Resolve kernel column positions once per distinct predictor signature
+    # (normally a single signature for the whole dataframe) rather than
+    # re-deriving them per neuron.
+    preds_key = df_dedup['predictors_full'].apply(tuple)
 
-        if w0 is None or w1 is None or len(w0) != len(w1):
+    chunks = []
+    for preds_tuple, group_idx in df_dedup.groupby(preds_key).groups.items():
+        sub = df_dedup.loc[group_idx]
+        preds = list(preds_tuple)
+
+        lags0, idx0 = _kernel_col_indices(preds, kernel_0)
+        _, idx1 = _kernel_col_indices(preds, kernel_1)
+        if idx0 is None or idx1 is None or len(idx0) != len(idx1):
             continue
 
+        coef_matrix = np.stack(sub['coef_full_mean'].apply(np.asarray).to_numpy())
+        w0 = coef_matrix[:, idx0]
+        w1 = coef_matrix[:, idx1]
+
         # Peak-based % change: symmetric, bounded in [-100 %, +100 %]
-        amp0 = np.max(np.abs(w0))
-        amp1 = np.max(np.abs(w1))
-        pct_change = (amp1 - amp0) / (amp0 + amp1 + 1e-10) * 100
+        amp0 = np.max(np.abs(w0), axis=1)
+        amp1 = np.max(np.abs(w1), axis=1)
+        peak_modulation_index = (amp1 - amp0) / (amp0 + amp1 + 1e-10)
 
-        # Mean-coef % change: same formula but using signed mean over time bins
-        mean0 = np.mean(w0)
-        mean1 = np.mean(w1)
-        mean_pct_change = (mean1 - mean0) / (np.abs(mean0) + np.abs(mean1) + 1e-10) * 100
+        # Mean-coef % change: signed change of the mean over time bins, divided
+        # by the kernels' size (RMS over the same bins). The size doesn't depend
+        # on sign, so two small means of opposite sign give ~0 instead of
+        # +/-100 %. Bounded in [-100 %, +100 %] since |mean| <= RMS.
+        mean0 = np.mean(w0, axis=1)
+        mean1 = np.mean(w1, axis=1)
+        rms0 = np.sqrt(np.mean(w0 ** 2, axis=1))
+        rms1 = np.sqrt(np.mean(w1 ** 2, axis=1))
+        mean_pct_change = (mean1 - mean0) / (rms0 + rms1 + 1e-10) * 100
 
-        if has_consistency:
-            pair_rows = grp[grp['kernel_pair'] == pair_name]
-            if pair_rows.empty:
-                all_positive = False
-                all_negative = False
-            else:
-                r = pair_rows.iloc[0]
-                is_con = bool(r['is_consistent']) if not pd.isna(r['is_consistent']) else False
-                score = float(r['consistency_score']) if not pd.isna(r['consistency_score']) else 0.0
-                all_positive = is_con and score > 0
-                all_negative = is_con and score < 0
+        # Two variants built on the mean absolute weight (also bounded in +/-100 %):
+        #  - the same signed mean change, normalized by mean|w| instead of RMS;
+        #  - a modulation index of mean|w| itself: did the kernel get bigger or
+        #    smaller overall, whatever its sign (whole-kernel counterpart of the peak
+        #    index; like it, on the conventional [-1, +1] scale).
+        absmean0 = np.mean(np.abs(w0), axis=1)
+        absmean1 = np.mean(np.abs(w1), axis=1)
+        mean_pct_change_absnorm = (mean1 - mean0) / (absmean0 + absmean1 + 1e-10) * 100
+        absmean_modulation_index = (absmean1 - absmean0) / (absmean0 + absmean1 + 1e-10)
+
+        # Same mean-coef change, but NOT normalized (raw coefficient units)
+        mean_raw_change = mean1 - mean0
+
+        # Mean-coef change relative to fold-to-fold variability. The summary
+        # only keeps each coefficient's SD across folds, not the per-fold
+        # kernels, so the SD of each kernel's mean is approximated by the mean
+        # of its coefficients' SDs (exact if a kernel's coefficients move
+        # together across folds, an overestimate otherwise) and the two kernels
+        # are treated as independent.
+        if 'coef_full_std' in sub.columns and sub['coef_full_std'].notna().all():
+            std_matrix = np.stack(sub['coef_full_std'].apply(np.asarray).to_numpy())
+            fold_sd = np.sqrt(std_matrix[:, idx0].mean(axis=1) ** 2 + std_matrix[:, idx1].mean(axis=1) ** 2)
+            mean_change_fold_z = np.where(fold_sd > 0, mean_raw_change / np.where(fold_sd > 0, fold_sd, 1), np.nan)
         else:
-            all_positive = bool(np.all(delta > 0))
-            all_negative = bool(np.all(delta < 0))
+            mean_change_fold_z = np.full(len(sub), np.nan)
 
+        # Mean-coef % change restricted to early lag windows (0-100 ms, 0-50 ms)
+        def _windowed_mean_pct_change(t_max):
+            window_mask = (lags0 >= 0.0) & (lags0 <= t_max)
+            if not window_mask.any():
+                return np.full(len(sub), np.nan)
+            w0_win, w1_win = w0[:, window_mask], w1[:, window_mask]
+            return ((np.mean(w1_win, axis=1) - np.mean(w0_win, axis=1))
+                    / (np.sqrt(np.mean(w0_win ** 2, axis=1)) + np.sqrt(np.mean(w1_win ** 2, axis=1)) + 1e-10) * 100)
+
+        mean_pct_change_0_100ms = _windowed_mean_pct_change(0.1)
+        mean_pct_change_0_50ms = _windowed_mean_pct_change(0.05)
+
+        coords = {c: sub[c].to_numpy(dtype=float) if c in sub.columns else np.full(len(sub), np.nan)
+                  for c in _CCF_COLS}
+
+        chunks.append(pd.DataFrame({
+            **coords,
+            'mean_change_fold_z': mean_change_fold_z,
+            'mean_pct_change_absnorm': mean_pct_change_absnorm,
+            'absmean_modulation_index': absmean_modulation_index,
+            'mouse_id': sub['mouse_id'].to_numpy(),
+            'neuron_id': sub['neuron_id'].to_numpy(),
+            'area_acronym_custom': sub['area_acronym_custom'].to_numpy(),
+            'reward_group': sub['reward_group'].to_numpy(),
+            'peak_modulation_index': peak_modulation_index,
+            'mean_pct_change': mean_pct_change,
+            'mean_raw_change': mean_raw_change,
+            'mean_pct_change_0_100ms': mean_pct_change_0_100ms,
+            'mean_pct_change_0_50ms': mean_pct_change_0_50ms,
+            'w0': list(w0),
+            'w1': list(w1),
+            'lags': [lags0] * len(sub),
+            'missing_kernel': (amp0 == 0) | (amp1 == 0),
+        }))
+
+    if not chunks:
+        return pd.DataFrame(columns=empty_cols)
+
+    neuron_df = pd.concat(chunks, ignore_index=True)
+
+    # An exactly all-zero kernel means its regressor never fired in that session
+    # (e.g. no events in that half), not that the neuron stopped responding: it
+    # gives +/-100 % for every change metric. Drop those neurons altogether.
+    missing = neuron_df['missing_kernel'].to_numpy()
+    if missing.any():
+        per_mouse = neuron_df.loc[missing, 'mouse_id'].value_counts().to_dict()
+        print(f"[kernel_consistency] {pair_name}: dropping {int(missing.sum())} neurons with an "
+              f"all-zero kernel (per mouse: {per_mouse}).")
+    neuron_df = neuron_df.loc[~missing].drop(columns='missing_kernel').reset_index(drop=True)
+    if neuron_df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    if has_consistency:
+        pair_df = (df_full[df_full['kernel_pair'] == pair_name]
+                   .drop_duplicates(subset=['mouse_id', 'neuron_id'], keep='first')
+                   [['mouse_id', 'neuron_id', 'is_consistent', 'consistency_score']])
+        neuron_df = neuron_df.merge(pair_df, on=['mouse_id', 'neuron_id'], how='left')
+        is_con = neuron_df['is_consistent'].fillna(False).astype(bool)
+        score = neuron_df['consistency_score'].fillna(0.0).astype(float)
+        neuron_df['all_positive'] = is_con & (score > 0)
+        neuron_df['all_negative'] = is_con & (score < 0)
+        neuron_df = neuron_df.drop(columns=['is_consistent', 'consistency_score'])
+    else:
+        # Fixes a latent bug in the previous implementation, which referenced
+        # an undefined `delta` here (never hit in practice since
+        # has_consistency is true whenever create_summary has been run).
+        neuron_df['all_positive'] = [bool(np.all(w1 - w0 > 0))
+                                      for w0, w1 in zip(neuron_df['w0'], neuron_df['w1'])]
+        neuron_df['all_negative'] = [bool(np.all(w1 - w0 < 0))
+                                      for w0, w1 in zip(neuron_df['w0'], neuron_df['w1'])]
+
+    return neuron_df[empty_cols]
+
+
+# Sentinel "kernel pair" for the change of the hit-vs-miss difference between halves.
+_HIT_MISS_DELTA = ('hit_minus_miss_0', 'hit_minus_miss_1')
+
+
+def _first_present_kernel(predictors, candidates):
+    """First kernel name in candidates that has columns in predictors, else None."""
+    for name in candidates:
+        if any(p.startswith(name + '_t') for p in predictors):
+            return name
+    return None
+
+
+def _build_hit_miss_delta_table(df):
+    """Per neuron, change of the hit-vs-miss difference from half 0 to half 1.
+
+    For each half h, _build_neuron_change_table(miss_h -> hit_h) gives every
+    change metric with the miss kernel as reference (positive = larger on hits).
+    Each metric here is that value in half 1 minus half 0, so positive means
+    hits and misses differ more (in the hit direction) in the second half. The
+    % metrics therefore range over +/-200. w0 / w1 are the hit - miss kernels of
+    half 0 / half 1, so the kernel-shape overlay shows how that difference
+    changes. Same columns as _build_neuron_change_table; neurons must be present
+    in both halves. all_positive / all_negative are False (no fold consistency
+    is computed for this pair).
+    """
+    df_full = df[df['model_name'] == 'full']
+    if df_full.empty:
+        return pd.DataFrame()
+    preds = list(df_full.iloc[0]['predictors_full'])
+    halves = {}
+    for h in (0, 1):
+        hit = _first_present_kernel(preds, [f'whisker_hits_stim_{h}', f'whisker_hits_stim{h}'])
+        miss = _first_present_kernel(preds, [f'whisker_misses_stim_{h}', f'whisker_misses_stim{h}'])
+        if hit is None or miss is None:
+            print(f"[kernel_consistency] hit-minus-miss: no whisker hit/miss kernels for half {h}. Skipping.")
+            return pd.DataFrame()
+        halves[h] = _build_neuron_change_table(df, miss, hit)
+        if halves[h].empty:
+            return pd.DataFrame()
+
+    id_cols = ['mouse_id', 'neuron_id']
+    metric_cols = [m[0] for m in _KERNEL_CONSISTENCY_METRICS]
+    t0 = halves[0]
+    both = t0.merge(halves[1][id_cols + metric_cols + ['w0', 'w1']], on=id_cols, suffixes=('_h0', '_h1'))
+    out = both[id_cols + ['area_acronym_custom', 'reward_group'] + _CCF_COLS].copy()
+    for m in metric_cols:
+        out[m] = both[f'{m}_h1'] - both[f'{m}_h0']
+    out['w0'] = [np.asarray(hit) - np.asarray(miss) for hit, miss in zip(both['w1_h0'], both['w0_h0'])]
+    out['w1'] = [np.asarray(hit) - np.asarray(miss) for hit, miss in zip(both['w1_h1'], both['w0_h1'])]
+    out['lags'] = both['lags']
+    out['all_positive'] = False
+    out['all_negative'] = False
+    return out[t0.columns]
+
+
+def _neuron_table_for_pair(df, kernel_0, kernel_1):
+    """Per-neuron change table for one entry of the kernel-consistency pair list."""
+    if (kernel_0, kernel_1) == _HIT_MISS_DELTA:
+        return _build_hit_miss_delta_table(df)
+    return _build_neuron_change_table(df, kernel_0, kernel_1)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# KERNEL CONSISTENCY — subset x metric x analysis-type engine
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# For each kernel pair, 5 population subsets (all / consistent / whisker_selective
+# / auditory_selective / full_vs_random) x 4 change metrics (peak %, mean %, mean
+# raw, mean % in the 0-100ms window) x 3 analysis types (distribution, barplots,
+# vs_performance), plus one metric-independent kernel-shape-overlay per subset.
+# Output tree: kernel_consistency/{k1}_vs_{k0}/{subset}/{metric}/{analysis_type}/
+# {granularity}/, with {subset}/kernel_shape_overlay/ alongside the metric folders.
+#
+# Statistics: a mouse-block permutation test (_mouse_block_permutation_test) that
+# shuffles the reward-group label per MOUSE (keeping all of one mouse's neurons
+# together as a block) rather than per neuron — adapted from the cicada_analysis
+# psth_per_mouse_with_barplots.py template's _cluster_permutation_ks_test, which
+# does the same at the session level. Every test's raw + BH-FDR-corrected p-value
+# is written to a tab-delimited .txt ledger (_bh_fdr, also adapted from that
+# template) next to its figure, plus one comprehensive {pair}/all_stats.txt.
+
+_KERNEL_CONSISTENCY_SUBSETS = [
+    'all', 'consistent', 'whisker_selective', 'auditory_selective', 'full_vs_random',
+]
+
+_KERNEL_CONSISTENCY_METRICS = [
+    # (column in _build_neuron_change_table's output, folder/tag name, axis/title label)
+    ('peak_modulation_index', 'peak_modulation_index', 'Modulation index of peak |weight|'),
+    ('mean_pct_change', 'mean_pct_change', 'Mean change / kernel size (%)'),
+    ('mean_raw_change', 'mean_raw_change', 'Mean change (raw, not normalized)'),
+    ('mean_pct_change_0_100ms', 'mean_pct_change_0_100ms', 'Mean change / kernel size (%), 0-100 ms'),
+    ('mean_pct_change_0_50ms', 'mean_pct_change_0_50ms', 'Mean change / kernel size (%), 0-50 ms'),
+    ('mean_change_fold_z', 'mean_change_fold_z', 'Mean change / fold-to-fold SD'),
+    ('mean_pct_change_absnorm', 'mean_pct_change_absnorm', 'Mean change / mean |weight| (%)'),
+    ('absmean_modulation_index', 'absmean_modulation_index', 'Modulation index of mean |weight|'),
+]
+
+
+def _metric_bound(metric_col):
+    """Largest absolute value a bounded change metric can take (1 for the
+    modulation indices, 100 for the % metrics), or None if it is unbounded."""
+    if 'modulation_index' in metric_col:
+        return 1.0
+    if 'pct' in metric_col:
+        return 100.0
+    return None
+
+_STATS_LEDGER_COLS = [
+    'kernel_pair', 'subset', 'metric', 'analysis_type', 'granularity', 'scope_name',
+    'test_type', 'comparison', 'n_a', 'n_b', 'n_mice_a', 'n_mice_b',
+    'observed_stat', 'p_value_raw', 'p_value_fdr', 'n_perm', 'notes',
+]
+
+
+def _add_area_group_column(neuron_df, area_group_from_name):
+    """Add an 'area_group' column by mapping area_acronym_custom through
+    area_group_from_name (allen.get_custom_area_groups_from_name()). Lets 'by
+    area' and 'by area group' granularities read off the SAME neuron_df
+    instead of needing a second, separately-built dataframe (the old
+    merged_df/merged_df_grouped split). Rows whose area doesn't map to any
+    group get area_group=NaN — excluded from by-area-group slices, unaffected
+    in by-area slices, mirroring the old drop-if-ungrouped behaviour without
+    needing to drop them from the shared frame outright.
+    """
+    neuron_df = neuron_df.copy()
+    neuron_df['area_group'] = neuron_df['area_acronym_custom'].map(area_group_from_name)
+    return neuron_df
+
+
+def _filter_min_neurons_per_mouse(neuron_df, min_neurons=5):
+    """Drop rows for mice with fewer than min_neurons distinct neurons in
+    neuron_df (expected to already be restricted to one subset/scope, so a
+    mouse can clear the bar in one scope but not another). Adapted from the
+    cicada_analysis psth_per_mouse_with_barplots.py template's
+    _filter_min_units_per_mouse — no session_id layer needed here, so this
+    just groups by mouse_id directly.
+    """
+    if min_neurons <= 0 or neuron_df.empty:
+        return neuron_df
+    per_mouse = neuron_df.groupby('mouse_id')['neuron_id'].nunique()
+    keep_mice = per_mouse[per_mouse >= min_neurons].index
+    return neuron_df[neuron_df['mouse_id'].isin(keep_mice)]
+
+
+def _bh_fdr(pvals):
+    """Benjamini-Hochberg FDR-adjusted p-values (q-values) for an array of
+    raw p-values. NaN entries pass through as NaN and are excluded from the
+    correction (they don't count toward the family size or consume a rank).
+    Adapted verbatim from cicada_analysis/templates/psth_per_mouse_with_barplots.py.
+    """
+    pvals = np.asarray(pvals, dtype=float)
+    out = np.full(pvals.shape, np.nan)
+    valid = np.isfinite(pvals)
+    n = int(valid.sum())
+    if n == 0:
+        return out
+    p_valid = pvals[valid]
+    order = np.argsort(p_valid)
+    ranked = p_valid[order]
+    q = ranked * n / np.arange(1, n + 1)
+    q = np.minimum.accumulate(q[::-1])[::-1]
+    q = np.clip(q, 0, 1)
+    out_valid = np.empty(n)
+    out_valid[order] = q
+    out[valid] = out_valid
+    return out
+
+
+def _bh_fdr_export(stats_records, output_txt_path):
+    """stats_records: list of dicts, one per statistical test performed for
+    one kernel pair. Applies BH-FDR correction to 'p_value_raw' within each
+    (kernel_pair, subset, metric, analysis_type, granularity, test_type)
+    family — so e.g. the ~20 by-area p-values for one metric/subset/test_type
+    are corrected together, separately from the by-area-group family for the
+    same metric/subset/test_type, and separately again from the single
+    global-scope test for that combination (family size 1 -> q=p trivially).
+    Writes a tab-delimited .txt ledger with both raw and FDR-corrected
+    p-values and returns it as a DataFrame (for the parent process to
+    concatenate across kernel pairs).
+    """
+    df = pd.DataFrame(stats_records, columns=_STATS_LEDGER_COLS)
+    os.makedirs(os.path.dirname(output_txt_path), exist_ok=True)
+    if df.empty:
+        df.to_csv(output_txt_path, sep='\t', index=False)
+        return df
+    group_cols = ['kernel_pair', 'subset', 'metric', 'analysis_type', 'granularity', 'test_type']
+    df['p_value_fdr'] = (
+        df.groupby(group_cols)['p_value_raw']
+        .transform(lambda s: pd.Series(_bh_fdr(s.values), index=s.index))
+    )
+    df.to_csv(output_txt_path, sep='\t', index=False)
+    return df
+
+
+def _mouse_block_permutation_test(vals_a, mice_a, vals_b, mice_b, n_perm=5000, rng=None):
+    """Two-group permutation test on neuron- (or mouse-)level values, where
+    the null preserves each MOUSE's whole block of values as one unit when
+    reassigning group membership — 'shift the label of all the neurons of
+    the mouse' rather than shuffling individual neurons independently.
+
+    Generalizes the cicada_analysis psth_per_mouse_with_barplots.py
+    template's _cluster_permutation_ks_test (session-level blocks there,
+    mouse-level here) to jointly emit a mean-difference statistic AND a KS-D
+    statistic from ONE shared permutation loop (one mouse-id shuffle per
+    iteration drives both null distributions, rather than two separate
+    permutation loops).
+
+    When every mouse contributes exactly one value (e.g. already-per-mouse-
+    averaged barplot data), this degenerates to an ordinary two-group
+    permutation test on those per-mouse values, since a block of size 1
+    permutes exactly like an individual value.
+
+    vals_a/vals_b : array-like, neuron- or mouse-level values for group A/B.
+    mice_a/mice_b : array-like, same length/order, that value's mouse_id.
+
+    Returns a dict: mean_diff_obs, mean_diff_p, ks_d_obs, ks_d_p, n_a, n_b,
+    n_mice_a, n_mice_b. Stats are NaN (n_* still filled in) if fewer than 2
+    distinct mice total across both groups, or all mice fall on one side.
+    """
+    from scipy.stats import ks_2samp
+
+    vals_a = np.asarray(vals_a, dtype=float)
+    vals_b = np.asarray(vals_b, dtype=float)
+    mice_a = np.asarray(mice_a)
+    mice_b = np.asarray(mice_b)
+    finite_a = np.isfinite(vals_a)
+    finite_b = np.isfinite(vals_b)
+    vals_a, mice_a = vals_a[finite_a], mice_a[finite_a]
+    vals_b, mice_b = vals_b[finite_b], mice_b[finite_b]
+
+    out = dict(mean_diff_obs=np.nan, mean_diff_p=np.nan,
+               ks_d_obs=np.nan, ks_d_p=np.nan,
+               n_a=len(vals_a), n_b=len(vals_b),
+               n_mice_a=len(np.unique(mice_a)) if len(mice_a) else 0,
+               n_mice_b=len(np.unique(mice_b)) if len(mice_b) else 0)
+
+    if len(vals_a) < 1 or len(vals_b) < 1:
+        return out
+
+    vals = np.concatenate([vals_a, vals_b])
+    codes, all_mice = pd.factorize(np.concatenate([mice_a, mice_b]))
+    n_mice = len(all_mice)
+    n_mice_a = len(np.unique(mice_a))
+
+    if n_mice < 2 or n_mice_a < 1 or n_mice_a >= n_mice:
+        return out
+
+    mean_diff_obs = vals_b.mean() - vals_a.mean()
+    ks_d_obs, _ = ks_2samp(vals_a, vals_b)
+    out['mean_diff_obs'] = mean_diff_obs
+    out['ks_d_obs'] = ks_d_obs
+
+    # A permutation only reassigns whole mice, so both statistics follow from
+    # per-mouse summaries computed once: sum and count for the mean, and each
+    # mouse's cumulative count over the pooled sorted values for the KS D
+    # (max |CDF_A - CDF_B| over those values, the same quantity ks_2samp returns).
+    sums = np.bincount(codes, weights=vals, minlength=n_mice)
+    counts = np.bincount(codes, minlength=n_mice).astype(float)
+    grid, grid_pos = np.unique(vals, return_inverse=True)
+    cum_counts = np.zeros((n_mice, len(grid)), dtype=np.float32)
+    np.add.at(cum_counts, (codes, grid_pos), 1)
+    np.cumsum(cum_counts, axis=1, out=cum_counts)
+    total_cum = cum_counts.sum(axis=0)
+
+    rng = rng if rng is not None else np.random.default_rng(0)
+    in_a = np.zeros((n_perm, n_mice), dtype=np.float32)
+    for i in range(n_perm):
+        in_a[i, rng.permutation(n_mice)[:n_mice_a]] = 1
+
+    n_a = in_a @ counts
+    n_b = counts.sum() - n_a
+    sum_a = in_a @ sums
+    null_mean_diff = (sums.sum() - sum_a) / n_b - sum_a / n_a
+
+    null_ks_d = np.empty(n_perm)
+    chunk = max(1, int(2e7 // len(grid)))  # keeps each (perms x values) block around 80 MB
+    for start in range(0, n_perm, chunk):
+        sl = slice(start, start + chunk)
+        cum_a = in_a[sl] @ cum_counts
+        null_ks_d[sl] = np.abs(cum_a / n_a[sl, None] - (total_cum - cum_a) / n_b[sl, None]).max(axis=1)
+
+    # Tolerance so a permutation that reproduces the observed split counts as a
+    # tie (>=) whatever the floating-point summation order.
+    tol = 1e-9
+    out['mean_diff_p'] = (np.sum(np.abs(null_mean_diff) >= np.abs(mean_diff_obs) * (1 - tol)) + 1) / (n_perm + 1)
+    out['ks_d_p'] = (np.sum(null_ks_d >= ks_d_obs * (1 - tol)) + 1) / (n_perm + 1)
+    return out
+
+
+def _compute_full_vs_random_table(raw_fold_df, meta_df, alpha=0.05, min_folds=3):
+    """One row per (mouse_id, neuron_id): fold-matched paired t-test
+    (scipy.stats.ttest_rel) comparing test_corr between model_name=='full'
+    and model_name=='random_split' ('random_split' fits the identical
+    feature set as 'full', just with a randomly permuted train/test split
+    rather than the normal one — so a neuron where 'full' reliably
+    outperforms 'random_split' is one whose fit depends on genuine session
+    structure, not an artifact of any particular train/test split).
+
+    `raw_fold_df` must carry per-fold rows (mouse_id, neuron_id, model_name,
+    fold, test_corr) — the merged *summary* dataframe (what the rest of
+    kernel_consistency operates on) only keeps the across-fold MEAN test_corr
+    per neuron with no 'fold' column, so it can't be paired by fold. Load
+    `raw_fold_df` from the raw per-mouse model-result files instead (see the
+    'kernel_consistency' driver block). `meta_df` (the summary dataframe) only
+    supplies area_acronym_custom/reward_group, which the raw files don't carry.
+
+    Kernel-pair-independent — computed ONCE (only touches test_corr/fold, not
+    kernel coefficients), not per kernel pair.
+
+    Returns columns: mouse_id, neuron_id, area_acronym_custom, reward_group,
+    n_folds_matched, mean_test_corr_full, mean_test_corr_random,
+    delta_test_corr, t_stat, p_value, better_fit_by_full.
+    """
+    from scipy.stats import ttest_rel
+
+    empty_cols = ['mouse_id', 'neuron_id', 'area_acronym_custom', 'reward_group',
+                  'n_folds_matched', 'mean_test_corr_full', 'mean_test_corr_random',
+                  'delta_test_corr', 't_stat', 'p_value', 'better_fit_by_full']
+
+    if raw_fold_df.empty or 'random_split' not in raw_fold_df['model_name'].values:
+        print("[kernel_consistency] No 'random_split' rows found — full_vs_random "
+              "subset will be empty.")
+        return pd.DataFrame(columns=empty_cols)
+
+    full_df = raw_fold_df[raw_fold_df['model_name'] == 'full'][['mouse_id', 'neuron_id', 'fold', 'test_corr']]
+    rand_df = raw_fold_df[raw_fold_df['model_name'] == 'random_split'][['mouse_id', 'neuron_id', 'fold', 'test_corr']]
+    paired = full_df.merge(rand_df, on=['mouse_id', 'neuron_id', 'fold'], suffixes=('_full', '_random'))
+    if paired.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    meta = (meta_df[meta_df['model_name'] == 'full'][['mouse_id', 'neuron_id', 'area_acronym_custom', 'reward_group']]
+            .drop_duplicates(subset=['mouse_id', 'neuron_id']))
+    paired = paired.merge(meta, on=['mouse_id', 'neuron_id'], how='left')
+
+    rows = []
+    for (mouse_id, neuron_id), grp in paired.groupby(['mouse_id', 'neuron_id']):
+        if len(grp) < min_folds:
+            continue
+        t_stat, p_value = ttest_rel(grp['test_corr_full'], grp['test_corr_random'])
+        mean_full = grp['test_corr_full'].mean()
+        mean_random = grp['test_corr_random'].mean()
         rows.append({
             'mouse_id': mouse_id,
             'neuron_id': neuron_id,
-            'area_acronym_custom': area,
-            'reward_group': reward_group,
-            'pct_change': pct_change,
-            'mean_pct_change': mean_pct_change,
-            'all_positive': all_positive,
-            'all_negative': all_negative,
-            'w0': w0,
-            'w1': w1,
-            'lags': lags,
+            'area_acronym_custom': grp['area_acronym_custom'].iloc[0],
+            'reward_group': grp['reward_group'].iloc[0],
+            'n_folds_matched': len(grp),
+            'mean_test_corr_full': mean_full,
+            'mean_test_corr_random': mean_random,
+            'delta_test_corr': mean_full - mean_random,
+            't_stat': t_stat,
+            'p_value': p_value,
+            'better_fit_by_full': bool(np.isfinite(p_value) and p_value < alpha and mean_full > mean_random),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=empty_cols) if rows else pd.DataFrame(columns=empty_cols)
 
 
-def _plot_consistent_kernels_by_area(
-        neuron_df, ordered_regions, region_to_color,
-        threshold, direction, output_folder,
-        kernel_0, kernel_1, reward_label, n_cols=3):
-    """Plot average kernel_0 (light) and kernel_1 (full colour) by brain area
-    for a subset of neurons that consistently change in the given direction.
+def _apply_population_subset(neuron_df, df, subset_name, full_vs_random_table=None):
+    """Filter neuron_df down to one of the 5 population subsets. `df` is the
+    full (unfiltered, all model_names) merged dataframe for this kernel pair
+    — needed for the whisker_selective/auditory_selective lrt_significant
+    lookup. Returns (filtered_df, n_before, n_after) for provenance logging.
 
-    Parameters
-    ----------
-    neuron_df : pd.DataFrame
-        Already-filtered rows from _build_neuron_change_table.
-    ordered_regions : list of str
-    region_to_color : dict  {region: hex_color}
-    threshold : float       % change threshold (used in title/filename only here).
-    direction : str         'up' or 'down'.
-    output_folder : str
-    kernel_0, kernel_1 : str
-    reward_label : str      e.g. 'R+' or 'R-'.
-    n_cols : int
+    'all'                 -> neuron_df unchanged
+    'consistent'          -> all_positive | all_negative (this exact kernel pair)
+    'whisker_selective'   -> lrt_significant==True for model_name=='whisker_encoding'
+    'auditory_selective'  -> lrt_significant==True for model_name=='auditory_encoding'
+    'full_vs_random'      -> better_fit_by_full==True in full_vs_random_table
+    """
+    n_before = len(neuron_df)
+
+    if subset_name == 'all':
+        return neuron_df, n_before, n_before
+
+    if subset_name == 'consistent':
+        sub = neuron_df[neuron_df['all_positive'] | neuron_df['all_negative']]
+        return sub, n_before, len(sub)
+
+    if subset_name in ('whisker_selective', 'auditory_selective'):
+        encoding_model = 'whisker_encoding' if subset_name == 'whisker_selective' else 'auditory_encoding'
+        if 'lrt_significant' not in df.columns:
+            return neuron_df.iloc[0:0], n_before, 0
+        sig_ids = df[
+            (df['model_name'] == encoding_model) & (df['lrt_significant'] == True)
+        ][['mouse_id', 'neuron_id']].drop_duplicates()
+        if sig_ids.empty:
+            return neuron_df.iloc[0:0], n_before, 0
+        sub = neuron_df.merge(sig_ids, on=['mouse_id', 'neuron_id'])
+        return sub, n_before, len(sub)
+
+    if subset_name == 'full_vs_random':
+        if full_vs_random_table is None or full_vs_random_table.empty:
+            return neuron_df.iloc[0:0], n_before, 0
+        keep_ids = full_vs_random_table.loc[
+            full_vs_random_table['better_fit_by_full'].fillna(False), ['mouse_id', 'neuron_id']]
+        sub = neuron_df.merge(keep_ids, on=['mouse_id', 'neuron_id'])
+        return sub, n_before, len(sub)
+
+    raise ValueError(f"Unknown subset_name: {subset_name!r}")
+
+
+def _plot_kernel_shape_overlay(neuron_df, area_groups, area_colors, area_groups_flat,
+                                output_folder, kernel_0, kernel_1, reward_groups,
+                                reward_group_labels, n_cols=3):
+    """Average kernel_0 (light) vs kernel_1 (bold) coefficient waveform +/-
+    SEM by brain area (and by area group), one figure per (reward_group,
+    direction) where direction splits neuron_df by all_positive/all_negative.
+
+    Adapted from the original _plot_consistent_kernels_by_area (previously
+    only ever called on the 'consistent' subset, with a %-change threshold
+    gate) — now called once per population subset, no threshold, covering
+    both 'by_area' and 'by_area_group' granularities.
     """
     if neuron_df.empty:
         return
 
-    present_regions = [r for r in ordered_regions
-                       if r in neuron_df['area_acronym_custom'].values]
-    if not present_regions:
+    def _draw(sub_df, ordered_groups, group_to_color, group_col, granularity_folder,
+              reward_label, direction):
+        if sub_df.empty or group_col not in sub_df.columns:
+            return
+        present = [g for g in ordered_groups if g in sub_df[group_col].values]
+        if not present:
+            return
+        from matplotlib.lines import Line2D
+        from matplotlib.ticker import MaxNLocator
+
+        kernel_0_color = '#8c8c8c'
+
+        n_cols_fig = min(n_cols, len(present))
+        n_rows = math.ceil(len(present) / n_cols_fig)
+        # Publication style: square panels, 7 pt Arial, thin axes, editable PDF text.
+        with plt.rc_context({'font.family': 'sans-serif',
+                             'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+                             'font.size': 7, 'axes.linewidth': 0.6, 'axes.titlesize': 7, 'axes.labelsize': 7,
+                             'xtick.labelsize': 6, 'ytick.labelsize': 6,
+                             'xtick.major.width': 0.6, 'ytick.major.width': 0.6,
+                             'xtick.major.size': 2.5, 'ytick.major.size': 2.5,
+                             'pdf.fonttype': 42, 'svg.fonttype': 'none'}):
+            fig, axes = plt.subplots(n_rows, n_cols_fig, sharex=True, squeeze=False,
+                                     figsize=(1.75 * n_cols_fig + 0.5, 1.75 * n_rows + 0.75))
+            axes = axes.reshape(-1)
+            for idx, (ax, group) in enumerate(zip(axes, present)):
+                group_rows = sub_df[sub_df[group_col] == group]
+                w0_stack = np.stack(group_rows['w0'].values)
+                w1_stack = np.stack(group_rows['w1'].values)
+                lags = group_rows.iloc[0]['lags']
+                n = len(group_rows)
+                mean_w0 = w0_stack.mean(axis=0)
+                sem_w0 = (w0_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w0)
+                mean_w1 = w1_stack.mean(axis=0)
+                sem_w1 = (w1_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w1)
+                base_color = group_to_color.get(group, 'gray')
+                ax.axhline(0, color='#888888', lw=0.5, zorder=0)
+                ax.axvline(0, color='#888888', lw=0.5, ls=':', zorder=0)
+                # kernel_0 in the same neutral grey everywhere (both reward groups, all areas)
+                ax.fill_between(lags, mean_w0 - sem_w0, mean_w0 + sem_w0, color=kernel_0_color, alpha=0.25, lw=0)
+                ax.plot(lags, mean_w0, color=kernel_0_color, lw=1.0)
+                ax.fill_between(lags, mean_w1 - sem_w1, mean_w1 + sem_w1, color=base_color, alpha=0.3, lw=0)
+                ax.plot(lags, mean_w1, color=base_color, lw=1.4)
+                ax.set_title(f"{group}\nn = {n}", pad=3)
+                ax.set_box_aspect(1)
+                ax.set_xlim(lags[0], lags[-1])
+                ax.xaxis.set_major_locator(MaxNLocator(4))
+                ax.yaxis.set_major_locator(MaxNLocator(4))
+                ax.spines["top"].set_visible(False)
+                ax.spines["right"].set_visible(False)
+                if idx % n_cols_fig == 0:
+                    ax.set_ylabel("Kernel weight")
+                if idx + n_cols_fig >= len(present):  # nothing drawn below this panel
+                    ax.set_xlabel("Lag from stimulus (s)")
+                    ax.tick_params(labelbottom=True)
+            for ax in axes[len(present):]:
+                ax.set_visible(False)
+            dir_label = {'up': 'increase', 'down': 'decrease', 'all': 'all neurons'}[direction]
+            # Fixed 0.42-inch strip at the top: title, then the legend under it.
+            fig_w, fig_h = fig.get_size_inches()
+            fig.suptitle(f"{reward_label}, {dir_label}", fontsize=8, x=0.08 / fig_w, y=1 - 0.04 / fig_h,
+                         ha='left', va='top')
+            fig.legend(handles=[Line2D([], [], color=kernel_0_color, lw=1.0, label=kernel_0),
+                                Line2D([], [], color='#222222', lw=1.4, label=f"{kernel_1} (in colour)")],
+                       loc='upper left', bbox_to_anchor=(0.06 / fig_w, 1 - 0.2 / fig_h), frameon=False,
+                       fontsize=6, ncol=1 if n_cols_fig == 1 else 2, handlelength=1.5, columnspacing=1.0,
+                       borderaxespad=0, labelspacing=0.2)
+            top_strip = 0.52 if n_cols_fig == 1 else 0.42
+            fig.tight_layout(rect=[0, 0, 1, 1 - top_strip / fig_h], w_pad=0.8, h_pad=0.6)
+            fname = f"kernel_shape_{reward_label}_{direction}"
+            out_dir = os.path.join(output_folder, granularity_folder)
+            os.makedirs(out_dir, exist_ok=True)
+            putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname, output_dir=out_dir)
+            plt.close(fig)
+
+    ordered_areas = []
+    area_to_color = {}
+    for group_name, areas in area_groups.items():
+        for area in areas:
+            area_to_color[area] = area_colors[group_name]
+            if area in neuron_df['area_acronym_custom'].values:
+                ordered_areas.append(area)
+    area_group_vals = neuron_df['area_group'] if 'area_group' in neuron_df.columns else pd.Series(dtype=object)
+    ordered_area_groups = [g for g in area_groups_flat.keys() if g in area_group_vals.values]
+
+    for reward_group in reward_groups:
+        rg_label = reward_group_labels.get(reward_group, str(reward_group))
+        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
+        up_df = rg_df[rg_df['all_positive']]
+        down_df = rg_df[rg_df['all_negative']]
+        # Per-area (fine) granularity disabled for now -- too slow.
+        # _draw(rg_df, ordered_areas, area_to_color, 'area_acronym_custom', 'by_area', rg_label, 'all')
+        # _draw(up_df, ordered_areas, area_to_color, 'area_acronym_custom', 'by_area', rg_label, 'up')
+        # _draw(down_df, ordered_areas, area_to_color, 'area_acronym_custom', 'by_area', rg_label, 'down')
+        _draw(rg_df, ordered_area_groups, area_colors, 'area_group', 'by_area_group', rg_label, 'all')
+        _draw(up_df, ordered_area_groups, area_colors, 'area_group', 'by_area_group', rg_label, 'up')
+        _draw(down_df, ordered_area_groups, area_colors, 'area_group', 'by_area_group', rg_label, 'down')
+        # All neurons pooled, whatever their area (includes neurons with no area group).
+        pooled_color = {'All areas': REWARD_GROUP_COLORS.get(reward_group, 'gray')}
+        for direction, d_df in (('all', rg_df), ('up', up_df), ('down', down_df)):
+            _draw(d_df.assign(_pooled='All areas'), ['All areas'], pooled_color, '_pooled', 'global',
+                  rg_label, direction)
+
+
+def _plot_distribution_with_test(
+        neuron_df, metric_col, metric_label, groupby_col, ordered_groups,
+        output_folder, kernel_pair_name, subset_name, metric_tag,
+        reward_group_labels, n_perm, stats_records):
+    """Neuron-level distribution of metric_col, R+ vs R-, with a mouse-block
+    permutation test (_mouse_block_permutation_test; R+ minus R- convention).
+    groupby_col=None -> one global overlay histogram; otherwise -> a grid,
+    one panel per group in ordered_groups (area or area_group names). Appends
+    one 'mean_diff_permutation' and one 'ks_d_permutation' row per test to
+    stats_records, and writes a sidecar '{fname}_stats.txt' next to the
+    figure with just that figure's rows.
+    """
+    if neuron_df.empty or metric_col not in neuron_df.columns:
         return
 
-    n_rows = math.ceil(len(present_regions) / n_cols)
-    fig, axes = plt.subplots(n_rows, n_cols,
-                             figsize=(4 * n_cols, 3 * n_rows), sharex=True)
-    axes = np.array(axes).reshape(-1)
+    granularity = 'global' if groupby_col is None else (
+        'area' if groupby_col == 'area_acronym_custom' else 'area_group')
+    os.makedirs(output_folder, exist_ok=True)
 
-    legend_added = False
-    for ax, region in zip(axes, present_regions):
-        region_rows = neuron_df[neuron_df['area_acronym_custom'] == region]
-        if region_rows.empty:
-            ax.set_visible(False)
-            continue
+    def _test_and_record(sub_df, scope_name):
+        rg_neg, rg_pos = 0, 1  # R- minus R+ -> mean_diff = mean(R+) - mean(R-)
+        a = sub_df[sub_df['reward_group'] == rg_neg].dropna(subset=[metric_col])
+        b = sub_df[sub_df['reward_group'] == rg_pos].dropna(subset=[metric_col])
+        result = _mouse_block_permutation_test(
+            a[metric_col].values, a['mouse_id'].values,
+            b[metric_col].values, b['mouse_id'].values, n_perm=n_perm)
+        base = dict(kernel_pair=kernel_pair_name, subset=subset_name, metric=metric_tag,
+                    analysis_type='distribution', granularity=granularity, scope_name=scope_name,
+                    comparison='R+_vs_R-', n_a=result['n_a'], n_b=result['n_b'],
+                    n_mice_a=result['n_mice_a'], n_mice_b=result['n_mice_b'],
+                    n_perm=n_perm, notes='')
+        row_mean = dict(base, test_type='mean_diff_permutation', observed_stat=result['mean_diff_obs'],
+                         p_value_raw=result['mean_diff_p'], p_value_fdr=np.nan)
+        row_ks = dict(base, test_type='ks_d_permutation', observed_stat=result['ks_d_obs'],
+                      p_value_raw=result['ks_d_p'], p_value_fdr=np.nan)
+        stats_records.append(row_mean)
+        stats_records.append(row_ks)
+        return result, row_mean, row_ks
 
-        w0_stack = np.stack(region_rows['w0'].values)
-        w1_stack = np.stack(region_rows['w1'].values)
-        lags = region_rows.iloc[0]['lags']
-        n = len(region_rows)
+    def _draw_panel(ax, sub_df, result, cumulative):
+        """Histogram (annotated with the mean-difference test), or cumulative
+        distribution (annotated with the KS test, which compares exactly these
+        curves) when cumulative=True."""
+        for rg in [1, 0]:
+            vals = sub_df.loc[sub_df['reward_group'] == rg, metric_col].dropna().values
+            if len(vals) == 0:
+                continue
+            color = REWARD_GROUP_COLORS.get(rg, 'gray')
+            label = f"{reward_group_labels.get(rg, rg)} (n={len(vals)})"
+            if cumulative:
+                ax.step(np.sort(vals), np.arange(1, len(vals) + 1) / len(vals), where='post',
+                        color=color, lw=1.5, label=label)
+            else:
+                ax.hist(vals, bins=40, color=color, alpha=0.5, label=label, density=True, edgecolor='none')
+        ax.axvline(0, color='black', lw=1, ls='--')
+        if cumulative:
+            ax.axhline(0.5, color='gray', lw=0.6, ls=':')
+            ax.set_ylim(0, 1)
+        test_name, p = ('perm. KS', result['ks_d_p']) if cumulative else ('perm. mean-diff', result['mean_diff_p'])
+        if np.isfinite(p):
+            stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else 'ns'))
+            ax.text(0.97, 0.05 if cumulative else 0.95, f"{test_name}\np={p:.3g} {stars}",
+                    transform=ax.transAxes, fontsize=7, va='bottom' if cumulative else 'top', ha='right',
+                    bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.7, ec='lightgray'))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
 
-        mean_w0 = w0_stack.mean(axis=0)
-        sem_w0 = (w0_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w0)
-        mean_w1 = w1_stack.mean(axis=0)
-        sem_w1 = (w1_stack.std(axis=0, ddof=1) / np.sqrt(n)) if n > 1 else np.zeros_like(mean_w1)
+    # Each test is run once; the histogram and cumulative figures share its result.
+    versions = [(False, '', 'Density', 'distribution'), (True, '_cumulative', 'Cumulative fraction', 'cumulative distribution')]
 
-        base_color = region_to_color.get(region, 'gray')
+    if groupby_col is None:
+        result, row_mean, row_ks = _test_and_record(neuron_df, 'ALL')
+        fname = "distribution_global"
+        for cumulative, suffix, ylabel, kind in versions:
+            fig, ax = plt.subplots(figsize=(7, 4))
+            _draw_panel(ax, neuron_df, result, cumulative)
+            ax.set_xlabel(metric_label, fontsize=9)
+            ax.set_ylabel(ylabel, fontsize=9)
+            ax.set_title(f"{metric_label} {kind} - {subset_name}\n[{kernel_pair_name}]", fontsize=10)
+            ax.legend(fontsize=8, loc='upper left')
+            plt.tight_layout()
+            putils.save_figure_with_options(fig, ['png', 'pdf'], fname + suffix, output_dir=output_folder)
+            plt.close(fig)
+        pd.DataFrame([row_mean, row_ks], columns=_STATS_LEDGER_COLS).to_csv(
+            os.path.join(output_folder, f"{fname}_stats.txt"), sep='\t', index=False)
+        return
 
-        # kernel_0: lighter / kernel_1: full colour
-        ax.plot(lags, mean_w0, color=base_color, alpha=0.45, lw=1.5,
-                label=kernel_0)
-        ax.fill_between(lags, mean_w0 - sem_w0, mean_w0 + sem_w0,
-                        color=base_color, alpha=0.12)
-        ax.plot(lags, mean_w1, color=base_color, alpha=1.0, lw=2.0,
-                label=kernel_1)
-        ax.fill_between(lags, mean_w1 - sem_w1, mean_w1 + sem_w1,
-                        color=base_color, alpha=0.28)
+    present = [g for g in ordered_groups if g in neuron_df[groupby_col].values]
+    if not present:
+        return
+    n_cols = min(5, len(present))
+    n_rows = math.ceil(len(present) / n_cols)
+    group_dfs = {group: neuron_df[neuron_df[groupby_col] == group] for group in present}
+    results, fig_rows = {}, []
+    for group in present:
+        results[group], row_mean, row_ks = _test_and_record(group_dfs[group], group)
+        fig_rows.extend([row_mean, row_ks])
+    fname = f"distribution_by_{granularity}"
+    for cumulative, suffix, _, kind in versions:
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 3.2 * n_rows), squeeze=False)
+        for idx, group in enumerate(present):
+            ax = axes[idx // n_cols][idx % n_cols]
+            _draw_panel(ax, group_dfs[group], results[group], cumulative)
+            ax.set_title(group, fontsize=9, fontweight='bold')
+        for idx in range(len(present), n_rows * n_cols):
+            axes[idx // n_cols][idx % n_cols].set_visible(False)
+        plt.suptitle(f"{metric_label} {kind} by {granularity} - {subset_name}\n[{kernel_pair_name}]", fontsize=11)
+        plt.tight_layout(rect=[0, 0, 1, 0.96])
+        putils.save_figure_with_options(fig, ['png', 'pdf'], fname + suffix, output_dir=output_folder)
+        plt.close(fig)
+    pd.DataFrame(fig_rows, columns=_STATS_LEDGER_COLS).to_csv(
+        os.path.join(output_folder, f"{fname}_stats.txt"), sep='\t', index=False)
 
-        ax.axhline(0, color='gray', lw=0.8, ls='--')
-        ax.set_title(f"{region} (n={n})", fontsize=9)
-        ax.set_xlabel("Lag (s)", fontsize=8)
-        ax.set_ylabel("Coef", fontsize=8)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
 
-        if not legend_added:
-            ax.legend(fontsize=7)
-            legend_added = True
-
-    for ax in axes[len(present_regions):]:
-        ax.set_visible(False)
-
-    dir_label = 'increase' if direction == 'up' else 'decrease'
-    thr_str = f"{threshold:.0f}"
-    plt.suptitle(
-        f"Avg kernels – consistent {dir_label} >|{thr_str}%| "
-        f"[{kernel_1} vs {kernel_0}] – {reward_label}",
-        fontsize=11
-    )
-    plt.tight_layout(rect=[0, 0, 1, 0.95])
-
-    thr_label = str(threshold).replace('.', 'p')
-    fname = (f"cst_{direction}_gt{thr_label}pct")
-    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
-                                    output_dir=output_folder)
+def _plot_distribution_per_mouse(neuron_df, metric_col, metric_label, output_folder,
+                                  kernel_pair_name, subset_name, reward_group_labels):
+    """Small-multiples grid, one panel per mouse (grouped by reward group,
+    sorted by mouse_id within group), histogram of that mouse's own neurons.
+    No test, no stats file — purely descriptive QC, per instruction.
+    """
+    if neuron_df.empty or metric_col not in neuron_df.columns:
+        return
+    sub = neuron_df.dropna(subset=[metric_col])
+    if sub.empty:
+        return
+    mice = (sub[['mouse_id', 'reward_group']].drop_duplicates()
+            .sort_values(['reward_group', 'mouse_id'], ascending=[False, True]))
+    mouse_list = list(mice.itertuples(index=False))
+    n_cols = min(5, len(mouse_list))
+    n_rows = math.ceil(len(mouse_list) / n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(3.2 * n_cols, 2.6 * n_rows), squeeze=False)
+    for idx, (mouse_id, reward_group) in enumerate(mouse_list):
+        ax = axes[idx // n_cols][idx % n_cols]
+        vals = sub.loc[sub['mouse_id'] == mouse_id, metric_col].values
+        color = REWARD_GROUP_COLORS.get(reward_group, 'gray')
+        ax.hist(vals, bins=20, color=color, alpha=0.7, density=True, edgecolor='none')
+        ax.axvline(0, color='black', lw=0.8, ls='--')
+        ax.set_title(f"{mouse_id} ({reward_group_labels.get(reward_group, reward_group)}, n={len(vals)})",
+                     fontsize=7.5)
+        ax.tick_params(labelsize=6)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+    for idx in range(len(mouse_list), n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].set_visible(False)
+    plt.suptitle(f"{metric_label} - per mouse - {subset_name}\n[{kernel_pair_name}]", fontsize=10)
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    os.makedirs(output_folder, exist_ok=True)
+    putils.save_figure_with_options(fig, ['png', 'pdf'], "distribution_per_mouse", output_dir=output_folder)
     plt.close(fig)
 
 
-def _plot_consistency_fraction_by_area(
-        neuron_df, reward_groups, reward_group_labels,
-        ordered_regions, threshold,
-        output_folder, kernel_0, kernel_1):
-    """Grouped bar chart: % of neurons with consistent weight increase / decrease
-    per brain area, one bar cluster per reward group.
-
-    Produces two figures: one for 'up', one for 'down'.
-
-    Parameters
-    ----------
-    neuron_df : pd.DataFrame
-        Full table from _build_neuron_change_table (all reward groups).
-    reward_groups : list of int
-    reward_group_labels : dict  {int: str}
-    ordered_regions : list of str
-    threshold : float
-    output_folder : str
-    kernel_0, kernel_1 : str
+def _plot_barplot_with_test(
+        neuron_df, metric_col, metric_label, groupby_col, ordered_groups,
+        output_folder, kernel_pair_name, subset_name, metric_tag,
+        reward_group_labels, min_neurons_per_mouse, n_perm, stats_records, area_colors=None):
+    """Per-mouse-averaged (mice with >= min_neurons_per_mouse qualifying
+    neurons only) bar + jittered-dot + bracket plot, R+ vs R-, with the same
+    mouse-block permutation test as the distribution plots (degenerate case:
+    one value per mouse). groupby_col=None -> one global bar pair;
+    'area_acronym_custom'/'area_group' -> one bar pair per group in
+    ordered_groups on a shared axes. For the by-group case, also saves a compact
+    publication version ({fname}_pub): no individual mice, bars in each group's
+    area_colors colour (R+ solid, R- light), stars from the same tests.
     """
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-    thr_label = str(threshold).replace('.', 'p')
+    if neuron_df.empty or metric_col not in neuron_df.columns:
+        return
+    granularity = 'global' if groupby_col is None else (
+        'area' if groupby_col == 'area_acronym_custom' else 'area_group')
+    os.makedirs(output_folder, exist_ok=True)
+    rng_jitter = np.random.default_rng(0)
 
-    present_regions = [r for r in ordered_regions
-                       if r in neuron_df['area_acronym_custom'].values]
-    if not present_regions:
+    def _per_mouse_means(sub_df):
+        sub_df = _filter_min_neurons_per_mouse(sub_df, min_neurons_per_mouse)
+        if sub_df.empty:
+            return sub_df
+        return sub_df.groupby(['mouse_id', 'reward_group'])[metric_col].mean().reset_index()
+
+    def _test_record(sub_df, scope_name):
+        pm = _per_mouse_means(sub_df)
+        rg_neg, rg_pos = 0, 1
+        a = pm[pm['reward_group'] == rg_neg] if not pm.empty else pm
+        b = pm[pm['reward_group'] == rg_pos] if not pm.empty else pm
+        result = _mouse_block_permutation_test(
+            a[metric_col].values if not a.empty else [], a['mouse_id'].values if not a.empty else [],
+            b[metric_col].values if not b.empty else [], b['mouse_id'].values if not b.empty else [],
+            n_perm=n_perm)
+        base = dict(kernel_pair=kernel_pair_name, subset=subset_name, metric=metric_tag,
+                    analysis_type='barplot', granularity=granularity, scope_name=scope_name,
+                    comparison='R+_vs_R-', n_a=result['n_a'], n_b=result['n_b'],
+                    n_mice_a=result['n_mice_a'], n_mice_b=result['n_mice_b'],
+                    n_perm=n_perm, notes='')
+        row_mean = dict(base, test_type='mean_diff_permutation', observed_stat=result['mean_diff_obs'],
+                         p_value_raw=result['mean_diff_p'], p_value_fdr=np.nan)
+        row_ks = dict(base, test_type='ks_d_permutation', observed_stat=result['ks_d_obs'],
+                      p_value_raw=result['ks_d_p'], p_value_fdr=np.nan)
+        stats_records.append(row_mean)
+        stats_records.append(row_ks)
+        return row_mean, row_ks, pm
+
+    def _apply_fdr(rows):
+        """BH-FDR over the scopes of this figure, per test type (same families
+        as _bh_fdr_export), written into each row's p_value_fdr."""
+        for test_type in ('mean_diff_permutation', 'ks_d_permutation'):
+            fam = [r for r in rows if r['test_type'] == test_type]
+            for r, q in zip(fam, _bh_fdr([r['p_value_raw'] for r in fam])):
+                r['p_value_fdr'] = q
+
+    def _draw(ax, pm, q, x_offset=0):
+        """Bars + mice for one scope; stars from the FDR-corrected mean-diff q."""
+        bar_w = 0.6
+        tops = []
+        for i, rg in enumerate([0, 1]):
+            vals = pm.loc[pm['reward_group'] == rg, metric_col].values if not pm.empty else np.array([])
+            x = x_offset + i
+            color = REWARD_GROUP_COLORS.get(rg, 'gray')
+            if len(vals):
+                mean_v = vals.mean()
+                sem = vals.std(ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0.0
+                ax.bar(x, mean_v, bar_w, color=color, edgecolor='#222222', linewidth=0.5, zorder=2)
+                if len(vals) > 1:
+                    ax.errorbar(x, mean_v, yerr=sem, fmt='none', ecolor='#222222',
+                                elinewidth=0.8, capsize=2.5, zorder=3)
+                jitter = rng_jitter.uniform(-bar_w * 0.22, bar_w * 0.22, len(vals))
+                ax.scatter(x + jitter, vals, s=14, color=color, edgecolors='#222222',
+                          linewidths=0.4, zorder=4)
+                tops.append(mean_v + sem)
+        if np.isfinite(q) and q < 0.05 and tops:
+            stars = '***' if q < 0.001 else ('**' if q < 0.01 else '*')
+            span = max(abs(t) for t in tops) if tops else 1.0
+            y = max(tops) + 0.12 * max(span, 1e-9)
+            ax.plot([x_offset, x_offset + 1], [y, y], color='#222222', linewidth=0.8, zorder=6)
+            ax.text(x_offset + 0.5, y, f"{stars} q={q:.3g}", ha='center', va='bottom', fontsize=6.5, zorder=7)
+
+    if groupby_col is None:
+        fig, ax = plt.subplots(figsize=(3.5, 4.5))
+        row_mean, row_ks, pm = _test_record(neuron_df, 'ALL')
+        _apply_fdr([row_mean, row_ks])
+        _draw(ax, pm, row_mean['p_value_fdr'])
+        ax.set_xticks([0, 1])
+        ax.set_xticklabels([reward_group_labels.get(0, 0), reward_group_labels.get(1, 1)])
+        ax.axhline(0, color='k', linewidth=0.5, linestyle='--', alpha=0.4)
+        ax.set_ylabel(f"{metric_label} (per-mouse mean)", fontsize=9)
+        ax.set_title(f"{subset_name}\n[{kernel_pair_name}]", fontsize=10)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        plt.tight_layout()
+        fname = "barplot_global"
+        putils.save_figure_with_options(fig, ['png', 'pdf'], fname, output_dir=output_folder)
+        plt.close(fig)
+        pd.DataFrame([row_mean, row_ks], columns=_STATS_LEDGER_COLS).to_csv(
+            os.path.join(output_folder, f"{fname}_stats.txt"), sep='\t', index=False)
         return
 
-    from scipy.stats import mannwhitneyu as _mwu
+    present = [g for g in ordered_groups if g in neuron_df[groupby_col].values]
+    if not present:
+        return
+    fig, ax = plt.subplots(figsize=(max(6, len(present) * 1.1), 5))
+    fig_rows = []
+    xticks, xticklabels = [], []
+    pub_data = []  # (group, per-mouse values, FDR q) for the publication version
+    tested = []
+    for group in present:
+        row_mean, row_ks, pm = _test_record(neuron_df[neuron_df[groupby_col] == group], group)
+        fig_rows.extend([row_mean, row_ks])
+        tested.append((group, row_mean, pm))
+    _apply_fdr(fig_rows)
+    for i, (group, row_mean, pm) in enumerate(tested):
+        q = row_mean['p_value_fdr']
+        _draw(ax, pm, q, x_offset=i * 2.5)
+        pub_data.append((group, pm, q))
+        xticks.append(i * 2.5 + 0.5)
+        xticklabels.append(group)
+    ax.set_xticks(xticks)
+    ax.set_xticklabels(xticklabels, rotation=45, ha='right', fontsize=8)
+    ax.axhline(0, color='k', linewidth=0.5, linestyle='--', alpha=0.4)
+    ax.set_ylabel(f"{metric_label} (per-mouse mean)", fontsize=9)
+    ax.set_title(f"By {granularity} - {subset_name}\n[{kernel_pair_name}]", fontsize=10)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    plt.tight_layout()
+    fname = f"barplot_by_{granularity}"
+    putils.save_figure_with_options(fig, ['png', 'pdf'], fname, output_dir=output_folder)
+    plt.close(fig)
+    pd.DataFrame(fig_rows, columns=_STATS_LEDGER_COLS).to_csv(
+        os.path.join(output_folder, f"{fname}_stats.txt"), sep='\t', index=False)
 
-    def _per_mouse_fracs(rg_df, region, direction, threshold):
-        per_mouse = []
-        for _, mouse_df in rg_df[rg_df['area_acronym_custom'] == region].groupby('mouse_id'):
-            total_m = len(mouse_df)
-            if total_m == 0:
-                continue
-            if direction == 'up':
-                n_sel = (mouse_df['all_positive'] & (mouse_df['pct_change'] > threshold)).sum()
-            else:
-                n_sel = (mouse_df['all_negative'] & (mouse_df['pct_change'] < -threshold)).sum()
-            per_mouse.append(100.0 * n_sel / total_m)
-        return per_mouse
+    _plot_barplot_publication(pub_data, metric_col, metric_label, area_colors,
+                              os.path.join(output_folder, f"{fname}_pub"), output_folder)
 
-    n_rg = len(reward_groups)
-    bar_width = 0.8 / n_rg
 
-    for direction in ['up', 'down']:
-        # Sort areas by R+ mean fraction (descending) for this direction
-        rp_df = neuron_df[neuron_df['reward_group'] == 1]
-        def _region_rp_frac(region):
-            total = len(rp_df[rp_df['area_acronym_custom'] == region])
-            if total == 0:
-                return 0.0
-            if direction == 'up':
-                n_sel = (rp_df[rp_df['area_acronym_custom'] == region]['all_positive']
-                         & (rp_df[rp_df['area_acronym_custom'] == region]['pct_change'] > threshold)).sum()
-            else:
-                n_sel = (rp_df[rp_df['area_acronym_custom'] == region]['all_negative']
-                         & (rp_df[rp_df['area_acronym_custom'] == region]['pct_change'] < -threshold)).sum()
-            return 100.0 * n_sel / total
-        sorted_regions = sorted(present_regions, key=_region_rp_frac, reverse=True)
-        x = np.arange(len(sorted_regions))
-        fig, ax = plt.subplots(figsize=(max(10, len(sorted_regions) * 0.75), 5))
+def _plot_barplot_publication(pub_data, metric_col, metric_label, area_colors, fname, output_folder):
+    """Compact R+ / R- plot per area group: the mean over mice as a dot with a
+    line for the SEM, no individual mice. Dots and SEM lines are in the reward
+    group's colour (REWARD_GROUP_COLORS); the area-group names and the
+    significance stars are in the area group's colour (area_colors). Stars
+    from the BH-FDR-corrected permutation q already computed for the main
+    barplot (nothing drawn when q >= 0.05).
+    pub_data: list of (group, per-mouse DataFrame with reward_group and
+    metric_col, q).
+    """
+    from matplotlib.lines import Line2D
 
-        # Collect per-mouse fractions for all groups first (needed for the MWU test)
-        all_fracs = {}   # reward_group -> list-of-lists (one per region)
-        for reward_group in reward_groups:
-            rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-            all_fracs[reward_group] = [
-                _per_mouse_fracs(rg_df, region, direction, threshold)
-                for region in sorted_regions
-            ]
-
-        # Plot bars + dots
-        bar_tops = np.zeros(len(sorted_regions))
-        for rg_idx, reward_group in enumerate(reward_groups):
-            rg_label = reward_group_labels.get(reward_group, str(reward_group))
-            fracs = all_fracs[reward_group]
-            means = [np.mean(f) if f else 0.0 for f in fracs]
-            sems  = [np.std(f, ddof=1) / np.sqrt(len(f)) if len(f) >= 2 else 0.0 for f in fracs]
-
-            offset = (rg_idx - (n_rg - 1) / 2) * bar_width
-            ax.bar(x + offset, means, yerr=sems, width=bar_width,
-                   color=reward_colors.get(reward_group, 'gray'),
-                   label=rg_label, alpha=0.85, edgecolor='white',
-                   capsize=3, error_kw={'linewidth': 1.2})
-            for xi, per_mouse in zip(x + offset, fracs):
-                ax.scatter(np.full(len(per_mouse), xi), per_mouse,
-                           color='k', s=12, zorder=5, alpha=0.6, linewidths=0)
-            bar_tops = np.maximum(bar_tops,
-                                  [m + s for m, s in zip(means, sems)])
-
-        # Mann-Whitney U (R+ vs R-) per area, annotate stars
-        if len(reward_groups) == 2:
-            rg_a, rg_b = reward_groups[0], reward_groups[1]
-            y_star = bar_tops * 1.05
-            step = bar_tops.max() * 0.06 if bar_tops.max() > 0 else 1.0
-            for xi, fa, fb, yt in zip(x, all_fracs[rg_a], all_fracs[rg_b], y_star):
-                if len(fa) < 2 or len(fb) < 2:
+    pub_data = [(g, pm, p) for g, pm, p in pub_data if pm is not None and not pm.empty]
+    if not pub_data:
+        return
+    area_colors = area_colors or {}
+    with plt.rc_context({'font.family': 'sans-serif', 'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+                         'font.size': 7, 'axes.linewidth': 0.6, 'xtick.major.width': 0.6,
+                         'ytick.major.width': 0.6, 'xtick.major.size': 2.5, 'ytick.major.size': 2.5,
+                         'pdf.fonttype': 42, 'svg.fonttype': 'none'}):
+        n = len(pub_data)
+        fig, ax = plt.subplots(figsize=(0.38 * n + 0.9, 2.2))
+        offset = 0.14
+        tops, bottoms = [0.0], [0.0]
+        for i, (group, pm, p) in enumerate(pub_data):
+            pair_tops = []
+            for dx, rg in ((-offset, 1), (offset, 0)):
+                vals = pm.loc[pm['reward_group'] == rg, metric_col].to_numpy()
+                if not len(vals):
                     continue
-                _, p = _mwu(fa, fb, alternative='two-sided')
-                stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
-                if stars:
-                    ax.text(xi, yt + step * 0.1, stars, ha='center', va='bottom',
-                            fontsize=10, fontweight='bold')
+                mean_v = vals.mean()
+                sem = vals.std(ddof=1) / np.sqrt(len(vals)) if len(vals) > 1 else 0.0
+                ax.errorbar(i + dx, mean_v, yerr=sem, fmt='o', color=REWARD_GROUP_COLORS[rg], markersize=3.5,
+                            elinewidth=0.9, capsize=0, zorder=3)
+                pair_tops.append(mean_v + sem)
+                bottoms.append(mean_v - sem)
+            tops.extend(pair_tops)
+            if np.isfinite(p) and p < 0.05 and pair_tops:
+                stars = '***' if p < 0.001 else ('**' if p < 0.01 else '*')
+                ax.text(i, max(pair_tops), stars, ha='center', va='bottom', fontsize=7,
+                        color=area_colors.get(group, '#222222'))
+        span = (max(tops) - min(bottoms)) or 1.0
+        ax.set_ylim(min(bottoms) - 0.05 * span, max(tops) + 0.15 * span)
+        ax.axhline(0, color='#888888', linewidth=0.5, zorder=0)
+        ax.set_xticks(range(n))
+        ax.set_xticklabels([g for g, _, _ in pub_data], rotation=45, ha='right')
+        for label, (group, _, _) in zip(ax.get_xticklabels(), pub_data):
+            label.set_color(area_colors.get(group, '#222222'))
+        ax.set_xlim(-0.6, n - 0.4)
+        ax.set_ylabel(metric_label)
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_visible(False)
+        ax.tick_params(axis='x', length=0)
+        ax.legend(handles=[Line2D([], [], color=REWARD_GROUP_COLORS[1], marker='o', markersize=3.5, lw=0.9,
+                                  label='R+'),
+                           Line2D([], [], color=REWARD_GROUP_COLORS[0], marker='o', markersize=3.5, lw=0.9,
+                                  label='R-')],
+                  frameon=False, fontsize=6, loc='upper left', bbox_to_anchor=(1.0, 1.0), handlelength=1.2)
+        fig.tight_layout()
+        putils.save_figure_with_options(fig, ['png', 'pdf'], os.path.basename(fname), output_dir=output_folder)
+        plt.close(fig)
 
-        ax.set_xticks(x)
-        ax.set_xticklabels(sorted_regions, rotation=45, ha='right', fontsize=9)
-        ax.set_ylabel('% neurons (mean ± SEM across mice)', fontsize=10)
-        dir_label = 'increase' if direction == 'up' else 'decrease'
-        thr_title = 'no % threshold' if threshold == 0 else f'>|{threshold:.0f}%|'
-        ax.set_title(
-            f"% neurons – consistent {dir_label} {thr_title} per area"
-            f"\n[{kernel_1} vs {kernel_0}]",
-            fontsize=11
-        )
-        ax.legend(fontsize=9)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+
+def _plot_up_down_barplot(
+        neuron_df, metric_col, metric_label, groupby_col, ordered_groups,
+        output_folder, kernel_pair_name, subset_name, reward_group_labels):
+    """Descriptive: fraction of neurons with metric_col > 0 (up, filled) and
+    < 0 (down, hatched), pooled over all neurons of all mice, globally or per
+    group of groupby_col. One figure per reward group; the number of neurons is
+    written above each scope. No statistical test. Neurons exactly at 0 count in
+    neither fraction.
+    """
+    import matplotlib.patches as mpatches
+
+    if neuron_df.empty or metric_col not in neuron_df.columns:
+        return
+    granularity = 'global' if groupby_col is None else (
+        'area' if groupby_col == 'area_acronym_custom' else 'area_group')
+    os.makedirs(output_folder, exist_ok=True)
+    df = neuron_df.dropna(subset=[metric_col])
+    groups = [None] if groupby_col is None else [g for g in ordered_groups if g in df[groupby_col].values]
+    if not groups:
+        return
+    bar_w = 0.8
+
+    for rg in (1, 0):
+        rg_df = df[df['reward_group'] == rg]
+        if rg_df.empty:
+            continue
+        color = REWARD_GROUP_COLORS.get(rg, 'gray')
+        rg_label = reward_group_labels.get(rg, str(rg))
+        fig, ax = plt.subplots(figsize=(max(3.2, 1.1 * len(groups) + 1.5), 4.5))
+        xticks, xticklabels = [], []
+        for i, group in enumerate(groups):
+            vals = (rg_df if group is None else rg_df[rg_df[groupby_col] == group])[metric_col].to_numpy()
+            x0 = i * 2.6
+            xticks.append(x0 + 0.5)
+            xticklabels.append(group if group is not None else 'All neurons')
+            if not len(vals):
+                continue
+            up, down = np.mean(vals > 0), np.mean(vals < 0)
+            ax.bar(x0, up, bar_w, color=color, alpha=0.75, edgecolor='#222222', linewidth=0.5)
+            ax.bar(x0 + 1, down, bar_w, color=color, alpha=0.35, hatch='///', edgecolor='#222222', linewidth=0.5)
+            for x, v in ((x0, up), (x0 + 1, down)):
+                ax.text(x, v + 0.01, f"{v:.2f}", ha='center', va='bottom', fontsize=6)
+            ax.text(x0 + 0.5, 1.02, f"n={len(vals)}", ha='center', va='bottom', fontsize=6, color='#444444')
+        ax.axhline(0.5, color='gray', linewidth=0.6, linestyle=':')
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticklabels, rotation=0 if groupby_col is None else 45,
+                           ha='center' if groupby_col is None else 'right', fontsize=8)
+        ax.set_ylim(0, 1.1)
+        ax.set_ylabel(f"Fraction of neurons\n({metric_label})", fontsize=9)
+        ax.set_title(f"{rg_label} - up / down neurons{'' if groupby_col is None else f' by {granularity}'} - "
+                     f"{subset_name}\n[{kernel_pair_name}]", fontsize=9)
+        ax.legend(handles=[mpatches.Patch(facecolor=color, alpha=0.75, edgecolor='#222222', label='up (> 0)'),
+                           mpatches.Patch(facecolor=color, alpha=0.35, hatch='///', edgecolor='#222222',
+                                          label='down (< 0)')],
+                  fontsize=7, frameon=False, loc='upper left', bbox_to_anchor=(1.0, 1.0))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
         plt.tight_layout()
-
-        fname_thr = 'no_thr' if threshold == 0 else f'gt{thr_label}pct'
-        fname = (f"f_{direction}_{fname_thr}_by_area")
-        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
+        putils.save_figure_with_options(fig, ['png', 'pdf'],
+                                        f"barplot_up_down_{granularity}_{'Rplus' if rg == 1 else 'Rminus'}",
                                         output_dir=output_folder)
         plt.close(fig)
 
 
-def _plot_pct_change_vs_performance(
-        neuron_df, reward_groups, reward_group_labels,
-        ordered_regions, threshold,
-        output_folder, kernel_0, kernel_1,
-        perf_df, change_col='pct_change'):
-    """Scatter: per-mouse mean pct_change vs behavioural performance per area."""
+def _plot_vs_performance(
+        neuron_df, metric_col, metric_label, groupby_col, ordered_groups,
+        output_folder, kernel_pair_name, subset_name, metric_tag,
+        reward_group_labels, min_neurons_per_mouse, perf_df, stats_records, per_mouse_stat='mean'):
+    """Per-mouse value of metric_col (min_neurons_per_mouse-filtered) vs
+    behavioral performance (outcome_w, d_prime_w), Spearman correlation per
+    reward group. Adapted/extended from the old _plot_pct_change_vs_performance
+    to also cover the global and by-area-group granularities it lacked.
+
+    per_mouse_stat: 'mean' (mean of the metric over the mouse's neurons),
+    'prop_up' (fraction of its neurons with metric > 0) or 'prop_down'
+    (fraction with metric < 0).
+    """
     from scipy.stats import spearmanr
 
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-    present_regions = [r for r in ordered_regions
-                       if r in neuron_df['area_acronym_custom'].values]
-    if not present_regions:
+    if neuron_df.empty or metric_col not in neuron_df.columns or perf_df is None:
+        return
+    aggregators = {'mean': 'mean',
+                   'prop_up': lambda v: np.mean(v > 0),
+                   'prop_down': lambda v: np.mean(v < 0)}
+    x_labels = {'mean': metric_label,
+                'prop_up': f"Fraction of neurons with increase\n({metric_label} > 0)",
+                'prop_down': f"Fraction of neurons with decrease\n({metric_label} < 0)"}
+    name_tag = '' if per_mouse_stat == 'mean' else f'{per_mouse_stat}_'
+    granularity = 'global' if groupby_col is None else (
+        'area' if groupby_col == 'area_acronym_custom' else 'area_group')
+    os.makedirs(output_folder, exist_ok=True)
+
+    groups = [None] if groupby_col is None else [g for g in ordered_groups if g in neuron_df[groupby_col].values]
+    if not groups:
         return
 
-    thr_label = 'no_thr' if threshold == 0 else f"gt{str(threshold).replace('.', 'p')}pct"
-
-    # Per-mouse mean of change_col per area
-    records = []
-    for region in present_regions:
-        region_df = neuron_df[neuron_df['area_acronym_custom'] == region]
-        for (mouse_id, rg), grp in region_df.groupby(['mouse_id', 'reward_group']):
-            records.append({
-                'mouse_id': mouse_id,
-                'reward_group': int(rg),
-                'area': region,
-                'mean_pct_change': grp[change_col].mean(),
-            })
-    if not records:
-        return
-
-    mouse_area_df = pd.DataFrame(records).merge(
-        perf_df[['mouse_id', 'outcome_w', 'd_prime_w']], on='mouse_id', how='inner')
-    if mouse_area_df.empty:
-        return
-
-    perf_folder = os.path.join(output_folder, 'vs_performance')
-    os.makedirs(perf_folder, exist_ok=True)
-
-    n_regions = len(present_regions)
-    n_cols = min(5, n_regions)
-    n_rows = math.ceil(n_regions / n_cols)
-
-    for metric in ['outcome_w', 'd_prime_w']:
-        fig, axes = plt.subplots(n_rows, n_cols,
-                                 figsize=(4 * n_cols, 3.5 * n_rows), squeeze=False)
-        for ax_idx, region in enumerate(present_regions):
-            ax = axes[ax_idx // n_cols][ax_idx % n_cols]
-            region_data = mouse_area_df[mouse_area_df['area'] == region]
+    all_rows = []
+    for behavior_metric in [c for c in _PERFORMANCE_METRICS if c in perf_df.columns]:
+        n_panels = len(groups)
+        n_cols = 1 if groupby_col is None else min(5, n_panels)
+        n_rows = 1 if groupby_col is None else math.ceil(n_panels / n_cols)
+        fig, axes = plt.subplots(n_rows, n_cols, figsize=(5 * n_cols, 4 * n_rows), squeeze=False)
+        for idx, group in enumerate(groups):
+            ax = axes[idx // n_cols][idx % n_cols]
+            sub_df = neuron_df if group is None else neuron_df[neuron_df[groupby_col] == group]
+            sub_df = _filter_min_neurons_per_mouse(sub_df, min_neurons_per_mouse)
+            if sub_df.empty:
+                ax.set_visible(False)
+                continue
+            pm = (sub_df.dropna(subset=[metric_col]).groupby(['mouse_id', 'reward_group'])[metric_col]
+                  .agg(aggregators[per_mouse_stat]).reset_index())
+            pm = pm.merge(perf_df, on='mouse_id', how='inner')
             any_plotted = False
-            for rg in reward_groups:
-                rg_data = region_data[region_data['reward_group'] == rg].dropna(
-                    subset=[metric, 'mean_pct_change'])
-                if len(rg_data) < 3:
-                    continue
-                x = rg_data['mean_pct_change'].values
-                y = rg_data[metric].values
-                color = reward_colors.get(rg, 'gray')
+            for rg in [0, 1]:
+                rg_data = pm[pm['reward_group'] == rg].dropna(subset=[behavior_metric, metric_col])
+                color = REWARD_GROUP_COLORS.get(rg, 'gray')
                 label = reward_group_labels.get(rg, str(rg))
-                ax.scatter(x, y, color=color, s=30, alpha=0.8, label=label, zorder=3)
-                m, b = np.polyfit(x, y, 1)
-                x_line = np.linspace(x.min(), x.max(), 50)
-                ax.plot(x_line, m * x_line + b, color=color, linewidth=1.2, alpha=0.7)
-                r, p = spearmanr(x, y)
-                p_str = f'p={p:.2e}' if p >= 0.001 else 'p<0.001'
-                ax.annotate(f'{label}: r={r:.2f}, {p_str}',
-                            xy=(0.05, 0.95 - reward_groups.index(rg) * 0.13),
-                            xycoords='axes fraction', fontsize=7,
-                            color=color, va='top')
-                any_plotted = True
+                if len(rg_data) >= 3:
+                    x = rg_data[metric_col].values
+                    y = rg_data[behavior_metric].values
+                    ax.scatter(x, y, color=color, s=30, alpha=0.8, label=label, zorder=3)
+                    m, b = np.polyfit(x, y, 1)
+                    x_line = np.linspace(x.min(), x.max(), 50)
+                    ax.plot(x_line, m * x_line + b, color=color, linewidth=1.2, alpha=0.7)
+                    r, p = spearmanr(x, y)
+                    any_plotted = True
+                else:
+                    r, p = np.nan, np.nan
+                row = dict(kernel_pair=kernel_pair_name, subset=subset_name, metric=metric_tag,
+                           analysis_type=f'vs_performance_{per_mouse_stat}', granularity=granularity,
+                           scope_name=(group if group is not None else 'ALL'),
+                           test_type='spearman_correlation', comparison=f"{label}_{behavior_metric}",
+                           n_a=len(rg_data), n_b=np.nan, n_mice_a=len(rg_data), n_mice_b=np.nan,
+                           observed_stat=r, p_value_raw=p, p_value_fdr=np.nan, n_perm=np.nan, notes='')
+                stats_records.append(row)
+                all_rows.append(row)
+                if np.isfinite(p):
+                    p_str = f'p={p:.2e}' if p >= 0.001 else 'p<0.001'
+                    ax.annotate(f'{label}: r={r:.2f}, {p_str}', xy=(0.05, 0.95 - rg * 0.13),
+                                xycoords='axes fraction', fontsize=7, color=color, va='top')
             if not any_plotted:
                 ax.set_visible(False)
                 continue
-            ax.axvline(0, color='k', linewidth=0.5, linestyle='--', alpha=0.4)
-            change_label = 'Mean % change (mean coef)' if change_col == 'mean_pct_change' else 'Mean % change (peak amp)'
-            ax.set_title(region, fontsize=9, fontweight='bold')
-            ax.set_xlabel(change_label, fontsize=8)
-            ax.set_ylabel(metric, fontsize=8)
+            if per_mouse_stat == 'mean':
+                ax.axvline(0, color='k', linewidth=0.5, linestyle='--', alpha=0.4)
+            ax.set_title(group if group is not None else 'ALL', fontsize=9, fontweight='bold')
+            ax.set_xlabel(x_labels[per_mouse_stat], fontsize=8)
+            ax.set_ylabel(behavior_metric, fontsize=8)
             ax.tick_params(labelsize=7)
             ax.spines['top'].set_visible(False)
             ax.spines['right'].set_visible(False)
-
-        for ax_idx in range(len(present_regions), n_rows * n_cols):
-            axes[ax_idx // n_cols][ax_idx % n_cols].set_visible(False)
-
-        col_tag = 'mean_coef' if change_col == 'mean_pct_change' else 'peak_amp'
-        plt.suptitle(f'Mean % {col_tag} change vs {metric}\n[{kernel_1} vs {kernel_0}]',
-                     fontsize=12)
-        plt.tight_layout(rect=[0, 0, 1, 0.96])
-        fname = f"pct_change_{col_tag}_vs_{metric}"
-        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                        filename=fname, output_dir=perf_folder)
+        for idx in range(n_panels, n_rows * n_cols):
+            axes[idx // n_cols][idx % n_cols].set_visible(False)
+        stat_title = {'mean': metric_label, 'prop_up': f'Fraction increase ({metric_label})',
+                      'prop_down': f'Fraction decrease ({metric_label})'}[per_mouse_stat]
+        plt.suptitle(f"{stat_title} vs {behavior_metric} - {subset_name}\n[{kernel_pair_name}]", fontsize=11)
+        plt.tight_layout(rect=[0, 0, 1, 0.95])
+        fname = f"vs_performance_{name_tag}{granularity}_{behavior_metric}"
+        putils.save_figure_with_options(fig, ['png', 'pdf'], fname, output_dir=output_folder)
         plt.close(fig)
 
+    if all_rows:
+        pd.DataFrame(all_rows, columns=_STATS_LEDGER_COLS).to_csv(
+            os.path.join(output_folder, f"vs_performance_{name_tag}{granularity}_stats.txt"), sep='\t', index=False)
 
-def _plot_pct_change_by_area(
-        neuron_df, reward_groups, reward_group_labels,
-        ordered_regions, threshold,
-        output_folder, kernel_0, kernel_1):
-    """Mean pct_change per area, R+ vs R−, with Mann-Whitney U stars.
 
-    Four figures: {all, consistent} x {per_neuron, per_mouse}.
+def _run_kernel_consistency_analysis(
+        neuron_df, kernel_pair_name, subset_name, metric_col, metric_tag, metric_label,
+        subset_output_folder, area_groups, area_groups_flat, reward_group_labels,
+        perf_df, min_neurons_per_mouse, n_perm, stats_records, area_colors=None):
+    """Dispatcher for one (subset, metric): distribution (global/by_area/
+    by_area_group/per_mouse), barplots (global/by_area_group/by_area), and
+    vs_performance (global/by_area_group/by_area), writing into
+    {subset_output_folder}/{metric_tag}/{analysis_type}/{granularity}/.
+    By-area-group outputs only include area groups with at least
+    MIN_MICE_PER_REWARD_GROUP mice in each reward group.
     """
-    from scipy.stats import mannwhitneyu as _mwu
-
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-    present_regions = [r for r in ordered_regions
-                       if r in neuron_df['area_acronym_custom'].values]
-    if not present_regions:
-        return
-
-    n_rg = len(reward_groups)
-    bar_width = 0.8 / n_rg
-    x = np.arange(len(present_regions))
-    thr_label = 'no_thr' if threshold == 0 else f"gt{str(threshold).replace('.', 'p')}pct"
-
-    for subset_label in ['all', 'consistent']:
-        if subset_label == 'consistent':
-            sub_df = neuron_df[neuron_df['all_positive'] | neuron_df['all_negative']]
-            if threshold > 0:
-                sub_df = sub_df[np.abs(sub_df['pct_change']) > threshold]
-        else:
-            sub_df = neuron_df
-
-        for avg_method in ['per_neuron', 'per_mouse']:
-            # Collect values first so the sort key matches the plotted aggregation
-            rp_df = sub_df[sub_df['reward_group'] == 1]
-            all_vals = {}
-            for reward_group in reward_groups:
-                rg_df = sub_df[sub_df['reward_group'] == reward_group]
-                region_vals = []
-                for region in present_regions:
-                    region_rg = rg_df[rg_df['area_acronym_custom'] == region]
-                    if avg_method == 'per_mouse':
-                        v = [mouse_df['pct_change'].mean()
-                             for _, mouse_df in region_rg.groupby('mouse_id')
-                             if len(mouse_df) > 0]
-                    else:
-                        v = list(region_rg['pct_change'].dropna().values)
-                    region_vals.append(v)
-                all_vals[reward_group] = region_vals
-
-            # Sort by R+ aggregated mean (matches exactly what is plotted)
-            rp_vals = dict(zip(present_regions, all_vals.get(1, [[] for _ in present_regions])))
-            region_sort_key = {r: (np.mean(rp_vals[r]) if rp_vals[r] else 0.0)
-                               for r in present_regions}
-            sorted_regions = sorted(present_regions,
-                                    key=lambda r: region_sort_key.get(r, 0.0),
-                                    reverse=True)
-            # Reorder all_vals to match sorted_regions
-            region_idx = {r: i for i, r in enumerate(present_regions)}
-            all_vals = {rg: [vals[region_idx[r]] for r in sorted_regions]
-                        for rg, vals in all_vals.items()}
-
-            n_reg = len(sorted_regions)
-            fig, ax = plt.subplots(figsize=(6, max(4, n_reg * 0.55 + 1.5)))
-            y = np.arange(n_reg)
-            bar_rights = np.zeros(n_reg)
-            for rg_idx, reward_group in enumerate(reward_groups):
-                rg_label = reward_group_labels.get(reward_group, str(reward_group))
-                vals = all_vals[reward_group]
-                means = [np.mean(v) if v else 0.0 for v in vals]
-                sems  = [np.std(v, ddof=1) / np.sqrt(len(v)) if len(v) >= 2 else 0.0 for v in vals]
-                offset = (rg_idx - (n_rg - 1) / 2) * bar_width
-                ax.barh(y + offset, means, xerr=sems, height=bar_width,
-                        color=reward_colors.get(reward_group, 'gray'),
-                        label=rg_label, alpha=0.85, edgecolor='white',
-                        capsize=3, error_kw={'linewidth': 1.2})
-                if avg_method == 'per_mouse':
-                    for yi, v in zip(y + offset, vals):
-                        ax.scatter(v, np.full(len(v), yi),
-                                   color='k', s=12, zorder=5, alpha=0.6, linewidths=0)
-                bar_rights = np.maximum(bar_rights,
-                                        [abs(m) + s for m, s in zip(means, sems)])
-
-            if len(reward_groups) == 2:
-                rg_a, rg_b = reward_groups[0], reward_groups[1]
-                step = bar_rights.max() * 0.06 if bar_rights.max() > 0 else 1.0
-                for yi, fa, fb, xr in zip(y, all_vals[rg_a], all_vals[rg_b], bar_rights * 1.05):
-                    if len(fa) < 2 or len(fb) < 2:
-                        continue
-                    _, p = _mwu(fa, fb, alternative='two-sided')
-                    stars = '***' if p < 0.001 else ('**' if p < 0.01 else ('*' if p < 0.05 else ''))
-                    if stars:
-                        ax.text(xr + step * 0.1, yi, stars, ha='left', va='center',
-                                fontsize=10, fontweight='bold')
-
-            ax.axvline(0, color='k', linewidth=0.6, linestyle='--', alpha=0.4)
-            ax.set_yticks(y)
-            ax.set_yticklabels(sorted_regions, fontsize=9)
-            avg_lbl = 'per mouse' if avg_method == 'per_mouse' else 'per neuron'
-            ax.set_xlabel(f'Mean % amplitude change ({avg_lbl})', fontsize=10)
-            subset_title = 'consistent neurons' if subset_label == 'consistent' else 'all neurons'
-            thr_title = '' if threshold == 0 else f'  (>|{threshold:.0f}%|)'
-            ax.set_title(f'Δ amplitude – {subset_title}{thr_title} per area', fontsize=11)
-            ax.legend(fontsize=9)
-            ax.spines['top'].set_visible(False)
-            ax.spines['right'].set_visible(False)
-            plt.tight_layout()
-            fname = (f"pct_change_{subset_label}_{avg_method}_{thr_label}")
-            putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                            filename=fname, output_dir=output_folder)
-            plt.close(fig)
-
-
-
-def _plot_consistency_fraction_combined(
-        neuron_df, reward_groups, reward_group_labels,
-        ordered_regions, threshold,
-        output_folder, kernel_0, kernel_1):
-    """Three figures showing fraction of neurons with ANY consistent change
-    (up OR down combined) at a given threshold.
-
-    Figure 1 – by area, both reward groups on the same axes (grouped bars).
-    Figure 2 – all areas pooled, one bar per reward group.
-    Figure 3 – one figure per reward group: fraction per area
-                (to compare area contributions within each reward group).
-
-    Parameters
-    ----------
-    neuron_df : pd.DataFrame  (output of _build_neuron_change_table)
-    reward_groups : list of int
-    reward_group_labels : dict {int: str}
-    ordered_regions : list of str
-    threshold : float   (0 = no threshold)
-    output_folder : str
-    kernel_0, kernel_1 : str
-    """
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-    fname_thr = 'no_thr' if threshold == 0 else f'gt{str(threshold).replace(".", "p")}pct'
-    thr_title = 'no % threshold' if threshold == 0 else f'>|{threshold:.0f}%|'
-
-    present_regions = [r for r in ordered_regions
-                       if r in neuron_df['area_acronym_custom'].values]
-    if not present_regions:
-        return
-
-    def _count_consistent(sub_df, thr):
-        """Count neurons with any consistent change at threshold thr."""
-        if thr == 0:
-            return (sub_df['all_positive'] | sub_df['all_negative']).sum()
-        return (
-            (sub_df['all_positive'] & (sub_df['pct_change'] > thr)) |
-            (sub_df['all_negative'] & (sub_df['pct_change'] < -thr))
-        ).sum()
-
-    # ── Figure 1: by area, grouped bars (all reward groups on same axes) ──────
-    n_rg = len(reward_groups)
-    bar_width = 0.8 / n_rg
-    x = np.arange(len(present_regions))
-
-    fig1, ax1 = plt.subplots(figsize=(max(10, len(present_regions) * 0.75), 5))
-    for rg_idx, reward_group in enumerate(reward_groups):
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-        fractions = []
-        for region in present_regions:
-            region_rg = rg_df[rg_df['area_acronym_custom'] == region]
-            total = len(region_rg)
-            if total == 0:
-                fractions.append(0.0)
-            else:
-                fractions.append(100.0 * _count_consistent(region_rg, threshold) / total)
-        offset = (rg_idx - (n_rg - 1) / 2) * bar_width
-        ax1.bar(x + offset, fractions, width=bar_width,
-                color=reward_colors.get(reward_group, 'gray'),
-                label=rg_label, alpha=0.85, edgecolor='white')
-
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(present_regions, rotation=45, ha='right', fontsize=9)
-    ax1.set_ylabel('% neurons', fontsize=10)
-    ax1.set_title(
-        f"% neurons – consistent changes (up or down) {thr_title} per area"
-        f"\n[{kernel_1} vs {kernel_0}]",
-        fontsize=11
-    )
-    ax1.legend(fontsize=9)
-    ax1.spines["top"].set_visible(False)
-    ax1.spines["right"].set_visible(False)
-    plt.tight_layout()
-    putils.save_figure_with_options(
-        fig1, file_formats=['png', 'pdf'],
-        filename=f"frac_cst_{fname_thr}_areas",
-        output_dir=output_folder)
-    plt.close(fig1)
-
-    # ── Figure 2: all areas pooled, one bar per reward group ──────────────────
-    fig2, ax2 = plt.subplots(figsize=(4, 5))
-    overall_fractions = []
-    overall_labels = []
-    overall_colors = []
-    for reward_group in reward_groups:
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-        total = len(rg_df)
-        frac = (100.0 * _count_consistent(rg_df, threshold) / total) if total > 0 else 0.0
-        overall_fractions.append(frac)
-        overall_labels.append(rg_label)
-        overall_colors.append(reward_colors.get(reward_group, 'gray'))
-
-    ax2.bar(overall_labels, overall_fractions, color=overall_colors,
-            alpha=0.85, edgecolor='white', width=0.5)
-    ax2.set_ylabel('% neurons', fontsize=10)
-    ax2.set_title(
-        f"% neurons – consistent changes (all areas pooled)\n{thr_title}"
-        f"\n[{kernel_1} vs {kernel_0}]",
-        fontsize=11
-    )
-    ax2.spines["top"].set_visible(False)
-    ax2.spines["right"].set_visible(False)
-    plt.tight_layout()
-    putils.save_figure_with_options(
-        fig2, file_formats=['png', 'pdf'],
-        filename=f"frac_cst_{fname_thr}_areas",
-        output_dir=output_folder)
-    plt.close(fig2)
-
-    # ── Figure 3: per reward group, fraction per area (area contribution) ─────
-    for reward_group in reward_groups:
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-        color = reward_colors.get(reward_group, 'gray')
-
-        fractions = []
-        for region in present_regions:
-            region_rg = rg_df[rg_df['area_acronym_custom'] == region]
-            total = len(region_rg)
-            if total == 0:
-                fractions.append(0.0)
-            else:
-                fractions.append(100.0 * _count_consistent(region_rg, threshold) / total)
-
-        fig3, ax3 = plt.subplots(figsize=(max(10, len(present_regions) * 0.75), 5))
-        ax3.bar(present_regions, fractions, color=color, alpha=0.85, edgecolor='white')
-        ax3.set_xticks(range(len(present_regions)))
-        ax3.set_xticklabels(present_regions, rotation=45, ha='right', fontsize=9)
-        ax3.set_ylabel('% neurons', fontsize=10)
-        ax3.set_title(
-            f"Area contribution – consistent changes – {rg_label} {thr_title}"
-            f"\n[{kernel_1} vs {kernel_0}]",
-            fontsize=11
-        )
-        ax3.spines["top"].set_visible(False)
-        ax3.spines["right"].set_visible(False)
-        plt.tight_layout()
-        putils.save_figure_with_options(
-            fig3, file_formats=['png', 'pdf'],
-            filename=f"area_contrib_cst__{rg_label}",
-            output_dir=output_folder)
-        plt.close(fig3)
-
-
-def _plot_pct_change_distribution(
-        neuron_df, reward_groups, reward_group_labels,
-        output_folder, kernel_0, kernel_1):
-    """Histogram of per-neuron % weight change, overlaid by reward group.
-
-    Plots ALL neurons (no threshold filter) to help choose thresholds.
-    When exactly two reward groups are present, a Mann-Whitney U test is
-    run and the p-value is annotated on the figure.
-
-    Parameters
-    ----------
-    neuron_df : pd.DataFrame
-        Full table from _build_neuron_change_table.
-    reward_groups : list of int
-    reward_group_labels : dict  {int: str}
-    output_folder : str
-    kernel_0, kernel_1 : str
-    """
-    from scipy import stats
-
+    # Drop neurons with no value for this metric (e.g. sign-switch exclusions)
+    # so min_neurons_per_mouse counts only neurons that actually contribute.
+    neuron_df = neuron_df.dropna(subset=[metric_col])
     if neuron_df.empty:
         return
+    metric_folder = os.path.join(subset_output_folder, metric_tag)
+    ordered_areas =[a for g in area_groups.values() for a in g
+                     if a in neuron_df['area_acronym_custom'].values]
+    eligible_groups = (_area_groups_with_enough_mice(neuron_df, area_groups_flat, min_neurons_per_mouse)
+                       if 'area_group' in neuron_df.columns else {})
+    ordered_area_groups = list(eligible_groups)
+
+    dist_folder = os.path.join(metric_folder, 'distribution')
+    _plot_distribution_with_test(neuron_df, metric_col, metric_label, None, None,
+                                  os.path.join(dist_folder, 'global'), kernel_pair_name, subset_name,
+                                  metric_tag, reward_group_labels, n_perm, stats_records)
+    # Per-area (fine) granularity disabled for now -- too slow.
+    # _plot_distribution_with_test(neuron_df, metric_col, metric_label, 'area_acronym_custom', ordered_areas,
+    #                               os.path.join(dist_folder, 'by_area'), kernel_pair_name, subset_name,
+    #                               metric_tag, reward_group_labels, n_perm, stats_records)
+    _plot_distribution_with_test(neuron_df, metric_col, metric_label, 'area_group', ordered_area_groups,
+                                  os.path.join(dist_folder, 'by_area_group'), kernel_pair_name, subset_name,
+                                  metric_tag, reward_group_labels, n_perm, stats_records)
+    _plot_distribution_per_mouse(neuron_df, metric_col, metric_label, os.path.join(dist_folder, 'per_mouse'),
+                                  kernel_pair_name, subset_name, reward_group_labels)
+
+    _plot_metric_brain_slices(neuron_df, metric_col, metric_label, os.path.join(metric_folder, 'brain_slices'),
+                              f"{metric_label} - {subset_name} [{kernel_pair_name}]", reward_group_labels)
+
+    bar_folder = os.path.join(metric_folder, 'barplots')
+    _plot_barplot_with_test(neuron_df, metric_col, metric_label, None, None,
+                             os.path.join(bar_folder, 'global'), kernel_pair_name, subset_name, metric_tag,
+                             reward_group_labels, min_neurons_per_mouse, n_perm, stats_records)
+    _plot_barplot_with_test(neuron_df, metric_col, metric_label, 'area_group', ordered_area_groups,
+                             os.path.join(bar_folder, 'by_area_group'), kernel_pair_name, subset_name, metric_tag,
+                             reward_group_labels, min_neurons_per_mouse, n_perm, stats_records,
+                             area_colors=area_colors)
+    up_down_folder = os.path.join(metric_folder, 'barplots_up_down')
+    _plot_up_down_barplot(neuron_df, metric_col, metric_label, None, None,
+                          os.path.join(up_down_folder, 'global'), kernel_pair_name, subset_name,
+                          reward_group_labels)
+    _plot_up_down_barplot(neuron_df, metric_col, metric_label, 'area_group', ordered_area_groups,
+                          os.path.join(up_down_folder, 'by_area_group'), kernel_pair_name, subset_name,
+                          reward_group_labels)
+    # _plot_barplot_with_test(neuron_df, metric_col, metric_label, 'area_acronym_custom', ordered_areas,
+    #                          os.path.join(bar_folder, 'by_area'), kernel_pair_name, subset_name, metric_tag,
+    #                          reward_group_labels, min_neurons_per_mouse, n_perm, stats_records)
 
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-
-    fig, ax = plt.subplots(figsize=(7, 4))
-
-    group_values = {}
-    for reward_group in reward_groups:
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        values = neuron_df.loc[neuron_df['reward_group'] == reward_group, 'pct_change'].values
-        if len(values) == 0:
-            continue
-        group_values[reward_group] = values
-        color = reward_colors.get(reward_group, 'gray')
-        ax.hist(values, bins=50, color=color, alpha=0.5,
-                label=f"{rg_label} (n={len(values)})",
-                density=True, edgecolor='none')
-
-    ax.axvline(0, color='black', lw=1, ls='--')
-    ax.set_xlabel('% amplitude change  (peak|w₁| − peak|w₀|) / (peak|w₁| + peak|w₀|)', fontsize=9)
-    ax.set_ylabel('Density', fontsize=9)
-
-    # Mann-Whitney U test when exactly two groups are available
-    stat_text = ''
-    keys = list(group_values.keys())
-    if len(keys) == 2:
-        v1, v2 = group_values[keys[0]], group_values[keys[1]]
-        _, p = stats.mannwhitneyu(v1, v2, alternative='two-sided')
-        if p < 0.001:
-            p_str = 'p < 0.001'
-        elif p < 0.01:
-            p_str = f'p = {p:.3f}'
-        else:
-            p_str = f'p = {p:.2f}'
-        lbl0 = reward_group_labels.get(keys[0], str(keys[0]))
-        lbl1 = reward_group_labels.get(keys[1], str(keys[1]))
-        stat_text = f'Mann-Whitney U\n{lbl0} vs {lbl1}: {p_str}'
-        ax.text(0.97, 0.95, stat_text,
-                transform=ax.transAxes, fontsize=8,
-                va='top', ha='right',
-                bbox=dict(boxstyle='round,pad=0.3', fc='white', alpha=0.7, ec='lightgray'))
-
-    ax.set_title(
-        f"Distribution of weight change\n{kernel_1} vs {kernel_0}",
-        fontsize=11
-    )
-    ax.legend(fontsize=9)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
-    plt.tight_layout()
-
-    fname = f"pct_change_distribution_{kernel_1}_vs_{kernel_0}"
-    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'], filename=fname,
-                                    output_dir=output_folder)
-    plt.close(fig)
-
-
-def _plot_consistent_neurons_encoding_profile(
-        neuron_df, df, reward_groups, reward_group_labels,
-        output_folder, kernel_0, kernel_1, encoding_models=None,
-        area_groups=None, ordered_regions=None,
-        excluded_models=None):
-    """Horizontal bar chart: % consistently-up / consistently-down neurons that
-    are LRT-significant for each encoding model, vs all-neuron baseline.
-
-    Produces three sets of figures per direction ('up'/'down'):
-      1. Pooled (all areas).
-      2. Per area_group  → per_area_group/ subfolder.
-      3. Per area        → per_area/ subfolder.
-
-    Bars    : % consistent neurons that are LRT-significant.
-    Dashed  : % of ALL neurons in that reward group (baseline).
-    Colours : forestgreen = R+, crimson = R-.
-    """
-    from scipy.stats import fisher_exact
-
-    lrt_cols = ['mouse_id', 'neuron_id', 'model_name', 'lrt_significant']
-    if not all(c in df.columns for c in lrt_cols):
-        print("[kernel_consistency] 'lrt_significant' column missing – "
-              "skipping encoding profile plot.")
-        return
-
-    _EXCLUDE = excluded_models if excluded_models is not None else [
-        'random_split', '1whisker_kernel'
-    ]
-
-    if encoding_models is None:
-        encoding_models = sorted(
-            m for m in df['model_name'].dropna().unique() if m != 'full'
-        )
-    encoding_models = [m for m in encoding_models
-                       if not any(ex in m for ex in _EXCLUDE)]
-
-    if not encoding_models:
-        print("[kernel_consistency] No reduced models found for profile plot.")
-        return
-
-    # One LRT row per (mouse_id, neuron_id, model_name) — avoid fold duplication
-    lrt_df = (
-        df[df['model_name'].isin(encoding_models)][lrt_cols]
-        .dropna(subset=['lrt_significant'])
-        .groupby(['mouse_id', 'neuron_id', 'model_name'])['lrt_significant']
-        .first()
-        .reset_index()
-    )
-
-    model_short = {m: m.replace('_encoding', '').replace('_', ' ')
-                   for m in encoding_models}
-    reward_colors = {1: 'forestgreen', 0: 'crimson'}
-    n_models = len(encoding_models)
-    n_rg = len(reward_groups)
-    bar_height = 0.7 / n_rg
-    y_pos = np.arange(n_models)
-
-    def _sig_label(p):
-        if p < 0.001: return '***'
-        if p < 0.01:  return '**'
-        if p < 0.05:  return '*'
-        return ''
-
-    def _draw_profile(ax, neuron_sub, direction, avg_method='per_neuron'):
-        """Draw encoding-profile barh into ax for a subset of neurons.
-
-        avg_method='per_neuron' : fraction pooled across all neurons.
-        avg_method='per_mouse'  : mean ± SEM of per-mouse fractions.
-        Fisher's exact test is always per-neuron (count-based).
-        """
-        for rg_idx, reward_group in enumerate(reward_groups):
-            rg_label = reward_group_labels.get(reward_group, str(reward_group))
-            rg_df = neuron_sub[neuron_sub['reward_group'] == reward_group]
-            color = reward_colors.get(reward_group, 'gray')
-
-            all_ids = rg_df[['mouse_id', 'neuron_id']].drop_duplicates()
-            if direction == 'up':
-                cons_ids = rg_df.loc[rg_df['all_positive'],
-                                     ['mouse_id', 'neuron_id']].drop_duplicates()
-            else:
-                cons_ids = rg_df.loc[rg_df['all_negative'],
-                                     ['mouse_id', 'neuron_id']].drop_duplicates()
-
-            n_cons = len(cons_ids)
-            fracs_cons, fracs_base, sems_cons, pvals = [], [], [], []
-
-            for model in encoding_models:
-                model_lrt = lrt_df[lrt_df['model_name'] == model]
-                all_m  = all_ids.merge(model_lrt, on=['mouse_id', 'neuron_id'])
-                cons_m = cons_ids.merge(model_lrt, on=['mouse_id', 'neuron_id'])
-
-                if avg_method == 'per_mouse':
-                    mc = [g['lrt_significant'].mean() * 100
-                          for _, g in cons_m.groupby('mouse_id')]
-                    mb = [g['lrt_significant'].mean() * 100
-                          for _, g in all_m.groupby('mouse_id')]
-                    fracs_cons.append(np.mean(mc) if mc else 0.0)
-                    sems_cons.append(
-                        np.std(mc, ddof=1) / np.sqrt(len(mc)) if len(mc) > 1 else 0.0)
-                    fracs_base.append(np.mean(mb) if mb else 0.0)
-                else:
-                    fracs_cons.append(
-                        cons_m['lrt_significant'].mean() * 100 if len(cons_m) > 0 else 0.0)
-                    sems_cons.append(0.0)
-                    fracs_base.append(
-                        all_m['lrt_significant'].mean() * 100 if len(all_m) > 0 else 0.0)
-
-                # Fisher's exact (per-neuron counts)
-                cons_sig     = int(cons_m['lrt_significant'].sum())
-                cons_not_sig = len(cons_m) - cons_sig
-                non_cons_m   = all_m.merge(
-                    cons_ids, on=['mouse_id', 'neuron_id'], how='left', indicator=True)
-                non_cons_m       = non_cons_m[non_cons_m['_merge'] == 'left_only']
-                non_cons_sig     = int(non_cons_m['lrt_significant'].sum())
-                non_cons_not_sig = len(non_cons_m) - non_cons_sig
-                contingency = [[cons_sig, cons_not_sig],
-                               [non_cons_sig, non_cons_not_sig]]
-                if cons_not_sig + non_cons_not_sig > 0 and cons_sig + non_cons_sig > 0:
-                    _, p = fisher_exact(contingency, alternative='two-sided')
-                else:
-                    p = 1.0
-                pvals.append(p)
-
-            offset = (rg_idx - (n_rg - 1) / 2) * bar_height
-            xerr = sems_cons if avg_method == 'per_mouse' else None
-            bars = ax.barh(y_pos + offset, fracs_cons, height=bar_height, color=color,
-                           alpha=0.85, label=f"{rg_label} consistent (n={n_cons})",
-                           edgecolor='white', xerr=xerr,
-                           error_kw={'ecolor': color, 'capsize': 2, 'elinewidth': 1.2})
-
-            for yi, b in zip(y_pos, fracs_base):
-                ax.vlines(b, yi + offset - bar_height / 2, yi + offset + bar_height / 2,
-                          colors=color, linestyles='--', linewidth=1.5)
-
-            for bar, p in zip(bars, pvals):
-                lbl = _sig_label(p)
-                if lbl:
-                    ax.text(bar.get_width() + 0.8,
-                            bar.get_y() + bar.get_height() / 2,
-                            lbl, ha='left', va='center',
-                            fontsize=10, color=color, fontweight='bold')
-
-        ax.set_yticks(y_pos)
-        ax.set_yticklabels([model_short[m] for m in encoding_models], fontsize=9)
-        xlabel = ('% LRT-significant (mean ± SEM per mouse)'
-                  if avg_method == 'per_mouse' else '% LRT-significant neurons')
-        ax.set_xlabel(xlabel, fontsize=9)
-        ax.spines['top'].set_visible(False)
-        ax.spines['right'].set_visible(False)
-
-    panel_h = max(4, n_models * 0.55 + 1.5)
-
-    for avg_method in ['per_neuron', 'per_mouse']:
-        _avg_suffix = f'_{avg_method}'
-
-        # ── 1. Pooled (all areas) ─────────────────────────────────────────────
-        for direction in ['up', 'down']:
-            fig, ax = plt.subplots(figsize=(6, panel_h))
-            _draw_profile(ax, neuron_df, direction, avg_method)
-            dir_label = 'increase' if direction == 'up' else 'decrease'
-            ax.set_title(
-                f"Encoding profile – consistently {dir_label}ing neurons\n"
-                f"[{kernel_1} vs {kernel_0}]  "
-                f"(dashed = baseline, * Fisher's exact p<0.05)",
-                fontsize=10)
-            ax.legend(fontsize=8)
-            plt.tight_layout()
-            fname = (f"{direction}_{_avg_suffix}")
-            putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                            filename=fname, output_dir=output_folder)
-            plt.close(fig)
-
-        # ── 2. Per area_group ─────────────────────────────────────────────────
-        if area_groups is not None:
-            ag_folder = os.path.join(output_folder, 'per_area_group')
-            os.makedirs(ag_folder, exist_ok=True)
-            groups_present = {gn: areas for gn, areas in area_groups.items()
-                              if any(a in neuron_df['area_acronym_custom'].values
-                                     for a in areas)}
-            if groups_present:
-                for direction in ['up', 'down']:
-                    n_g = len(groups_present)
-                    n_cols_g = min(3, n_g)
-                    n_rows_g = math.ceil(n_g / n_cols_g)
-                    fig, axes = plt.subplots(
-                        n_rows_g, n_cols_g,
-                        figsize=(6 * n_cols_g, panel_h * n_rows_g),
-                        squeeze=False)
-                    for g_idx, (gn, areas) in enumerate(groups_present.items()):
-                        ax = axes[g_idx // n_cols_g][g_idx % n_cols_g]
-                        sub = neuron_df[neuron_df['area_acronym_custom'].isin(areas)]
-                        _draw_profile(ax, sub, direction, avg_method)
-                        ax.set_title(gn, fontsize=10, fontweight='bold')
-                        if g_idx == 0:
-                            ax.legend(fontsize=7)
-                    for g_idx in range(len(groups_present), n_rows_g * n_cols_g):
-                        axes[g_idx // n_cols_g][g_idx % n_cols_g].set_visible(False)
-                    dir_label = 'increase' if direction == 'up' else 'decrease'
-                    plt.suptitle(
-                        f"Encoding profile per area group – consistently {dir_label}ing\n"
-                        f"[{kernel_1} vs {kernel_0}]  (dashed = baseline, * Fisher p<0.05)",
-                        fontsize=11)
-                    plt.tight_layout(rect=[0, 0, 1, 0.96])
-                    fname = (f"{direction}_{_avg_suffix}")
-                    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                                    filename=fname, output_dir=ag_folder)
-                    plt.close(fig)
-
-        # ── 3. Per area ───────────────────────────────────────────────────────
-        if ordered_regions is not None:
-            area_folder = os.path.join(output_folder, 'per_area')
-            os.makedirs(area_folder, exist_ok=True)
-            regions_present = [r for r in ordered_regions
-                               if r in neuron_df['area_acronym_custom'].values]
-            if regions_present:
-                for direction in ['up', 'down']:
-                    n_r = len(regions_present)
-                    n_cols_r = min(5, n_r)
-                    n_rows_r = math.ceil(n_r / n_cols_r)
-                    fig, axes = plt.subplots(
-                        n_rows_r, n_cols_r,
-                        figsize=(6 * n_cols_r, panel_h * n_rows_r),
-                        squeeze=False)
-                    for r_idx, region in enumerate(regions_present):
-                        ax = axes[r_idx // n_cols_r][r_idx % n_cols_r]
-                        sub = neuron_df[neuron_df['area_acronym_custom'] == region]
-                        _draw_profile(ax, sub, direction, avg_method)
-                        ax.set_title(region, fontsize=10, fontweight='bold')
-                        if r_idx == 0:
-                            ax.legend(fontsize=7)
-                    for r_idx in range(len(regions_present), n_rows_r * n_cols_r):
-                        axes[r_idx // n_cols_r][r_idx % n_cols_r].set_visible(False)
-                    dir_label = 'increase' if direction == 'up' else 'decrease'
-                    plt.suptitle(
-                        f"Encoding profile per area – consistently {dir_label}ing\n"
-                        f"[{kernel_1} vs {kernel_0}]  (dashed = baseline, * Fisher p<0.05)",
-                        fontsize=11)
-                    plt.tight_layout(rect=[0, 0, 1, 0.96])
-                    fname = (f"{direction}_{_avg_suffix}")
-                    putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                                    filename=fname, output_dir=area_folder)
-                    plt.close(fig)
-
-
-def _plot_kernel_correlation_matrices(
-        neuron_df, df, reward_groups, reward_group_labels,
-        output_folder, kernel_0, kernel_1):
-    """
-    For each reward group, compute and plot the average pairwise correlation
-    matrix between all kernels, separately for:
-      - consistent-up neurons  (all_positive == True)
-      - consistent-down neurons (all_negative == True)
-      - non-consistent neurons
-
-    For each neuron, a (n_kernels × n_kernels) correlation matrix is computed
-    by correlating the time-series vectors of each pair of kernels (Pearson r
-    between the two coefficient vectors across time lags).  These per-neuron
-    matrices are then averaged across neurons in each group.
-
-    One figure per reward group with 3 subplots side-by-side.
-    """
-    import re as _re
-    from scipy.stats import pearsonr
-
-    df_full = df[df['model_name'] == 'full'].copy()
-    if df_full.empty:
-        return
-
-    # ── auto-detect kernel names from a sample row ────────────────────────────
-    sample_preds = df_full.iloc[0]['predictors_full']
-    kernel_pattern = _re.compile(r'^(.+)_t[+-]\d+\.\d+s$')
-    seen = set()
-    detected = []
-    for p in sample_preds:
-        p_str = p.decode() if isinstance(p, bytes) else p
-        m = kernel_pattern.match(p_str)
-        if m:
-            kb = m.group(1)
-            if kb not in seen:
-                seen.add(kb)
-                detected.append(kb)
-
-    # ── order kernels by biological grouping ─────────────────────────────────
-    # Group order: whisker hits, whisker misses, auditory, piezo reward (whisker),
-    # piezo reward (auditory), then anything remaining (motor, jaw, etc.)
-    GROUP_ORDER = [
-        'whisker_hits_stim_',
-        'whisker_misses_stim_',
-        'auditory_stim_',
-        'piezo_reward_au_',   # au before plain so prefix match doesn't swallow it
-        'piezo_reward_',
-    ]
-
-    def _sort_key(kname):
-        for rank, prefix in enumerate(GROUP_ORDER):
-            if kname.startswith(prefix):
-                # secondary sort: numeric suffix (0 before 1 before 2 …)
-                suffix_match = _re.search(r'(\d+)$', kname)
-                secondary = int(suffix_match.group(1)) if suffix_match else 0
-                return (rank, secondary, kname)
-        return (len(GROUP_ORDER), 0, kname)   # unknown → end
-
-    kernel_names_ordered = sorted(detected, key=_sort_key)
-
-    if len(kernel_names_ordered) < 2:
-        print("[_plot_kernel_correlation_matrices] fewer than 2 kernels found – skipping.")
-        return
-
-    n_k = len(kernel_names_ordered)
-
-    def _extract_vec(coef, preds, kernel_name):
-        pat = _re.compile(fr"^{_re.escape(kernel_name)}_t([+-]\d+\.\d+)s$")
-        matches = sorted(
-            [(float(m.group(1)), i)
-             for i, p in enumerate(preds)
-             if (m := pat.match(p.decode() if isinstance(p, bytes) else p))]
-        )
-        if not matches:
-            return None
-        return np.array(coef)[[i for _, i in matches]]
-
-    # ── per-neuron correlation matrix (n_kernels × n_kernels) ─────────────────
-    # Entry (i, j) = Pearson r between time series of kernel_i and kernel_j
-    # for this neuron.
-    neuron_corr_mats = {}  # (mouse_id, neuron_id) -> np.array (n_k, n_k)
-    for (mouse_id, neuron_id), grp in df_full.groupby(['mouse_id', 'neuron_id']):
-        row   = grp.iloc[0]
-        coef  = np.array(row['coef_full_mean'])
-        preds = row['predictors_full']
-        vecs  = [_extract_vec(coef, preds, k) for k in kernel_names_ordered]
-        if any(v is None for v in vecs):
-            continue
-
-        corr_mat = np.full((n_k, n_k), np.nan)
-        for i in range(n_k):
-            for j in range(n_k):
-                vi, vj = vecs[i], vecs[j]
-                if i == j:
-                    corr_mat[i, j] = 1.0
-                elif len(vi) == len(vj) and len(vi) >= 2:
-                    r, _ = pearsonr(vi, vj)
-                    corr_mat[i, j] = r
-        neuron_corr_mats[(mouse_id, neuron_id)] = corr_mat
-
-    if not neuron_corr_mats:
-        print("[_plot_kernel_correlation_matrices] no valid neuron records – skipping.")
-        return
-
-    def _group_avg_corr(uid_set):
-        """Mean correlation matrix across all neurons in uid_set."""
-        mats = [neuron_corr_mats[uid]
-                for uid in uid_set if uid in neuron_corr_mats]
-        if len(mats) < 2:
-            return None, 0
-        return np.nanmean(np.stack(mats), axis=0), len(mats)
-
-    short_labels = [k.replace('_stim', '').replace('_', '\n') for k in kernel_names_ordered]
-
-    for reward_group in reward_groups:
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        rg_df    = neuron_df[neuron_df['reward_group'] == reward_group]
-        if rg_df.empty:
-            continue
-
-        all_ids  = set(zip(rg_df['mouse_id'], rg_df['neuron_id']))
-        up_ids   = set(zip(rg_df.loc[rg_df['all_positive'],  'mouse_id'],
-                           rg_df.loc[rg_df['all_positive'],  'neuron_id']))
-        down_ids = set(zip(rg_df.loc[rg_df['all_negative'],  'mouse_id'],
-                           rg_df.loc[rg_df['all_negative'],  'neuron_id']))
-        non_ids  = all_ids - up_ids - down_ids
-
-        groups = [
-            ('consistent up',   up_ids,   '#2ca02c'),
-            ('consistent down', down_ids, '#d62728'),
-            ('non-consistent',  non_ids,  '#7f7f7f'),
-        ]
-
-        fig, axes = plt.subplots(1, 3, figsize=(6 * 3, 5.5))
-
-        for ax, (group_label, uid_set, color) in zip(axes, groups):
-            corr, n = _group_avg_corr(uid_set)
-            if corr is None:
-                ax.set_visible(False)
-                continue
-
-            im = ax.imshow(corr, cmap='RdBu_r', vmin=-1, vmax=1,
-                           aspect='auto', interpolation='nearest')
-            ax.set_xticks(range(n_k))
-            ax.set_yticks(range(n_k))
-            ax.set_xticklabels(short_labels, fontsize=7, rotation=45, ha='right')
-            ax.set_yticklabels(short_labels, fontsize=7)
-            ax.set_title(f'{group_label}  (n={n})', fontsize=10,
-                         color=color, fontweight='bold')
-
-            for i in range(n_k):
-                for j in range(n_k):
-                    ax.text(j, i, f'{corr[i, j]:.2f}',
-                            ha='center', va='center', fontsize=6,
-                            color='black' if abs(corr[i, j]) < 0.6 else 'white')
-
-            plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label='mean Pearson r')
-
-        fig.suptitle(
-            f'Average per-neuron kernel correlation matrices  [{kernel_1} vs {kernel_0}]  |  {rg_label}',
-            fontsize=12)
-        fig.tight_layout()
-        fname = f"kernel_corr_matrix_{kernel_1}_vs_{kernel_0}_{rg_label}"
-        putils.save_figure_with_options(fig, file_formats=['png', 'pdf'],
-                                        filename=fname, output_dir=output_folder)
-        plt.close(fig)
-
-
-def plot_kernel_consistency_by_area(
-        df,
-        kernel_0,
-        kernel_1,
-        area_groups,
-        area_colors,
-        output_folder,
-        reward_groups=None,
-        thresholds=None,
-        n_cols=3,
-        performance_csv=None):
-    """Plot kernel consistency analysis by brain area and reward group.
-
-    For each reward group, identifies neurons whose weight changes consistently
-    in the SAME direction across ALL lag bins when going from kernel_0 to
-    kernel_1, and optionally exceeds a % change threshold.
-
-    The percent change is::
-
-        pct_change = mean(w1 - w0) / (mean(|w0|) + ε) × 100
-
-    Produces four plot types
-    ------------------------
-    **Plot 1** (threshold = thresholds[0], default 1 %)
-        Average kernel_0 (light) and kernel_1 (bold) by brain area for neurons
-        with all-positive / all-negative delta **and** |pct_change| > 1 %.
-        One figure for 'increase', one for 'decrease', per reward group.
-
-    **Plot 2** (threshold = thresholds[1], default 10 %)
-        Same as Plot 1 but with the stricter 10 % threshold.
-
-    **Plot 3** (per threshold)
-        Grouped bar chart: percentage of neurons with consistent increase /
-        decrease per brain area, one bar cluster per reward group.
-
-    **Plot 4** (no threshold filter)
-        Violin distribution of per-neuron pct_change split by reward group –
-        to help choose an appropriate threshold.
-
-    Parameters
-    ----------
-    df : pd.DataFrame
-        Merged dataframe with 'model_name', 'coef_full_mean', 'predictors_full',
-        'area_acronym_custom', 'reward_group' columns.
-    kernel_0 : str
-        Reference kernel (e.g. ``'whisker_hits_stim_0'``).
-    kernel_1 : str
-        Comparison kernel (e.g. ``'whisker_hits_stim_1'``).
-    area_groups : dict   {group_name: [area, ...]}
-    area_colors : dict   {group_name: hex_color}
-    output_folder : str
-    reward_groups : list of int, optional   Default ``[1, 0]``.
-    thresholds : list of float, optional    Default ``[1.0, 10.0]``.
-    n_cols : int                             Default ``3``.
-    """
-    if reward_groups is None:
-        reward_groups = [1, 0]
-    if thresholds is None:
-        thresholds = [1.0, 10.0]
-
-    reward_group_labels = {1: 'R+', 0: 'R-'}
-    os.makedirs(output_folder, exist_ok=True)
-
-    perf_df = None
-    if performance_csv is not None and os.path.exists(performance_csv):
-        perf_df = pd.read_csv(performance_csv)[['mouse_id', 'outcome_w', 'd_prime_w']]
-    elif performance_csv is not None:
-        print(f"[kernel_consistency] WARNING: performance_csv not found: {performance_csv}")
-
-    # Build region ordering and colour map
-    region_to_color = {}
-    for group_name, areas in area_groups.items():
-        for area in areas:
-            region_to_color[area] = area_colors[group_name]
-
-    ordered_regions = []
-    for group_name, areas in area_groups.items():
-        for area in areas:
-            if area in df['area_acronym_custom'].values:
-                ordered_regions.append(area)
-
-    # ── per-neuron change statistics ──────────────────────────────────────────
-    print(f"[kernel_consistency] Building change table: {kernel_0} → {kernel_1} ...")
-    neuron_df = _build_neuron_change_table(df, kernel_0, kernel_1)
-
-    if neuron_df.empty:
-        print(f"[WARNING] No neurons found with both '{kernel_0}' and '{kernel_1}'.")
-        return
-
-    print(f"[kernel_consistency] {len(neuron_df)} neurons analysed.")
-
-    # ── Plot 4: distribution of % change per reward group ─────────────────────
-    _plot_pct_change_distribution(
-        neuron_df=neuron_df,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        output_folder=output_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
-
-    # ── Encoding profile (LRT) for consistently-changing neurons ─────────────
-    _plot_consistent_neurons_encoding_profile(
-        neuron_df=neuron_df,
-        df=df,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        output_folder=output_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-        area_groups=area_groups,
-        ordered_regions=ordered_regions,
-    )
-
-    # ── Kernel correlation matrices per group ─────────────────────────────────
-    # _plot_kernel_correlation_matrices(
-    #     neuron_df=neuron_df,
-    #     df=df,
-    #     reward_groups=reward_groups,
-    #     reward_group_labels=reward_group_labels,
-    #     output_folder=output_folder,
-    #     kernel_0=kernel_0,
-    #     kernel_1=kernel_1,
-    # )
-
-    # ── No % threshold: fraction chart + average kernel plots ─────────────────
-    no_thr_folder = os.path.join(output_folder, 'thr_none')
-    os.makedirs(no_thr_folder, exist_ok=True)
-    _plot_consistency_fraction_by_area(
-        neuron_df=neuron_df,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        ordered_regions=ordered_regions,
-        threshold=0,
-        output_folder=no_thr_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
-    _plot_consistency_fraction_combined(
-        neuron_df=neuron_df,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        ordered_regions=ordered_regions,
-        threshold=0,
-        output_folder=no_thr_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
-    _plot_pct_change_by_area(
-        neuron_df=neuron_df,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        ordered_regions=ordered_regions,
-        threshold=0,
-        output_folder=no_thr_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
-    neuron_df_mean = neuron_df.copy()
-    neuron_df_mean['pct_change'] = neuron_df_mean['mean_pct_change']
-    _no_thr_mean_folder = os.path.join(no_thr_folder, 'mean_coef')
-    os.makedirs(_no_thr_mean_folder, exist_ok=True)
-    _plot_consistency_fraction_by_area(
-        neuron_df=neuron_df_mean,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        ordered_regions=ordered_regions,
-        threshold=0,
-        output_folder=_no_thr_mean_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
-    _plot_pct_change_by_area(
-        neuron_df=neuron_df_mean,
-        reward_groups=reward_groups,
-        reward_group_labels=reward_group_labels,
-        ordered_regions=ordered_regions,
-        threshold=0,
-        output_folder=_no_thr_mean_folder,
-        kernel_0=kernel_0,
-        kernel_1=kernel_1,
-    )
     if perf_df is not None:
-        _plot_pct_change_vs_performance(
-            neuron_df=neuron_df,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=0,
-            output_folder=no_thr_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-            perf_df=perf_df,
-            change_col='pct_change',
-        )
-        _plot_pct_change_vs_performance(
-            neuron_df=neuron_df_mean,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=0,
-            output_folder=_no_thr_mean_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-            perf_df=perf_df,
-            change_col='mean_pct_change',
-        )
-    for reward_group in reward_groups:
-        rg_label = reward_group_labels.get(reward_group, str(reward_group))
-        rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-        rg_folder = os.path.join(no_thr_folder, rg_label)
-        os.makedirs(rg_folder, exist_ok=True)
-
-        up_df = rg_df[rg_df['all_positive']]
-        _plot_consistent_kernels_by_area(
-            neuron_df=up_df,
-            ordered_regions=ordered_regions,
-            region_to_color=region_to_color,
-            threshold=0,
-            direction='up',
-            output_folder=rg_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-            reward_label=rg_label,
-            n_cols=n_cols,
-        )
-
-        down_df = rg_df[rg_df['all_negative']]
-        _plot_consistent_kernels_by_area(
-            neuron_df=down_df,
-            ordered_regions=ordered_regions,
-            region_to_color=region_to_color,
-            threshold=0,
-            direction='down',
-            output_folder=rg_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-            reward_label=rg_label,
-            n_cols=n_cols,
-        )
-
-    # ── Plots 1, 2, 3 per threshold ───────────────────────────────────────────
-    for threshold in thresholds:
-        thr_folder = os.path.join(output_folder,
-                                  f"thr_{str(threshold).replace('.', 'p')}pct")
-        os.makedirs(thr_folder, exist_ok=True)
-
-        # Plot 3 – fraction per area (all reward groups on same figure)
-        _plot_consistency_fraction_by_area(
-            neuron_df=neuron_df,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=threshold,
-            output_folder=thr_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-        )
-        _plot_consistency_fraction_combined(
-            neuron_df=neuron_df,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=threshold,
-            output_folder=thr_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-        )
-        _plot_pct_change_by_area(
-            neuron_df=neuron_df,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=threshold,
-            output_folder=thr_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-        )
-
-        # Plots 1/2 – average kernels per reward group
-        for reward_group in reward_groups:
-            rg_label = reward_group_labels.get(reward_group, str(reward_group))
-            rg_df = neuron_df[neuron_df['reward_group'] == reward_group]
-
-            rg_folder = os.path.join(thr_folder, rg_label)
-            os.makedirs(rg_folder, exist_ok=True)
-
-            # Consistently UP
-            up_df = rg_df[rg_df['all_positive'] & (rg_df['pct_change'] > threshold)]
-            _plot_consistent_kernels_by_area(
-                neuron_df=up_df,
-                ordered_regions=ordered_regions,
-                region_to_color=region_to_color,
-                threshold=threshold,
-                direction='up',
-                output_folder=rg_folder,
-                kernel_0=kernel_0,
-                kernel_1=kernel_1,
-                reward_label=rg_label,
-                n_cols=n_cols,
-            )
-
-            # Consistently DOWN
-            down_df = rg_df[rg_df['all_negative'] & (rg_df['pct_change'] < -threshold)]
-            _plot_consistent_kernels_by_area(
-                neuron_df=down_df,
-                ordered_regions=ordered_regions,
-                region_to_color=region_to_color,
-                threshold=threshold,
-                direction='down',
-                output_folder=rg_folder,
-                kernel_0=kernel_0,
-                kernel_1=kernel_1,
-                reward_label=rg_label,
-                n_cols=n_cols,
-            )
-
-        # Mean-coef versions of fraction + pct_change plots
-        _thr_mean_folder = os.path.join(thr_folder, 'mean_coef')
-        os.makedirs(_thr_mean_folder, exist_ok=True)
-        neuron_df_mean = neuron_df.copy()
-        neuron_df_mean['pct_change'] = neuron_df_mean['mean_pct_change']
-        _plot_consistency_fraction_by_area(
-            neuron_df=neuron_df_mean,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=threshold,
-            output_folder=_thr_mean_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-        )
-        _plot_pct_change_by_area(
-            neuron_df=neuron_df_mean,
-            reward_groups=reward_groups,
-            reward_group_labels=reward_group_labels,
-            ordered_regions=ordered_regions,
-            threshold=threshold,
-            output_folder=_thr_mean_folder,
-            kernel_0=kernel_0,
-            kernel_1=kernel_1,
-        )
-        if perf_df is not None:
-            _plot_pct_change_vs_performance(
-                neuron_df=neuron_df,
-                reward_groups=reward_groups,
-                reward_group_labels=reward_group_labels,
-                ordered_regions=ordered_regions,
-                threshold=threshold,
-                output_folder=thr_folder,
-                kernel_0=kernel_0,
-                kernel_1=kernel_1,
-                perf_df=perf_df,
-                change_col='pct_change',
-            )
-            _plot_pct_change_vs_performance(
-                neuron_df=neuron_df_mean,
-                reward_groups=reward_groups,
-                reward_group_labels=reward_group_labels,
-                ordered_regions=ordered_regions,
-                threshold=threshold,
-                output_folder=_thr_mean_folder,
-                kernel_0=kernel_0,
-                kernel_1=kernel_1,
-                perf_df=perf_df,
-                change_col='mean_pct_change',
-            )
+        # Per-mouse mean of the metric, then the fraction of the mouse's neurons
+        # with an increase / a decrease, each against performance.
+        for per_mouse_stat, folder_name in (('mean', 'vs_performance'),
+                                            ('prop_up', 'vs_performance_prop_up'),
+                                            ('prop_down', 'vs_performance_prop_down')):
+            perf_folder = os.path.join(metric_folder, folder_name)
+            _plot_vs_performance(neuron_df, metric_col, metric_label, None, None,
+                                  os.path.join(perf_folder, 'global'), kernel_pair_name, subset_name, metric_tag,
+                                  reward_group_labels, min_neurons_per_mouse, perf_df, stats_records,
+                                  per_mouse_stat=per_mouse_stat)
+            _plot_vs_performance(neuron_df, metric_col, metric_label, 'area_group', ordered_area_groups,
+                                  os.path.join(perf_folder, 'by_area_group'), kernel_pair_name, subset_name, metric_tag,
+                                  reward_group_labels, min_neurons_per_mouse, perf_df, stats_records,
+                                  per_mouse_stat=per_mouse_stat)
+        # _plot_vs_performance(neuron_df, metric_col, metric_label, 'area_acronym_custom', ordered_areas,
+        #                       os.path.join(perf_folder, 'by_area'), kernel_pair_name, subset_name, metric_tag,
+        #                       reward_group_labels, min_neurons_per_mouse, perf_df, stats_records)
 
 
 # Bin size used during GLM fitting — converts spikes/bin → Hz

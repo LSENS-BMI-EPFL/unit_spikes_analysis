@@ -7,9 +7,9 @@ ROOT_PATH_AXEL = os.path.join(r"/mnt/lsens-analysis/", 'Axel_Bisi', 'NWBFull_bis
 ROOT_PATH_MYRIAM = os.path.join(r"/mnt/lsens-analysis/", 'Myriam_Hamon',
                                 'NWBFull')
 
-ROOT_PATH_AXEL = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWBFull_bis')
+ROOT_PATH_AXEL = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Axel_Bisi', 'NWB_ks4')
 ROOT_PATH_MYRIAM = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
-                                'NWBFull')
+                                'NWB_ks4')
 
 
 
@@ -25,14 +25,14 @@ if __name__ == '__main__':
     
     info_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', 'Myriam_Hamon',
                                 'mice_info')
-    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'combined_results')
+    output_path = os.path.join('\\\\sv-nas1.rcp.epfl.ch', 'Petersen-Lab', 'analysis', experimenter, 'combined_results_ks4')
 
     all_nwb_names = os.listdir(ROOT_PATH_AXEL)
     all_nwb_mice = [name.split('_')[0] for name in all_nwb_names]
 
-    myriam_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
-    all_nwb_names.extend(myriam_nwb_names)
-    all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
+    # myriam_nwb_names = os.listdir(ROOT_PATH_MYRIAM)
+    # all_nwb_names.extend(myriam_nwb_names)
+    # all_nwb_mice.extend([name.split('_')[0] for name in myriam_nwb_names])
 
 
     subject_ids = [
@@ -45,24 +45,26 @@ if __name__ == '__main__':
         "AB085", "AB104", "AB143", "AB116", "AB128", "AB124"
     ] # bad "AB158""AB107" AB093,"AB092",AB086, AB144, AB149, AB087 "AB095"
 
-    subject_ids = [   'AB093', 'AB140', 'AB159', 'AB126', 'AB122',
-        'AB123', 'AB082', 'AB124', 'AB086', 'AB151', 'AB157', 'AB134', 'AB141', 'AB120', 'AB145', 'AB147',
-        'AB162', 'AB127', 'AB125',  'AB102', 'AB092', 'AB154', 'AB139', 'AB119', 'AB153',
-        'AB080', 'AB133', 'AB121', 'AB156', 'AB142', 'AB131',
-        'AB144', 'AB152', 'AB130', 'AB117', 'AB164', 'AB150', 'AB138', 'AB129',
-         'AB136', 'AB163', 'AB158', 'AB087', 'AB132', 'AB094', 'AB095', 'AB085', 'AB104',
-        'AB143', 'AB116', 'AB128',
-        'MH037', 'MH038', 'MH034','MH036', 'MH035', 'MH032', 'MH031', 'MH029',
-        'MH026',  'MH015', 'MH017', 'MH018', 'MH019', 'MH020',                                                
+    subject_ids = [
+    'AB082', 'AB124', 'AB086',  'AB144',  'AB157', 'AB134', 'AB120',  'AB147',
+    'AB162', 'AB127', 'AB125',  'AB102', 'AB092', 'AB154', 'AB139', 'AB119', 'AB153',
+    'AB080', 'AB133', 'AB121', 'AB156', 'AB093', 'AB140', 'AB159', 'AB126', 'AB122',
+    'AB123', 'AB152', 'AB130', 'AB164', 'AB150', 'AB138', 'AB129', 'AB149',
+    'AB131', 'AB136', 'AB163', 'AB158', 'AB087', 'AB132', 'AB094', 'AB095', 'AB085', #'AB104','AB107', 'AB117','AB141','AB142', 'AB145','AB151', "MH009",  "MH013", "MH020", "MH064", "MH068",
+    'AB161', 'AB135', 'AB137', 'AB143', 'AB116', 'AB128',  # <-- fixed missing comma here
+    "MH014", "MH015", "MH016", "MH017", "MH018", "MH019","MH021", "MH022", "MH023",
+    "MH025", "MH026", "MH027", "MH028", "MH029", "MH030", "MH031", "MH032", "MH033", "MH034",
+    "MH035", "MH036", "MH037", "MH038", "MH039", "MH069", "MH070",
+    "MH006", "MH007", "MH008","MH010", "MH011", "MH062",  "MH065", "MH067"
+]
 
-    ] # AB107''AB149',
     # subject_ids = [   'AB131', 'AB138', 'AB095', 'AB153'                                     
 
     # ] # AB107''AB149',
  
     #excluded for now : : ['MH030' 'MH023' 'MH014' 'MH021' 'MH022' 'MH027' 'MH028']
     # subject_ids = ["AB156"]
-    # subject_ids = ['AB162']
+    # subject_ids = ['MH023']
     # git_version = '40fbc11'
     git_version = '4227ca6'
     git_version = 'b394470'
@@ -70,15 +72,16 @@ if __name__ == '__main__':
     # git_version = '74987e2'
     # git_version = '807b8e7'
     git_version = '935b6e1'    
-    git_version = 'acbce87'
+    git_version = '747e708'
     # git_version = 'a784830'
-    single_mouse = False
+    single_mouse = False    
     # over_mice = True
     over_mice = True
     compare_gits = False
     git_versions = ['15127ae', 'b394470']
     git_versions = ['b394470', 'b394470'] 
-    git_versions = [ '1b14083' ]
+    git_versions = [ 'f5a1739',  '65b85bb']
+    git_versions =['e78c1f4' ]
 
     if single_mouse:
 
@@ -87,18 +90,18 @@ if __name__ == '__main__':
         plots = [ 'average_predictions_per_trial_types', 'metrics']
         plots = [ 'average_kernels_by_region', 'average_predictions_per_trial_types', 'metrics']
         plots = ['create_summary', 'metrics']
-        plots = [ 'individual_trials_concat']
-        subject_ids = ['AB131']
+        plots = [ 'average_predictions_per_trial_types']
+        subject_ids = ['AB119']
         for subject_id in subject_ids:
             print(" ")
             print(f"Subject ID : {subject_id}")
 
             # Take subset of NWBs
             nwb_names = [name for name in all_nwb_names if subject_id in name]
-            if subject_id.startswith('AB'):
-                nwb_files = [os.path.join(ROOT_PATH_AXEL, name) for name in nwb_names]
-            elif subject_id.startswith('MH'):
-                nwb_files = [os.path.join(ROOT_PATH_MYRIAM, name) for name in nwb_names]
+            # if subject_id.startswith('AB'):
+            nwb_files = [os.path.join(ROOT_PATH_AXEL, name) for name in nwb_names]
+            # elif subject_id.startswith('MH'):
+            #     nwb_files = [os.path.join(ROOT_PATH_MYRIAM, name) for name in nwb_names]
 
             if not nwb_files:
                 print(f"No NWB files found for {subject_id}")
@@ -118,8 +121,9 @@ if __name__ == '__main__':
     if over_mice:
         # plots = ['average_activity_predictions' ]
         # plots= ['kernel_consistency', 'compare_kernels']
-        plots = [ 'metrics']
-        # plots = ['average_activity_predictions']
+        plots = ['kernel_consistency']
+        # plots = ['metrics'] 'selectivity_space_density'
+        plots = ['selectivity_space_density', 'kernel_consistency']
         # Get list of NWB files for each mouse
         for git_version in git_versions:
             nwb_list = [os.path.join(ROOT_PATH_AXEL, name) for name in all_nwb_names if name.startswith('AB')]
