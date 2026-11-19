@@ -17,6 +17,8 @@ import matplotlib
 import yaml
 import cmasher as cmr
 
+import ephys_utilities.helpers.data_utils as data_utils
+
 from ephys_utilities.plotting_utils import plotting_utils
 import ephys_utilities.allen_utils.allen_utils as allen_utils
 matplotlib.use("Agg")
@@ -40,7 +42,7 @@ rminus_color = plotting_utils.GROUP_COLORS['rminus']
 # TODO: save more anat and metadata of neurons for analysis to avoid loading tables several times,.,.,
 # TODO: order of clustering kmeans/GMMs applied on ordered rastermap_psth cmatrix
 # TODO: make axon cmap logscale too? or data as logscale? not mean over neurons? but areas?
-
+# TODO: use task-modulated units instead
 
 hostname = socket.gethostname()
 if 'haas' in hostname:
@@ -75,6 +77,9 @@ DEFAULT_CFG: dict[str, Any] = dict(
     square_fr            = False,
     baseline_removal     = True,   # if False: skip all per-trial baseline subtraction (own-window AND jaw-borrowed), for each neuron and trial
     include_lick_conditions = True,  # if True: add spontaneous_lick + reward_lick conditions (requires lick_df passed to run_rastermap_psth)
+    correct_lick_time       = True,  # trial lick_time-aligned conditions: use start_time + (lick_time - response_window_start_time).
+                                     # NWB lick_time = response_window_start + reaction_time, but behavior_control's reaction_time
+                                     # counts from stimulus onset (main_control.m) -> NWB lick_time is late by the artifact window.
     lick_quiet_window_s     = 0.2,   # duration (s) of quiet baseline window ending at closest preceding trial start_time, for lick_time conditions
     reward_group_col     = "reward_group",
     area_col             = "area_acronym_custom",
@@ -126,26 +131,37 @@ layer_number_mapper = {
 def get_conditions(cfg):
     period = cfg.get("period", "passive")
     mod    = cfg.get("modality", "whisker_auditory")
+    merge_passive = cfg.get("merge_passive", False)
 
-    passive_all = [
-        ("whisker_trial",  "passive_pre",    "Whisker pre",        "#32a852", "start_time"),
-        ("whisker_trial",  "passive_post",   "Whisker post",       "#085c1f", "start_time"),
-        ("auditory_trial", "passive_pre",    "Auditory pre",       "#4158d9", "start_time"),
-        ("auditory_trial", "passive_post",   "Auditory post",      "#0f2187", "start_time"),
-    ]
+    if merge_passive:
+        passive_all = [
+            ("whisker_trial", "passive", "Passive whisker", "#fcba03", "start_time"),
+            ("auditory_trial", "passive", "Passive auditory", "#001dba", "start_time"),
+        ]
+    else:
+        passive_all = [
+            ("whisker_trial",  "passive_pre",    "Whisker pre",        "#bd9b3c", "start_time"),
+            ("whisker_trial",  "passive_post",   "Whisker post",       "#fcba03", "start_time"),
+            ("auditory_trial", "passive_pre",    "Auditory pre",       "#3c4fb5", "start_time"),
+            ("auditory_trial", "passive_post",   "Auditory post",      "#001dba", "start_time"),
+        ]
+
     # Active conditions: trial_type × lick context (active_lick / active_nolick)
     # whisker hit/miss, auditory hit, false alarm, correct rejection
     # Jaw-aligned: same trial subsets but aligned to jaw_onset_time instead of start_time
     active_all = [
-        ("whisker_trial",  "active_nolick",  "Whisker miss",       "#d6371e", "start_time"),
-        ("whisker_trial",  "active_lick",    "Whisker hit",        "#fcba03", "start_time"),
-        ("auditory_trial", "active_lick",    "Auditory hit",       "#7c0082", "start_time"),
-        #("no_stim_trial",  "active_lick",    "False alarm",        "#211f21", "start_time"),
-        #("no_stim_trial",  "active_nolick",  "Correct rej.",       "#a6a4a1", "start_time"),
+        # Start-time aligned conditions
+        ("whisker_trial",  "active_nolick",  "Whisker miss",       "#ad18ad", "start_time"),
+        ("whisker_trial",  "active_lick",    "Whisker hit",        "#2fa60c", "start_time"),
+        ("auditory_trial", "active_lick",    "Auditory hit",       "#0228e8", "start_time"),
+        #("auditory_trial", "active_nolick",    "Auditory miss",       "#566ee8", "start_time"),
+        #("no_stim_trial",  "active_lick",    "False alarm",        "#171717", "start_time"),
+        #("no_stim_trial",  "active_nolick",  "Correct rej.",       "#999999", "start_time"),
+
         # Jaw-aligned conditions (lighter shades of the start_time counterparts)
-        #("whisker_trial",  "active_lick",    "Whisker hit (jaw)",  "#fde89a", "jaw_onset_time"),
-        #("auditory_trial", "active_lick",    "Auditory hit (jaw)", "#c9aadd", "jaw_onset_time"),
-        #("no_stim_trial",  "active_lick",    "False alarm (jaw)",  "#999999", "jaw_onset_time"),
+        #("whisker_trial",  "active_lick",    "Whisker hit (jaw)",  "#2a6e16", "jaw_onset_time"),
+        #("auditory_trial", "active_lick",    "Auditory hit (jaw)", "#1e308a", "jaw_onset_time"),
+        #("no_stim_trial",  "active_lick",    "False alarm (jaw)",  "#171717", "jaw_onset_time"),
     ]
 
     # Lick-aligned conditions — only included when include_lick_conditions=True
@@ -153,12 +169,13 @@ def get_conditions(cfg):
     # Appended last so existing condition indices are never disturbed when flag is False.
     if cfg.get("include_lick_conditions", False):
         active_all += [
-            ("spontaneous_lick", "spontaneous", "Spont. lick", "#999999", "lick_time"),
-            ("whisker_trial", "active_lick", "Whisker hit (lick)",  "#fcba03", "lick_time"),
-            ("auditory_trial", "active_lick", "Auditory hit (lick)",  "#7c0082", "lick_time"),
-            ("reward_lick",      "spontaneous", "Reward time",  "#bf1a1a", "lick_time"),
+            ("spontaneous_lick", "spontaneous", "Spont. lick", "#171717", "lick_time"),
+            ("whisker_trial", "active_lick", "Whisker hit (lick)",  "#2a6e16", "lick_time"),
+            ("auditory_trial", "active_lick", "Auditory hit (lick)",  "#1e308a", "lick_time"),
+            #("reward_lick",      "spontaneous", "Reward time",  "#0085de", "lick_time"),
         ]
 
+    # Filter if only whisker or auditory trials are considered; or passive/active
     if mod == "whisker":
         passive_all = [c for c in passive_all if c[0] == "whisker_trial"]
         active_all  = [c for c in active_all  if c[0] in ("whisker_trial", "no_stim_trial")]
@@ -182,6 +199,9 @@ def get_conditions(cfg):
 
 
 def get_t_window(cfg, context: str, align_col: str = "start_time"):
+    """
+    Get PSTHs start and stop windows given the PSTH/trial-type.
+    """
     if align_col == "lick_time":
         return cfg["t_pre_lick"], cfg["t_post_lick"]
     if align_col == "jaw_onset_time":
@@ -240,7 +260,7 @@ def assign_passive_context(trials: pd.DataFrame, mouse_id_col: str,
 def assign_active_context(trials: pd.DataFrame) -> pd.DataFrame:
     """Label active/NaN-context rows as 'active_lick' or 'active_nolick' via lick_flag."""
     trials = trials.copy()
-    active_mask = trials["context"].isna() | (trials["context"]=='nan') | (trials["context"] == "active")
+    active_mask = (trials["context"] == "active") | trials["context"].isna() | (trials["context"]=='nan') | (trials["context"]=='NaN')
     #active_mask = trials['context'] != "passive"
     trials.loc[active_mask & (trials["lick_flag"] == 1), "context"] = "active_lick"
     trials.loc[active_mask & (trials["lick_flag"] == 0), "context"] = "active_nolick"
@@ -423,11 +443,12 @@ def precompute_event_map(trials: pd.DataFrame, cfg: dict,
     """
 
     # For passive/both: drop mice that have no passive data at all
-    mice_beh_epochs = trials.groupby('mouse_id')['context'].nunique()
-    mice_with_no_passive = mice_beh_epochs[mice_beh_epochs == 2].index
-    print('Excluding mice without passive data...:', mice_with_no_passive)
-    trials = trials[~trials['mouse_id'].isin(mice_with_no_passive)]
-
+    if cfg.get("period", "passive_active") in ("passive", "passive_active"):   # active-only runs keep mice without passive data
+        trials = data_utils.keep_passive_mice(trials)
+    #mice_beh_epochs = trials.groupby('mouse_id')['context'].nunique()
+    #mice_with_no_passive = mice_beh_epochs[mice_beh_epochs == 2].index
+    #print('Excluding mice without passive data...:', mice_with_no_passive)
+    #trials = trials[~trials['mouse_id'].isin(mice_with_no_passive)]
 
     if conds is None:
         conds = CONDITIONS
@@ -453,8 +474,13 @@ def precompute_event_map(trials: pd.DataFrame, cfg: dict,
                 continue
             # Use only rows where this align_col is non-NaN
             valid = grp[grp[align_col].notna()]
-            event_map[(mouse_id, session_id, context, trial_type, align_col)] = \
-                valid[align_col].to_numpy()
+            times = valid[align_col].to_numpy()
+            if (align_col == "lick_time" and cfg.get("correct_lick_time", True)
+                    and {"start_time", "response_window_start_time"} <= set(valid.columns)):
+                # per-trial artifact window (can differ between sessions): first lick relative to stimulus
+                times = (valid["start_time"] + valid["lick_time"]
+                         - valid["response_window_start_time"]).to_numpy()
+            event_map[(mouse_id, session_id, context, trial_type, align_col)] = times
     return event_map
 
 
@@ -533,7 +559,7 @@ def apply_fr_filter(unit_ids, st_map, mouse_map, session_map, event_map, cfg):
     )
     fr_map = dict(zip(unit_ids, fr_vals))
     kept   = [uid for uid in unit_ids if fr_map[uid] >= thr]
-    print(f"  FR filter (>={thr} Hz): {len(unit_ids)} → {len(kept)}")
+    print(f"  FR filter (>={thr} spks/s): {len(unit_ids)} → {len(kept)}")
     return kept, fr_map
 
 
@@ -969,8 +995,9 @@ def _draw_matrix(ax, mat, n_bins_list, boundaries, vmax, cfg, title):
         cmap = 'coolwarm'
 
     # Always diverging, centred on vcenter.
+    # TODO: hard-coded but to be fixed, fix also so that colored
     norm = matplotlib.colors.TwoSlopeNorm(
-        vcenter=vcenter, #TODO: hard-coded but to be fixed, fix also so that colored
+        vcenter=vcenter,
         vmin=min(vcenter - vmax, vcenter - 1e-6),
         vmax=max(vcenter + vmax, vcenter + 1e-6),
     )
@@ -985,7 +1012,7 @@ def _draw_matrix(ax, mat, n_bins_list, boundaries, vmax, cfg, title):
         onset_bin = int(round(t_pre / dt))
         if i > 0:
             ax.axvline(start, color="k", lw=1.5)
-        ax.axvline(start + onset_bin, color="white", lw=0.8, ls="--")
+        ax.axvline(start + onset_bin, color="white", lw=0.8, ls="-")
     ticks = [(offsets[i] + offsets[i + 1]) / 2 for i in range(len(n_bins_list))]
     ax.set_xticks(ticks)
     ax.set_xticklabels(COND_LABELS_MATRIX, fontsize=8)
@@ -1032,10 +1059,12 @@ def _draw_matrix_old(ax, mat, n_bins_list, boundaries, vmax, cfg, title):
     return im
 
 
-def _save(fig, path,dpi):
+def _save(fig, path, dpi):
     for fmt in ['.png', '.pdf', '.svg']:
         path_suffix = path.with_suffix(fmt)
         fig.savefig(path_suffix, dpi=dpi, bbox_inches="tight")
+    plt.close(fig)
+    print(f"  saved {Path(path).name}")
 
     plt.close(fig)
     print(f"  saved {Path(path).name}")
@@ -1137,7 +1166,7 @@ def load_anatomy_scores(units_good, score_col_map):
     n_matched = sum(not np.isnan(v) for v in next(iter(out.values())).values())
     print(f"  Anatomy scores loaded from units_good: "
           f"{n_matched}/{len(units_good)} neurons have a non-NaN value "
-          f"(checked on '{next(iter(score_col_map.values()))}')")
+          f"(checked on '{next(iter(score_col_map.values()))}')") #TODO: fix this
     return out
     return out
 
@@ -1354,7 +1383,7 @@ def load_waveform_classification(units_good, mouse_id_col, session_id_col,
         wf_map.update(dict(zip(merged["_uid"], merged["_wf_label"])))
 
     n_unknown = sum(1 for v in wf_map.values() if v == "unknown")
-    if n_unknown:
+    if n_unknown: #TODO: fix this
         print(f"  [waveform classification] {n_unknown}/{len(wf_map)} units could not be "
              f"matched to a waveform-type CSV row and were marked 'unknown'")
     return wf_map
@@ -1369,8 +1398,439 @@ def split_event_map(event_map):
     return event_map_odd, event_map_even
 
 
+def compute_dispersion_metrics(f_matrix: np.ndarray) -> pd.DataFrame:
+    """Per-mouse cluster-repertoire concentration metrics from f_{m,k}."""
+    n_clusters = f_matrix.shape[1]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        shannon = -np.where(f_matrix > 0, f_matrix * np.log(f_matrix), 0.0).sum(1)
+    simpson = (f_matrix ** 2).sum(1)
+    f_sorted = np.sort(f_matrix, axis=1)
+    idx = np.arange(1, n_clusters + 1)
+    gini = ((2 * idx - n_clusters - 1) * f_sorted).sum(1) / n_clusters  # rows sum to 1
+    return pd.DataFrame(dict(
+        shannon_entropy_norm=shannon / np.log(n_clusters),
+        ipr=1.0 / np.clip(simpson, 1e-12, None),
+        gini=gini,
+        max_frac=f_matrix.max(1),
+    ))
 
-def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.DataFrame,
+
+def run_cluster_dispersion_stats(stats_dir: Path, f_matrix: np.ndarray,
+                                  reward_groups: np.ndarray, mouse_ids) -> dict:
+    """Per-mouse dispersion metrics + uncorrected R+/R- comparison (MWU)."""
+    from scipy.stats import mannwhitneyu
+    disp_dir = Path(stats_dir) / "dispersion"
+    disp_dir.mkdir(parents=True, exist_ok=True)
+
+    df = compute_dispersion_metrics(f_matrix)
+    df.insert(0, "mouse_id", np.asarray(mouse_ids))
+    df.insert(1, "reward_group", np.asarray(reward_groups))
+    metrics = [c for c in df.columns if c not in ("mouse_id", "reward_group")]
+    mask_rp, mask_rm = df.reward_group == "R+", df.reward_group == "R-"
+
+    tests = {}
+    for m in metrics:
+        rp, rm = df.loc[mask_rp, m].values, df.loc[mask_rm, m].values
+        u, p = mannwhitneyu(rp, rm, alternative="two-sided")
+        tests[m] = dict(U=u, p_uncorrected=p, mean_rplus=rp.mean(), sem_rplus=rp.std(ddof=1)/np.sqrt(len(rp)),
+                         mean_rminus=rm.mean(), sem_rminus=rm.std(ddof=1)/np.sqrt(len(rm)))
+        print(f"  {m:<22s} R+={rp.mean():.3f}  R-={rm.mean():.3f}  U={u:.1f}  p={p:.4f}")
+
+    df.to_csv(disp_dir / "dispersion_metrics.csv", index=False)
+    pd.DataFrame(tests).T.to_csv(disp_dir / "dispersion_tests.csv")
+    _fig_dispersion_metrics(df, tests, metrics, disp_dir)
+    return dict(metrics_df=df, tests=tests)
+
+
+def _fig_dispersion_metrics(df: pd.DataFrame, tests: dict, metrics: list, disp_dir: Path) -> None:
+    import matplotlib.pyplot as plt
+    labels = dict(shannon_entropy_norm="Shannon entropy\n(norm.)", ipr="IPR\n(eff. # clusters)",
+                  gini="Gini coefficient", max_frac="Max cluster fraction")
+    colors = {"R+": "green", "R-": "magenta"}
+    rng = np.random.default_rng(0)
+
+    fig, axes = plt.subplots(1, len(metrics), figsize=(3.2 * len(metrics), 3.6))
+    axes = np.atleast_1d(axes)
+    for ax, m in zip(axes, metrics):
+        for gi, g in enumerate(("R+", "R-")):
+            vals = df.loc[df.reward_group == g, m].values
+            key = "rplus" if g == "R+" else "rminus"
+            ax.bar(gi, tests[m][f"mean_{key}"], yerr=tests[m][f"sem_{key}"], width=0.6,
+                   color=colors[g], alpha=0.35, edgecolor=colors[g], capsize=3, zorder=1)
+            ax.scatter(gi + rng.uniform(-0.12, 0.12, len(vals)), vals,
+                       color=colors[g], edgecolor="k", linewidth=0.3, s=22, zorder=2)
+        ax.set_title(f"{labels[m]}\np={tests[m]['p_uncorrected']:.3g} (MWU)", fontsize=9)
+        ax.set_xticks([0, 1]); ax.set_xticklabels(["R+", "R-"])
+        ax.set_box_aspect(1)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    _save(fig, disp_dir / "dispersion_metrics", 150)
+    return
+
+
+def _generate_muted_colors(n, seed=None):
+    """Like _generate_bright_colors (golden-ratio hue stepping for even
+    spacing), but pulled toward mid saturation/brightness so cluster colors
+    stay readable against the atlas grayscale background without looking
+    neon or washed-out pale."""
+    rng = np.random.default_rng(seed)
+    golden_ratio_conj = 0.618033988749895
+    hue = rng.random()
+    colors = []
+    for _ in range(n):
+        hue = (hue + golden_ratio_conj) % 1.0
+        s = rng.uniform(0.45, 0.70)
+        v = rng.uniform(0.55, 0.75)
+        colors.append(colorsys.hsv_to_rgb(hue, s, v))
+    return colors
+
+
+_ALIGN_LABELS = {
+    "active_start": "Time from stim (s)",
+    "active_jaw":   "Time from jaw (s)",
+    "active_lick":  "Time from lick (s)",
+}
+
+
+def _condition_align_groups(conds, cond_align_cols):
+    """Same passive/active_start/active_jaw/active_lick classification as
+    _condition_rows, but returns (name, idxs) pairs — including 'passive' —
+    so callers can filter and label without duplicating the classification
+    logic that lives in _condition_rows."""
+    rows = {"passive": [], "active_start": [], "active_jaw": [], "active_lick": []}
+    for i, ((tt, ctx), acol) in enumerate(zip(conds, cond_align_cols)):
+        if ctx.startswith("passive"):
+            rows["passive"].append(i)
+        elif acol == "lick_time":
+            rows["active_lick"].append(i)
+        elif acol == "jaw_onset_time":
+            rows["active_jaw"].append(i)
+        else:
+            rows["active_start"].append(i)
+    order = ["passive", "active_start", "active_jaw", "active_lick"]
+    return [(name, rows[name]) for name in order if rows[name]]
+
+
+import colorsys  # skip if already imported in the file
+
+
+def _generate_muted_colors(n, seed=None):
+    """Like _generate_bright_colors (golden-ratio hue stepping for even
+    spacing), but pulled toward mid saturation/brightness so cluster colors
+    stay readable against the atlas grayscale background without looking
+    neon or washed-out pale."""
+    rng = np.random.default_rng(seed)
+    golden_ratio_conj = 0.618033988749895
+    hue = rng.random()
+    colors = []
+    for _ in range(n):
+        hue = (hue + golden_ratio_conj) % 1.0
+        s = rng.uniform(0.45, 0.70)
+        v = rng.uniform(0.55, 0.75)
+        colors.append(colorsys.hsv_to_rgb(hue, s, v))
+    return colors
+
+
+_ALIGN_LABELS = {
+    "active_start": "Time from stim (s)",
+    "active_jaw":   "Time from jaw (s)",
+    "active_lick":  "Time from lick (s)",
+}
+
+
+def _condition_align_groups(conds, cond_align_cols):
+    """Same passive/active_start/active_jaw/active_lick classification as
+    _condition_rows, but returns (name, idxs) pairs — including 'passive' —
+    so callers can filter and label without duplicating the classification
+    logic that lives in _condition_rows."""
+    rows = {"passive": [], "active_start": [], "active_jaw": [], "active_lick": []}
+    for i, ((tt, ctx), acol) in enumerate(zip(conds, cond_align_cols)):
+        if ctx.startswith("passive"):
+            rows["passive"].append(i)
+        elif acol == "lick_time":
+            rows["active_lick"].append(i)
+        elif acol == "jaw_onset_time":
+            rows["active_jaw"].append(i)
+        else:
+            rows["active_start"].append(i)
+    order = ["passive", "active_start", "active_jaw", "active_lick"]
+    return [(name, rows[name]) for name in order if rows[name]]
+
+
+def _cluster_neuron_keys(cluster_labels, unit_table, unit_ids, sig_clusters,
+                          key_cols=("mouse_id", "session_id", "electrode_group", "cluster_id")):
+    """For each cohort-enriched cluster, the composite identity key of every
+    neuron in it. Same unit_id-reindex convention as _load_area_arr /
+    _load_bregma_coords to go from the npz's unit_ids to unit_table rows;
+    the composite key is what actually re-locates each neuron's spike train
+    below, so a stale/duplicated unit_id doesn't silently mismatch."""
+    ut = unit_table.set_index("unit_id") if unit_table.index.name != "unit_id" else unit_table
+    sub = ut.reindex(unit_ids)[list(key_cols)]
+    return {k: sub[cluster_labels == k].reset_index(drop=True) for k in sig_clusters}
+
+
+def _raw_condition_rate(st, mouse_id, session_id, event_map, cond_infos, conds,
+                         cond_align_cols, cfg, idx):
+    """Trial-averaged raw smoothed rate (Hz) for condition idx — no baseline
+    subtraction, no z-score, no squaring. Standalone equivalent of the
+    _raw_rates closure inside _neuron_vector_strided_keep, callable
+    neuron-by-neuron outside that pipeline."""
+    (tt, ctx), (t_pre, t_post, t_ctr_c, n_out, base_mask), align_col = \
+        conds[idx], cond_infos[idx], cond_align_cols[idx]
+    events = _get_events(event_map, mouse_id, session_id, ctx, tt, align_col)
+    if len(events) == 0:
+        return np.zeros(n_out)
+    raster = spikes_around_events(st, events, t_pre, t_post,
+                                   is_whisker=(tt == cfg["whisker_trial_label"]),
+                                   artifact_win_s=cfg["artifact_win_s"],
+                                   align_col=align_col)
+    rates = _bin_and_smooth(raster, t_pre, t_post, cfg["stride_ms"], cfg["sigma_ms"])
+    return rates.mean(axis=0)
+
+
+def _build_raw_psth_for_cluster(neuron_keys_df, unit_table, event_map, cond_infos,
+                                 conds, cond_align_cols, cfg,
+                                 key_cols=("mouse_id", "session_id", "electrode_group", "cluster_id")):
+    """(n_neurons_in_cluster, total_bins) raw (Hz) trial-averaged PSTH matrix,
+    built directly from unit_table['spike_times'] + event_map. Same
+    concatenated-condition layout as the z-scored X (same n_bins_list /
+    cond_infos), so it can substitute for X[neurons_k] one cluster at a time."""
+    merged = neuron_keys_df.merge(unit_table[list(key_cols) + ["spike_times"]],
+                                   on=list(key_cols), how="left")
+    missing = merged["spike_times"].isna().sum()
+    if missing:
+        print(f"  Warning: {missing}/{len(merged)} neurons not found in unit_table "
+              f"by {key_cols} — check for duplicate/mismatched keys")
+    rows = []
+    for _, row in merged.iterrows():
+        st = np.asarray(row["spike_times"]) if row["spike_times"] is not None else np.array([])
+        psths = [_raw_condition_rate(st, row["mouse_id"], row["session_id"], event_map,
+                                      cond_infos, conds, cond_align_cols, cfg, idx)
+                 for idx in range(len(conds))]
+        rows.append(np.concatenate(psths))
+    n_total_bins = sum(ci[3] for ci in cond_infos)
+    return np.vstack(rows) if rows else np.zeros((0, n_total_bins))
+
+VOXEL_SIZE_UM=10
+
+
+def _fig_cluster_enriched_grid(X, cluster_labels, mouse_arr, area_arr, coords_ccf,
+                               n_bins_list, t_ctrs, cond_labels, conds, cond_align_cols,
+                               sig_clusters, pvals_fdr, atlas_path, out_dir,
+                               voxel_size_um=VOXEL_SIZE_UM, edge_trim=2, panel_size=3.6, seed=None,
+                               raw=False, unit_table=None, unit_ids=None,
+                               trial_table=None, lick_df=None, cfg=None,
+                               key_cols=("mouse_id", "session_id", "electrode_group", "cluster_id")):
+    """One combined figure, one row per cohort-enriched cluster:
+    [label column] + [one square PSTH per active trial-type condition —
+    passive conditions excluded] + [area-group bar, canonical order, % of
+    cluster] + [sagittal atlas view, titled with top-3 area_acronym_custom] +
+    [top-down atlas view]. Every content panel is a fixed-size square
+    (ax.set_box_aspect(1)). Sized and fonted for publication / slide use —
+    large panels, large text, minimal dead space.
+
+    PSTH traces are black; y-axis shared per cluster row, labeled/ticked
+    only on the leftmost condition column (unused spines dropped for the
+    other columns). x-axis ticked/labeled only on the bottom row (unused
+    spines dropped elsewhere), with explicit xlim and three ticks (window
+    start, 0, window end) naming the alignment event (stim / jaw / lick);
+    the start/end labels are edge-aligned so they don't overhang into the
+    neighboring subplot. No gray background — atlas panels render on plain
+    white.
+    """
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    n_sig = len(sig_clusters)
+    if n_sig == 0:
+        print("  No cohort-enriched clusters to plot.")
+        return
+
+    if raw:
+        assert all(v is not None for v in (unit_table, unit_ids, trial_table, cfg)), \
+            "raw=True needs unit_table, unit_ids, trial_table, cfg"
+        cond_infos = get_cond_infos(cfg, conds, cond_align_cols)
+        event_map = precompute_event_map(trial_table, cfg, conds=conds, cond_align_cols=cond_align_cols)
+        if lick_df is not None:
+            add_lick_event_map(lick_df, event_map, cfg)
+        neuron_keys = _cluster_neuron_keys(cluster_labels, unit_table, unit_ids, sig_clusters, key_cols)
+
+    # ── shared setup ─────────────────────────────────────────────────────
+    group_map = _resolve_area_group_map(area_arr)
+    group_arr = np.array([group_map[a] for a in area_arr])
+    group_color_map = allen_utils.get_custom_area_groups_colors()
+    canonical_groups = list(allen_utils.get_custom_area_groups().keys())
+    default_color = "lightgrey"
+    global_group_counts = pd.Series(group_arr).value_counts()
+    all_groups = sorted(set(canonical_groups) | set(global_group_counts.index),
+                        key=lambda g: canonical_groups.index(g) if g in canonical_groups else 999)
+
+    align_groups = _condition_align_groups(conds, cond_align_cols)
+    keep_idxs, align_label_for_idx = [], {}
+    for name, idxs in align_groups:
+        if name == "passive":
+            continue
+        for i in idxs:
+            keep_idxs.append(i)
+            align_label_for_idx[i] = _ALIGN_LABELS[name]
+    n_cond = len(keep_idxs)
+
+    slices = _condition_slices(n_bins_list)
+
+    ref = load_reference(atlas_path)
+    brain_mask = load_annotation_mask(atlas_path)
+    coords_atlas = _reorder_coords_for_brainrender(coords_ccf)
+    px = coords_atlas / voxel_size_um
+    ref_sagittal = ref.max(axis=2).T
+    ref_transverse = ref.max(axis=1).T
+
+    cluster_colors = _generate_muted_colors(n_sig, seed=seed)
+
+    LABEL_COL, PSTH0 = 0, 1
+    BAR_COL = PSTH0 + n_cond
+    SAG_COL = BAR_COL + 1
+    TOP_COL = BAR_COL + 2
+    n_cols = TOP_COL + 1
+
+    fig, axes = plt.subplots(
+        n_sig, n_cols,
+        figsize=(panel_size * (n_cols - 0.6), panel_size * n_sig),
+        gridspec_kw=dict(width_ratios=[0.5] + [1] * (n_cols - 1)),
+        squeeze=False)
+    fig.subplots_adjust(hspace=0.12, wspace=0.1, left=0.055, right=0.985,
+                        top=0.95, bottom=0.05)
+
+    for row, k in enumerate(sig_clusters):
+        neurons_k = cluster_labels == k
+        n_k = int(neurons_k.sum())
+        n_mice_k = len(np.unique(mouse_arr[neurons_k]))
+        clr = cluster_colors[row]
+        if raw:
+            X_k = _build_raw_psth_for_cluster(neuron_keys[k], unit_table, event_map,
+                                              cond_infos, conds, cond_align_cols, cfg, key_cols)
+        else:
+            X_k = X[neurons_k]
+
+        # ── label column ─────────────────────────────────────────────────
+        ax_lbl = axes[row, LABEL_COL]
+        ax_lbl.axis("off")
+        ax_lbl.text(0.0, 0.5,
+                    f"C{k + 1}\nn={n_k} units\n{n_mice_k} mice",
+                    transform=ax_lbl.transAxes, ha="left", va="center",
+                    fontsize=13, linespacing=1.6)
+
+        # ── PSTH squares: pass 1 — traces + shared y-range for this row ───
+        traces = {}
+        y_min, y_max = np.inf, -np.inf
+        for col, ci in enumerate(keep_idxs):
+            s, e = slices[ci]
+            t = t_ctrs[ci]
+            trim = min(edge_trim, (e - s) // 3)
+            seg = X_k[:, s + trim: e - trim]
+            t_tr = t[trim: len(t) - trim] if trim else t
+            mean = seg.mean(axis=0)
+            sem = seg.std(axis=0, ddof=1) / np.sqrt(n_k) if n_k > 1 else np.zeros_like(mean)
+            traces[col] = (t_tr, mean, sem)
+            y_min = min(y_min, (mean - sem).min())
+            y_max = max(y_max, (mean + sem).max())
+        pad = 0.05 * (y_max - y_min) if y_max > y_min else 1.0
+        y_min, y_max = y_min - pad, y_max + pad
+
+        # ── PSTH squares: pass 2 — draw ─────────────────────────────────
+        for col, ci in enumerate(keep_idxs):
+            ax = axes[row, PSTH0 + col]
+            t_tr, mean, sem = traces[col]
+            ax.plot(t_tr, mean, color="black", lw=3)
+            ax.fill_between(t_tr, mean - sem, mean + sem, color="black", alpha=0.12)
+            ax.axvline(0, ls="--", color="gray", lw=1.0)
+            ax.axhline(0, ls="--", color="gray", lw=1.0)
+            ax.set_xlim(t_tr[0], t_tr[-1])
+            ax.set_ylim(y_min, y_max)
+            ax.set_box_aspect(1)
+
+            # drop spines that don't carry a visible axis, to declutter
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+            if col != 0:
+                ax.spines["left"].set_visible(False)
+            if row != n_sig - 1:
+                ax.spines["bottom"].set_visible(False)
+
+            if col == 0:
+                ax.set_ylabel("FR (spks/s)" if raw else "FR (z-score)", fontsize=20)
+            else:
+                ax.set_yticks([])
+
+            if row == 0:
+                ax.set_title(cond_labels[ci], fontsize=18, rotation=0, ha="center", pad=8)
+
+            if row == n_sig - 1:
+                ax.set_xticks([t_tr[0], 0, t_tr[-1]])
+                xticklabels = ax.set_xticklabels(
+                    [f"{t_tr[0]:.1f}", "0", f"{t_tr[-1]:.1f}"], fontsize=13)
+                # edge-align the min/max labels so they can't overhang past
+                # this subplot's boundary into the next one
+                xticklabels[0].set_ha("left")
+                xticklabels[-1].set_ha("right")
+                ax.set_xlabel(align_label_for_idx[ci], fontsize=16)
+            else:
+                ax.set_xticks([])
+            ax.tick_params(axis="y", labelsize=16)
+
+        # ── area-group bar: canonical order, % of cluster ──────────────────
+        top3 = pd.Series(area_arr[neurons_k]).value_counts().head(3)
+        top3_str = ", ".join(f"{ac} ({n})" for ac, n in top3.items())
+
+        ax_bar = axes[row, BAR_COL]
+        group_counts = (pd.Series(group_arr[neurons_k]).value_counts()
+                        .reindex(all_groups, fill_value=0))
+        group_counts = group_counts[group_counts > 0]  # canonical order preserved
+        fracs = group_counts.values / n_k
+        colors_g = [group_color_map.get(g, default_color) for g in group_counts.index]
+        bars = ax_bar.bar(group_counts.index.astype(str), fracs, color=colors_g)
+        ax_bar.bar_label(bars, labels=[f"{f * 100:.0f}%" for f in fracs],
+                         fontsize=13, padding=4)
+        ax_bar.tick_params(axis="x", labelbottom=False, bottom=False)
+        ax_bar.set_yticks([])
+        ax_bar.set_box_aspect(1)
+        ax_bar.set_title(top3_str, fontsize=13)
+
+
+        # ── atlas views: sagittal, top-down ──────
+
+        pts = px[neurons_k]
+        pts = pts[~np.isnan(pts).any(axis=1)]
+        pts = pts[_filter_points_inside_brain(pts, brain_mask)]
+        ap_p, dv_p, ml_p = pts[:, 0], pts[:, 1], pts[:, 2]
+
+        centroid_kw = dict(marker="+", s=280, linewidths=3.2, color=clr,
+                           edgecolors="black", zorder=5)
+        dot_kw = dict(s=13, color=clr, alpha=0.7, edgecolors="none", zorder=4)
+
+        ax_sag = axes[row, SAG_COL]
+        ax_sag.imshow(_translucent_gray_rgba(ref_sagittal), origin="upper",
+                      interpolation="nearest", zorder=1)
+        ax_sag.scatter(ap_p, dv_p, **dot_kw)
+        _kde_density_bands_on_ax(ax_sag, ap_p, dv_p, clr)
+        ax_sag.scatter([ap_p.mean()], [dv_p.mean()], **centroid_kw)
+        ax_sag.axis("off")
+        ax_sag.set_box_aspect(1)
+
+        ax_top = axes[row, TOP_COL]
+        ax_top.imshow(_translucent_gray_rgba(ref_transverse), origin="upper",
+                      interpolation="nearest", zorder=1)
+        ax_top.scatter(ap_p, ml_p, **dot_kw)
+        _kde_density_bands_on_ax(ax_top, ap_p, ml_p, clr)
+        ax_top.scatter([ap_p.mean()], [ml_p.mean()], **centroid_kw)
+        ax_top.axis("off")
+        ax_top.set_box_aspect(1)
+
+    _save(fig, out_dir / "cluster_enriched_summary_grid", dpi=400)
+    print(f"  Saved combined cohort-enriched cluster grid ({n_sig} clusters) → {out_dir}")
+
+
+
+def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.DataFrame, trial_table: pd.Dataframe,
                             plot_all_clusters: bool = False) -> dict:
     """Mouse-level R+/R− enrichment analysis across rastermap_psth clusters.
 
@@ -1479,8 +1939,10 @@ def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.Dat
     # Permutation MANOVA on Euclidean distances between per-mouse f-vectors.
     # Tests whether R+/R- group centroids differ in cluster-usage space.
     # H0: group label is exchangeable with the distance matrix.
-    permanova_F, permanova_p = _permanova(f_matrix, reward_groups, n_perm=500)
-    print(f"  PERMANOVA — F={permanova_F:.3f}  p={permanova_p:.4f}  (500 permutations)")
+    permanova_F, permanova_p, permanova_null_F = _permanova(
+        f_matrix, reward_groups, n_perm=5000, return_null=True)
+    print(f"  PERMANOVA — F={permanova_F:.3f}  p={permanova_p:.4f}  (5000 permutations)")
+
 
     # ── 4. Per-cluster Mann-Whitney + BH-FDR ─────────────────────────────
     # For each cluster k, compare f_{m,k} between R+ and R- mice.
@@ -1527,8 +1989,10 @@ def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.Dat
         sig_clusters = np.where(reject)[0] + 1
         fh.write(f"  Cluster IDs: {list(sig_clusters)}\n")
 
+    run_cluster_dispersion_stats(stats_dir, f_matrix, reward_groups, valid_mice)
+
     # ── condition metadata for post-hoc figures ────────────────────────────
-    conds, cond_labels, cond_colors, _, cond_align_cols = get_conditions(cfg)
+    conds, cond_labels, cond_colors, cond_labels_matrix, cond_align_cols = get_conditions(cfg)
     row_groups = _condition_rows(conds, cond_align_cols)
     edge_trim = _edge_trim_bins(cfg)
     area_arr, area_src = _load_area_arr(out_folder, data["unit_ids"])
@@ -1538,6 +2002,9 @@ def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.Dat
     _fig_stats_overview(f_matrix, reward_groups, pvals_raw, pvals_fdr, reject,
                     permanova_F, permanova_p, n_clusters, stats_dir)
 
+    _fig_permanova_null_distribution(permanova_null_F, permanova_F, permanova_p,
+                                      n_perm=5000, out_dir=stats_dir)
+
     _fig_strip_plots(f_matrix, reward_groups, pvals_fdr, reject, valid_mice, stats_dir)
 
     _fig_neuron_yield(neuron_counts, reward_groups, valid_mice, stats_dir)
@@ -1545,40 +2012,80 @@ def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.Dat
     _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
                               permanova_F, permanova_p,
                               X, cluster_labels, reward_arr, isort, boundaries,
-                              n_bins_list, t_ctrs,
+                              n_bins_list, t_ctrs, cond_labels_matrix,
                               n_clusters, stats_dir)
 
-    # Area compo all clusters
-   # _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr, pvals_fdr, reject, stats_dir.parent, mode="all")
 
-
-    # Activity profiles by trial types
+    # ── activity profiles grid ────────────────────────────────────────────────────
     _fig_sigclusters_by_trialtype(X, cluster_labels, mouse_arr, pvals_fdr, reject,
                                    n_bins_list, t_ctrs, cond_labels, row_groups,
                                    edge_trim, stats_dir)
 
-    # TODO: plot the activity of these neurons, not the z-scored.
     _fig_sigclusters_by_trialtype_by_rewardgroup(X, cluster_labels, mouse_arr, reward_arr, pvals_fdr, reject,
                                    n_bins_list, t_ctrs, cond_labels, row_groups,
                                    edge_trim, stats_dir)
 
-    # ── area composition ────────────────────────────────────────────────────
-    mode = "significant"
-
-    area_arr, area_src = _load_area_arr(out_folder, data["unit_ids"])
-    print(f"  Loaded area_acronym from {area_src.name}")
-    _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr,
-                                  pvals_fdr, reject, stats_dir, mode=mode)
-
-    # ── spatial location ─────────────────────────────────────────────────────
-    mode = "significant"
-    sig_clusters = _select_clusters_to_plot(pvals_fdr, reject, mode=mode)
 
     coords_bregma = _load_bregma_coords(unit_table, data["unit_ids"])
     coords_ccf = _load_ccf_atlas_coords(unit_table, data["unit_ids"])
 
+    # ── spatial location ─────────────────────────────────────────────────────
+    #mode = "all"
+    #clusters = _select_clusters_to_plot(pvals_fdr, reject, mode=mode)
+    #_fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr, pvals_fdr, reject, stats_dir.parent, mode=mode")
+
+
+    #loc_dir = stats_dir.parent / "clusters_location"
+    #if not os.path.exists(loc_dir):
+    #    os.makedirs(loc_dir)
+#
+    #loc_df, baseline_centroid = _permutation_location_vs_dataset(
+    #    cluster_labels, coords_bregma, mouse_arr, clusters, n_perm=500)
+    #loc_df.to_csv(loc_dir / "location_vs_dataset_stats.csv", index=False)
+#
+    #rg_loc_df = _permutation_location_by_rewardgroup(
+    #    cluster_labels, coords_bregma, mouse_arr, reward_arr, clusters, n_perm=500)
+    #rg_loc_df.to_csv(loc_dir / "location_by_rewardgroup_stats.csv", index=False)
+
+    #_fig_location_vs_dataset_detail(cluster_labels, coords_bregma, mouse_arr, clusters,
+    #                                loc_df, baseline_centroid, loc_dir)
+    #_fig_location_by_rewardgroup(cluster_labels, coords_bregma, mouse_arr, reward_arr,
+    #                             clusters, rg_loc_df, loc_dir)
+
+    #dev_df, baseline_centroid = compute_cluster_centroid_deviation(
+    #    cluster_labels, coords_bregma, mouse_arr, clusters_to_test=clusters, n_perm=2000)
+    #dev_df.to_csv(loc_dir / "cluster_centroid_deviation.csv", index=False)
+    #_fig_cluster_centroid_deviation(dev_df, loc_dir)
+
+    #render_cluster_location_and_density_grid(cluster_labels, coords_ccf, sig_clusters, loc_dir,
+    #                                          cluster_selection=mode)
+
+    #ATLAS_PATH = Path("/mnt/lsens-analysis/Axel_Bisi/Anatomy/allen_mouse_bluebrain_barrels_10um_v1.0")
+     #_fig_cluster_atlas_projections(cluster_labels, coords_ccf, clusters, loc_dir,
+     #                               atlas_path=ATLAS_PATH)
+
+    # -- Summary of enriched clusters ----
+    #ATLAS_PATH = Path("/mnt/lsens-analysis/Axel_Bisi/Anatomy/allen_mouse_bluebrain_barrels_10um_v1.0")
+
+    sig_clusters = _select_clusters_to_plot(pvals_fdr, reject, mode="significant")
+    summary_grid_dir = stats_dir / "sig_clusters_grid"
+    ATLAS_PATH = Path("/mnt/lsens-analysis/Axel_Bisi/Anatomy/allen_mouse_bluebrain_barrels_10um_v1.0")
+    _fig_cluster_enriched_grid(X, cluster_labels, mouse_arr, area_arr, coords_ccf,
+                                n_bins_list, t_ctrs, cond_labels, conds, cond_align_cols,
+                                sig_clusters, pvals_fdr, ATLAS_PATH, summary_grid_dir,
+                               raw=False, unit_table=unit_table,trial_table=trial_table, cfg=cfg) #TODO: unit_iods
+
+    # ── spatial location for significant clusters ─────────────────────────────────────────────────────
+    mode = "significant"
+    sig_clusters = _select_clusters_to_plot(pvals_fdr, reject, mode=mode)
+    area_arr, area_src = _load_area_arr(out_folder, data["unit_ids"])
+    _fig_cluster_area_composition(cluster_labels, area_arr, mouse_arr,
+                                  pvals_fdr, reject, stats_dir, mode=mode)
+    coords_bregma = _load_bregma_coords(unit_table, data["unit_ids"])
+    coords_ccf = _load_ccf_atlas_coords(unit_table, data["unit_ids"])
+
     loc_dir = stats_dir / "sig_clusters_location"
-    if not os.path.exists(loc_dir) and mode=="significant":
+    if not os.path.exists(loc_dir):
         os.makedirs(loc_dir)
 
     loc_df, baseline_centroid = _permutation_location_vs_dataset(
@@ -1619,43 +2126,29 @@ def run_reward_group_stats(out_folder: Path | str, cfg: dict, unit_table: pd.Dat
 
 
 # ── stats helper functions ─────────────────────────────────────────────────────
-
-def _permanova(X: np.ndarray, groups: np.ndarray, n_perm: int = 9999) -> tuple[float, float]:
+def _permanova(X: np.ndarray, groups: np.ndarray, n_perm: int = 9999,
+               return_null: bool = False):
     """Pseudo-F PERMANOVA on Euclidean distances.
-
-    Partitions total sum of squares into between-group and within-group
-    components using Euclidean distance matrix, then permutes group labels
-    to build a null distribution of the pseudo-F statistic.
-
-    Parameters
-    ----------
-    X      : (n_samples, n_features) array of per-mouse cluster fractions
-    groups : (n_samples,) array of group labels ("R+" / "R-")
-    n_perm : number of permutations for the null distribution
-
-    Returns
-    -------
-    F_obs : observed pseudo-F statistic
-    p     : permutation p-value
+    ...
+    return_null : if True, also return the full permuted null_F array
+                  (n_perm,), e.g. for plotting null vs. observed.
     """
     labels       = np.unique(groups)
     n            = len(X)
-    # Squared Euclidean distance matrix
     D2           = np.sum((X[:, None, :] - X[None, :, :]) ** 2, axis=2)
 
     def _pseudo_f(D2, grp):
-        """Compute pseudo-F from squared distance matrix and group vector."""
         SS_total = D2.sum() / (2 * n)
         SS_w = 0.0
         for lab in labels:
-            idx    = np.where(grp == lab)[0]
-            ni     = len(idx)
+            idx = np.where(grp == lab)[0]
+            ni  = len(idx)
             if ni < 2:
                 continue
-            SS_w  += D2[np.ix_(idx, idx)].sum() / (2 * ni)
-        SS_b    = SS_total - SS_w
-        df_b    = len(labels) - 1
-        df_w    = n - len(labels)
+            SS_w += D2[np.ix_(idx, idx)].sum() / (2 * ni)
+        SS_b = SS_total - SS_w
+        df_b = len(labels) - 1
+        df_w = n - len(labels)
         if df_w <= 0 or SS_w == 0:
             return np.nan
         return (SS_b / df_b) / (SS_w / df_w)
@@ -1664,8 +2157,9 @@ def _permanova(X: np.ndarray, groups: np.ndarray, n_perm: int = 9999) -> tuple[f
     rng    = np.random.default_rng(42)
     null_F = np.array([_pseudo_f(D2, rng.permutation(groups)) for _ in range(n_perm)])
     p      = ((null_F >= F_obs).sum() + 1) / (n_perm + 1)
+    if return_null:
+        return float(F_obs), float(p), null_F
     return float(F_obs), float(p)
-
 
 def _bh_correction(pvals: np.ndarray, alpha: float = 0.05) -> tuple[np.ndarray, np.ndarray]:
     """Benjamini-Hochberg FDR correction.
@@ -1690,6 +2184,32 @@ def _bh_correction(pvals: np.ndarray, alpha: float = 0.05) -> tuple[np.ndarray, 
 
     reject = pvals_adj < alpha
     return pvals_adj, reject
+
+def _fig_permanova_null_distribution(null_F, F_obs, p_value, n_perm, out_dir,
+                                      figsize=(5, 5), dpi=300):
+    """FigS5: PERMANOVA permuted null pseudo-F distribution vs. the observed
+    statistic, for the global R+/R- test on f_{m,k}."""
+    fig, ax = plt.subplots(figsize=figsize)
+
+    valid_null = null_F[np.isfinite(null_F)]
+    ax.hist(valid_null, bins=40, color="#D9D9D9", edgecolor="white",
+            linewidth=0.6, density=False)
+    ax.axvline(F_obs, color="#C0392B", lw=3, zorder=5,
+               label=f"Obs. F = {F_obs:.2f} \n p={p_value:.4f}")
+
+    ax.set_xlabel("Pseudo-F statistic", fontsize=18)
+    ax.set_ylabel("Permutations", fontsize=18)
+    ax.set_title("PERMANOVA: null vs. observed", fontsize=19, pad=14)
+    ax.tick_params(axis="both", labelsize=15)
+
+    sig_str = "p < 0.001" if p_value < 0.001 else f"p = {p_value:.4f}"
+    ax.legend(fontsize=9, frameon=False, loc="upper right")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.set_box_aspect(1)
+
+    fig.tight_layout()
+    _save(fig, out_dir / "figS5_permanova_null_distribution", dpi=dpi)
+    return
 
 
 def _fig_stats_overview(f_matrix, reward_groups, pvals_raw, pvals_fdr, reject,
@@ -1852,7 +2372,7 @@ def _fig_neuron_yield(neuron_counts, reward_groups, mouse_ids, stats_dir):
 def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
                               permanova_F, permanova_p,
                               X, cluster_labels, reward_arr, isort, boundaries,
-                              n_bins_list, t_ctrs,
+                              n_bins_list, t_ctrs, cond_labels_matrix,
                               n_clusters, stats_dir):
     """Vertical, cluster-indexed summary figure (rows = clusters 1..n, in
     rastermap_psth output order — matches fig5_population_matrix / fig6 layout).
@@ -1930,6 +2450,11 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     # ── Column 2: p-value lollipop plot ─────────────────────────────────────
     neg_log_p = -np.log10(np.clip(pvals_fdr, 1e-10, 1))
     dot_colors = ["black" if r else "darkgrey" for r in reject]
+
+    group_mean_diff = mean_rp - mean_rm
+    group_diff_reject = zip(reject, group_mean_diff)
+    dot_colors = [rplus_color if (r and diff>0) else rminus_color for (r,diff) in group_diff_reject]
+
     ax_p.hlines(y_inv, 0, neg_log_p, color=dot_colors, lw=1.0, zorder=2)
     ax_p.scatter(neg_log_p, y_inv, s=10, color=dot_colors, zorder=3, edgecolors="none")
     ax_p.axvline(-np.log10(0.05), color="k", ls="--", lw=0.8, alpha=0.6, zorder=1)
@@ -1976,7 +2501,7 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     ax_line.set_ylim(0.5, n_clusters + 0.5)
     ax_line.set_yticks([])
     ax_line.set_xticks(tick_pos)
-    ax_line.set_xticklabels(COND_LABELS_MATRIX, fontsize=6)
+    ax_line.set_xticklabels(cond_labels_matrix, fontsize=6)
     for s in ax_line.spines.values():
         s.set_visible(False)
     ax_line.set_title("Mean PSTH (pooled)\nline per cluster", fontsize=9)
@@ -1988,7 +2513,7 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     for ci, start in enumerate(offsets[1:-1]):
         ax_mean.axvline(start, color="w", lw=0.8)
     ax_mean.set_xticks(tick_pos)
-    ax_mean.set_xticklabels(COND_LABELS_MATRIX, fontsize=4)
+    ax_mean.set_xticklabels(cond_labels_matrix, fontsize=4)
     ax_mean.set_yticks([])
     for s in ax_mean.spines.values():
         s.set_visible(False)
@@ -2006,7 +2531,7 @@ def _fig_cluster_stats_matrix(f_matrix, reward_groups, pvals_fdr, reject,
     for ci, start in enumerate(offsets[1:-1]):
         ax_diff.axvline(start, color="k", lw=0.8)
     ax_diff.set_xticks(tick_pos)
-    ax_diff.set_xticklabels(COND_LABELS_MATRIX, fontsize=6)
+    ax_diff.set_xticklabels(cond_labels_matrix, fontsize=6)
     ax_diff.set_yticks([])
     for s in ax_diff.spines.values():
         s.set_visible(False)
@@ -2060,7 +2585,7 @@ def _load_area_arr(out_folder, unit_ids):
         for candidate in (out_folder / name, out_folder.parent / name):
             if candidate.exists():
                 meta_df = pd.read_csv(candidate).set_index("unit_ids")
-                area_arr = meta_df.reindex(unit_ids)["area_acronym"].to_numpy()
+                area_arr = meta_df.reindex(unit_ids)["area_acronym_custom"].to_numpy()
                 missing = pd.isna(area_arr).sum()
                 if missing:
                     print(f"  Warning: {missing}/{len(unit_ids)} unit_ids not found in {candidate.name}")
@@ -2303,7 +2828,7 @@ def _cluster_mouse_level_composition(cluster_labels, group_arr, mouse_arr, k, al
 
 
 def _permutation_area_divergence_test(cluster_labels, group_arr, mouse_arr, sig_clusters,
-                                       all_groups, n_perm=500, rng=None):
+                                       all_groups, n_perm=5000, rng=None):
     """Mouse-level permutation test: does a cluster's area-group composition
     (mouse-averaged) diverge from the dataset-wide baseline (also
     mouse-averaged) more than expected by chance, given each mouse's own area
@@ -2871,8 +3396,11 @@ def _load_bregma_coords(unit_table, unit_ids):
         pd.to_numeric(sub["dv"], errors="coerce").to_numpy(),
     ])
     n_bad = np.isnan(coords).any(axis=1).sum()
+    # Find mice where this is nan
+    mice_names_with_nan = unit_table.loc[sub.index, ["mouse_id", "ap", "ml", "dv"]].groupby("mouse_id").apply(lambda x: x[["ap", "ml", "dv"]].isna().all(axis=1).any())
+    mice_names_with_nan_list = mice_names_with_nan[mice_names_with_nan].index.tolist()
     if n_bad:
-        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing bregma AP/ML/DV")
+        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing bregma AP/ML/DV: {mice_names_with_nan_list}")
     return coords  # (n_neurons, 3), columns = AP, ML, DV, bregma-relative
 
 
@@ -2887,8 +3415,9 @@ def _load_ccf_atlas_coords(unit_table, unit_ids):
         pd.to_numeric(sub["ccf_atlas_dv"], errors="coerce").to_numpy(),
     ])
     n_bad = np.isnan(coords).any(axis=1).sum()
+    mice_no_ccf_atlas_ap = unit_table[["ccf_atlas_ap", "ccf_atlas_ml", "ccf_atlas_dv"]].isna().groupby(unit_table["mouse_id"]).all().all(axis=1)
     if n_bad:
-        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing ccf_atlas_ap/ml/dv")
+        print(f"  Warning: {n_bad}/{len(unit_ids)} neurons missing ccf_atlas_ap/ml/dv: {mice_no_ccf_atlas_ap.to_string()}")
     return coords  # (n_neurons, 3), columns = AP, ML, DV, true CCF atlas space
 
 def _mouse_level_centroid(coords, mouse_arr, mask):
@@ -3755,7 +4284,7 @@ def _fig_cluster_centroid_deviation(dev_df, out_dir, unit_label="μm"):
     0), subsequent xticks = each cluster's centroid distance from baseline.
     Significant clusters (BH-FDR) are annotated with a star."""
     n = len(dev_df)
-    fig, ax = plt.subplots(figsize=(max(6, 0.6 * (n + 1)), 4.5))
+    fig, ax = plt.subplots(figsize=(max(6, 0.6 * (n/10 + 1)), 4.5))
 
     x = np.arange(n + 1)
     values = np.concatenate([[0.0], dev_df["centroid_distance"].to_numpy()])
@@ -3783,7 +4312,7 @@ def _fig_cluster_centroid_deviation(dev_df, out_dir, unit_label="μm"):
 
 # ── stats-only entry point ───────────────────H─────────────────────────────────
 
-def run_stats_only(out_folder: str | Path,  cfg: dict, unit_table: pd.DataFrame) -> dict:
+def run_stats_only(out_folder: str | Path,  cfg: dict, unit_table: pd.DataFrame, trial_table: pd.DataFrame) -> dict:
     """Re-run the reward-group enrichment analysis on an existing embedding.
 
     Use this when you want to run or re-run statistics without recomputing
@@ -3820,7 +4349,7 @@ def run_stats_only(out_folder: str | Path,  cfg: dict, unit_table: pd.DataFrame)
                     "regenerate the embedding with metadata included.")
 
     print(f"Running stats-only pipeline on {out_folder} ...")
-    return run_reward_group_stats(out_folder, cfg, unit_table)
+    return run_reward_group_stats(out_folder, cfg, unit_table, trial_table)
 
 # ── config loading ─────────────────────────────────────────────────────────────
 

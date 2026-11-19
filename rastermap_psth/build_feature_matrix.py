@@ -20,9 +20,14 @@ from __future__ import annotations
 from pathlib import Path
 import numpy as np
 import pandas as pd
-import matplotlib; matplotlib.use("Agg")
+import matplotlib;
+from spikeinterface.widgets import unit_labels
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import yaml
+
+import ephys_utilities.allen_utils.allen_utils as allen_utils
 
 from rastermap_psth.rastermap_utils import (
     load_cfg, N_WORKERS, MOUSE_INFO, layer_number_mapper,
@@ -35,12 +40,6 @@ from rastermap_psth.rastermap_utils import (
     order_area_groups, spikes_around_events, _bin_rates_strided,
     _get_events, _save,
 )
-
-try:
-    from allen_utils import get_custom_area_groups
-    _HAS_ALLEN = True
-except Exception:
-    _HAS_ALLEN = False
 
 
 # ── diagnostic figures (fig0–fig4) ────────────────────────────────────────────
@@ -94,13 +93,15 @@ def table1b_trial_counts_per_mouse(event_map, cfg, out_dir):
     even_c   = np.zeros((n_mice, n_conds), int)
     for (mid, sid, ctx, tt, acol), events in event_map.items():
         mi = mouse_idx.get(mid)
-        if mi is None: continue
+        if mi is None:
+            continue
         for ci, ((tt2, ctx2), acol2) in enumerate(zip(CONDITIONS, COND_ALIGN_COLS)):
             if tt == tt2 and ctx == ctx2 and acol == acol2:
                 global_c[mi, ci] += len(events)
                 odd_c[mi, ci]    += len(events[0::2])
                 even_c[mi, ci]   += len(events[1::2])
-    rows = [{"mouse_id": m, "condition": lbl,
+    rows = [{"mouse_id": m,
+             "condition": lbl,
              "n_global": global_c[mi, ci],
              "n_odd":    odd_c[mi, ci],
              "n_even":   even_c[mi, ci]}
@@ -219,24 +220,27 @@ def run_build_feature_matrix(
 
     # ── output folders ────────────────────────────────────────────────────────
     bl_txt   = "nobl" if cfg.get("baseline_removal", False) else "bl"
+    merge_passive   = "merged" if cfg.get("merge_passive", False) else "unmerge"
+    qc_label   = "good" if cfg["unit_quality_label"]==["good"] else "good_mua"
     if cfg.get('waveform_type') not in ['rsu','fsu']:
         data_dir = Path(out_root, "rastermap_clustering",
                         cfg["period"], cfg["modality"],
-                        f"{bl_txt}_{cfg.get('normalize','zscore')}")
+                        f"{merge_passive}_{bl_txt}_{cfg.get('normalize','zscore')}_{qc_label}")
     else:
         data_dir = Path(out_root, "rastermap_clustering",
                         cfg["period"], cfg["modality"],
-                        f"{bl_txt}_{cfg.get('normalize', 'zscore')}_{cfg.get('waveform_type')}")
+                        f"{merge_passive}_{bl_txt}_{cfg.get('normalize', 'zscore')}_{cfg.get('waveform_type')}_{qc_label}")
     diag_dir = data_dir / "diagnostics"
     data_dir.mkdir(parents=True, exist_ok=True)
     diag_dir.mkdir(exist_ok=True)
 
     if not cfg["recompute_feature_matrix"]:
-        return dict(data_folder=data_dir,)
+        return dict(data_folder=data_dir)
 
     # save config snapshot
     cfg_snap = {k: (list(v) if isinstance(v, range) else v) for k, v in cfg.items()}
-    with open(data_dir / "config_used.yaml", "w") as f:
+    config_used_path = data_dir / "config_used.yaml"
+    with open(config_used_path, "w") as f:
         yaml.dump(cfg_snap, f, default_flow_style=False, sort_keys=True)
 
     assert units.index.is_unique, "units index must be unique"
@@ -244,7 +248,7 @@ def run_build_feature_matrix(
     # ── filters ───────────────────────────────────────────────────────────────
     mouse_info = pd.read_excel(MOUSE_INFO)
     valid_mice_rplus = mouse_info[(mouse_info['reward_group']=='R+')&(mouse_info["learning_category"].isin(["good", "moderate"]))]["mouse_id"].unique()
-    valid_mice_rminus = mouse_info[(mouse_info['reward_group']=='R-')&(mouse_info["learning_category"].isin(["good", "moderate","bad"]))]["mouse_id"].unique()
+    valid_mice_rminus = mouse_info[(mouse_info['reward_group']=='R-')&(mouse_info["learning_category"].isin(["good", "moderate"]))]["mouse_id"].unique()
     #valid_mice = mouse_info[mouse_info["learning_category"].isin(["good", "moderate"])]["mouse_id"].unique()
     valid_mice = np.concatenate([valid_mice_rplus, valid_mice_rminus])
 
@@ -252,18 +256,16 @@ def run_build_feature_matrix(
     units_raw = units.copy()
     units     = units[units.firing_rate > cfg["global_fr_hz"]]
     trials    = trials[trials.mouse_id.isin(valid_mice)]
-    lick_df = lick_df[lick_df.mouse_id.isin(valid_mice)]
-    print('here', len(trials), len(valid_mice), len(units))
+    lick_df   = lick_df[lick_df.mouse_id.isin(valid_mice)]
 
     period = cfg["period"]
-    if period in ("passive", "passive_active"):
-        trials = assign_passive_context(trials, cfg["mouse_id_col"], cfg["session_id_col"])
+    # Assign passive into pre/post if not merged
+    if (period in ("passive", "passive_active")) and (not cfg["merge_passive"]):
+            trials = assign_passive_context(trials, cfg["mouse_id_col"], cfg["session_id_col"])
     if period in ("active", "passive_active"):
-        trials = assign_active_context(trials)
-        print('here trials', len(trials))
+        trials = assign_active_context(trials) #assigns into active_lick, active_nolick
 
     units_good = units[units.quality_label.isin(cfg["unit_quality_label"])]
-    print('here units good', len(units_good))
     all_ids    = units_good.index.tolist()
 
     st_map      = {uid: get_spike_times(units_good.loc[uid]) for uid in all_ids}
@@ -284,7 +286,7 @@ def run_build_feature_matrix(
         jaw_mice = {k[0] for k in event_map if k[4] == "jaw_onset_time"}
         all_ids  = [u for u in all_ids if mouse_map[u] in jaw_mice]
     if period in ("passive", "passive_active"):
-        pas_mice = {k[0] for k in event_map if k[2] in ("passive_pre", "passive_post")}
+        pas_mice = {k[0] for k in event_map if k[2] in ("passive_pre", "passive_post", "passive")}
         all_ids  = [u for u in all_ids if mouse_map[u] in pas_mice]
 
     unit_ids, fr_map = apply_fr_filter(all_ids, st_map, mouse_map, session_map, event_map, cfg)
@@ -313,8 +315,10 @@ def run_build_feature_matrix(
     reward_map = {uid: ("R+" if r == 1 else "R-" if r == 0 else "unknown")
                   for uid, r in units_good[cfg["reward_group_col"]].to_dict().items()}
     area_map   = units_good[cfg["area_col"]].to_dict()
+    area_map   = units_good[cfg["area_col"]].to_dict()
     reward_arr = np.array([reward_map.get(u, "unknown") for u in unit_ids])
     area_arr   = np.array([area_map.get(u, "unknown")   for u in unit_ids])
+    unit_qc_arr = np.array([units_good["quality_label"].to_dict().get(u, "unknown") for u in unit_ids])
 
     if cfg.get("anatomy_score_cols"):
         am         = load_anatomy_scores(units_good, cfg["anatomy_score_cols"])
@@ -325,7 +329,16 @@ def run_build_feature_matrix(
         axon_arr = harris_arr = gao_arr = None
 
     if cfg.get("use_wf_classification_csv", True):
-        wf_map       = load_waveform_classification(units_good, cfg["mouse_id_col"], cfg["session_id_col"])
+        #wf_map       = load_waveform_classification(units_good, cfg["mouse_id_col"], cfg["session_id_col"])
+        def _to_ww_nw(val):
+            s = str(val).strip().lower()
+            if s in ("ww", "rsu", "regular", "regular-spiking", "wide", "wide-waveform"):
+                return "WW"
+            if s in ("nw", "fsu", "narrow", "fast", "fast-spiking", "narrow-waveform"):
+                return "NW"
+            return "unknown"
+        wf_map       = units_good['waveform_type'].apply(_to_ww_nw)
+        wf_map       = {uid: wf_map.loc[uid] for uid in units_good.index}
         waveform_arr = np.array([wf_map.get(u, "unknown") for u in unit_ids])
     else:
         wd           = units_good["duration"].to_dict()
@@ -336,8 +349,7 @@ def run_build_feature_matrix(
     layer_arr = np.array([str(units_good["layer_number"].to_dict().get(u, "unknown"))
                           for u in unit_ids])
 
-    _a2g = ({a: g for g, areas in get_custom_area_groups().items() for a in areas}
-            if _HAS_ALLEN else {})
+    _a2g = ({a: g for g, areas in allen_utils.get_custom_area_groups().items() for a in areas})
     area_group_arr = np.array([_a2g.get(a, "Other") for a in area_arr])
 
     # ── diagnostic figures ────────────────────────────────────────────────────
@@ -390,7 +402,7 @@ def run_build_feature_matrix(
         return num / denom
 
     odd_even_r   = _pearson_r_rows(X_odd, X_even)
-    r_threshold  = cfg.get("min_odd_even_r", 0.2)
+    r_threshold  = cfg.get("min_odd_even_r", 0.1)
     reliable     = odd_even_r >= r_threshold
 
     print(f"  Odd/even reliability filter (r >= {r_threshold}): "
@@ -416,7 +428,7 @@ def run_build_feature_matrix(
 
     # ── save feature_matrix.npz ───────────────────────────────────────────────
     sd = dict(X=X, X_odd=X_odd, X_even=X_even,
-              unit_ids=np.array(unit_ids),
+              unit_ids=np.array(unit_ids), unit_qc_arr = np.array(unit_qc_arr),
               n_bins_list=np.array(n_bins_list), n_conds=np.array(len(t_ctrs)),
               mouse_arr=np.array([mouse_map[u]   for u in unit_ids]),
               session_arr=np.array([session_map[u] for u in unit_ids]),
@@ -455,7 +467,7 @@ def run_build_feature_matrix(
     print(f"  Saved → neuron_metadata.csv  ({len(meta_df)} neurons)")
     print(f"\nDone.  Data folder → {data_dir}")
 
-    return dict(data_folder=data_dir, unit_ids=unit_ids,
+    return dict(data_folder=data_dir, config_path=config_used_path, unit_ids=unit_ids,
                 X=X, X_odd=X_odd, X_even=X_even,
                 t_ctrs=t_ctrs, n_bins_list=n_bins_list,
                 reward_arr=reward_arr, area_arr=area_arr,

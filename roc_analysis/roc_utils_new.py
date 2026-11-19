@@ -22,9 +22,25 @@ from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.utils.class_weight import compute_sample_weight
 import NWB_reader_functions as nwb_reader
 import neural_utils_old
+import ephys_utilities.neural_utils.neural_utils as neural_utils
+import ephys_utilities.helpers.data_utils as data_utils
 
 
+# N_WORKERS was previously a flat 100. Each Pool below broadcasts a full
+# copy of a large shared object (proc_unit_table / combo_data) to every
+# worker via the initializer. Under 'fork' this is cheap (copy-on-write),
+# but Python's newer default start method, 'forkserver' (used on 3.14+ and
+# in some environments regardless of platform), spawns workers from a
+# server process that started before that object existed — so each worker
+# gets it via a full pickle transfer instead, not COW. With 100 workers
+# that's ~100x the memory of the shared object, which is a common cause of
+# an OOM-killed worker mid-run (visible as a `_pickle.UnpicklingError:
+# pickle data was truncated` when the Pool tries to respawn the killed
+# worker). Scale to actual hardware instead of a flat number; override this
+# constant directly if you know your machine can handle more.
 N_WORKERS = 100
+N_WORKER_MAX_TASKS = 100  # recycle each worker after this many tasks, to bound any per-worker memory creep over a long run
+
 N_PERMUTATIONS = 1000
 ALPHA = 0.05
 
@@ -44,6 +60,9 @@ POST_DURATION = POST_WINDOW[1] - POST_WINDOW[0]
 SPONT_PRE_DURATION = SPONT_LICK_WINDOW[1] - SPONT_LICK_WINDOW[0]
 SPONT_POST_DURATION = SPONT_LICK_WINDOW[3] - SPONT_LICK_WINDOW[2]
 BASELINE_DURATION = BASELINE_WINDOW[1] - BASELINE_WINDOW[0]
+# ROC inputs are per-trial firing rates (spikes/s), not counts, so that classes measured in windows of
+# different lengths are comparable (see _get_counts).
+ROC_USES_RATES = True
 
 TIME_WINDOWS = {
     'pre': PRE_WINDOW,
@@ -98,7 +117,7 @@ NEUTRAL_COLORS = ['#4daf4a', '#999999']
 # automatically works on corrected spike times, regardless of which
 # trial-type grouping (hit, miss, lick_trial, no_lick_trial, choice, ...)
 # ends up referencing a given whisker trial's onset.
-WHISKER_ARTIFACT_WINDOW = (-0.010, 0.006)
+WHISKER_ARTIFACT_WINDOW = (-0.010, 0.005)
 WHISKER_ARTIFACT_BASELINE_WINDOW = (-0.200, -0.010)
 
 # (event_type -> (contexts, window)) for every event PSTH sanity-check plots
@@ -184,7 +203,7 @@ def process_nwb_tables(nwb_file, apply_artifact_correction=True):
 
     # Keep well-isolated units with a valid brain region label
     #units = units[(units['bc_label'].isin(['good','mua']))]
-    units = neural_utils.convert_electrode_group_object_to_columns(units)
+    units = data_utils.convert_electrode_group_object_to_columns(units)
 
     # Keep fewer columns only
     ccf_cols = [c for c in units.columns if "ccf" in c]
@@ -386,12 +405,16 @@ def _process_unit_extract(unit_row):
 
     return rows
 
-def extract_spike_data(nwb_file):
+def extract_spike_data(nwb_file, n_workers=None):
     """
     Process spike data from a NWB file.
     :param nwb_file: path to NWB file
+    :param n_workers: worker processes for this pool; defaults to module-level
+        N_WORKERS. Pass explicitly if you're already parallelizing across
+        mice/sessions at an outer level (see compute_unit_roc's n_workers doc).
     :return: processed unit table (pd.DataFrame)
     """
+    n_workers = n_workers or N_WORKERS
     nwb_file_path = pathlib.Path(nwb_file)
     mouse_name = nwb_file_path.name[:5]
     session_id = nwb_file_path.stem
@@ -453,14 +476,15 @@ def extract_spike_data(nwb_file):
     print(f'Extracting spike data: {len(unit_rows)} units × {len(combo_data)} combos')
 
     with multiprocessing.Pool(
-        processes=N_WORKERS,
+        processes=n_workers,
         initializer=_extract_worker_init,
         initargs=(combo_data,),
+        maxtasksperchild=N_WORKER_MAX_TASKS,
     ) as pool:
         nested = pool.map(
             _process_unit_extract,
             unit_rows,
-            chunksize=max(1, len(unit_rows) // (N_WORKERS * 4)),
+            chunksize=max(1, len(unit_rows) // (n_workers * 4)),
         )
 
     # Flatten list-of-lists and build DataFrame
@@ -593,8 +617,16 @@ def _baseline_subtract_column(df_subset, count_col, count_duration):
 
 def _get_counts(unit_data, event, context, col='post_spikes', apply_baseline=True):
     """
-    Extract a flat array of (optionally baseline-corrected) spike counts
-    for a given (event, context, column) combination.
+    Extract a flat array of (optionally baseline-corrected) per-trial FIRING
+    RATES (spikes/s) for a given (event, context, column) combination.
+
+    Rates, not counts (ROC_USES_RATES, 2026-09-28): each trial's count is
+    divided by its window length. Several ROC types compare windows of
+    different lengths (e.g. hit/CR post window 30 ms vs spontaneous-lick post
+    window 200 ms in *_hit_vs_spontaneous and spontaneous_licks_vs_cr; passive
+    pre 35 ms vs post 30 ms), which biases a count-based AUC. For same-window
+    comparisons the AUC is unchanged (constant scale factor). The baseline is
+    still subtracted in count units scaled to the window, then converted.
 
     :param apply_baseline: if True, subtract the single-trial baseline
         (scaled to the window duration implied by `col`) before flattening.
@@ -609,8 +641,12 @@ def _get_counts(unit_data, event, context, col='post_spikes', apply_baseline=Tru
         duration = SPONT_POST_DURATION if event == 'spontaneous_licks' else POST_DURATION
     elif col == 'pre_spikes':
         duration = SPONT_PRE_DURATION if event == 'spontaneous_licks' else PRE_DURATION
+    elif col == 'baseline_pre_spikes':
+        duration = None  # no baseline subtraction of the baseline itself
     else:
-        duration = None  # e.g. col == 'baseline_pre_spikes' itself
+        duration = None
+    rate_duration = duration if duration is not None else (
+        BASELINE_DURATION if col == 'baseline_pre_spikes' else None)
 
     if apply_baseline and duration is not None:
         arrays = _baseline_subtract_column(sub, col, duration).values
@@ -618,9 +654,12 @@ def _get_counts(unit_data, event, context, col='post_spikes', apply_baseline=Tru
         arrays = sub[col].values
 
     try:
-        return np.concatenate(arrays)
+        x = np.concatenate(arrays).astype(float)
     except ValueError:
         return np.array([])
+    if ROC_USES_RATES and rate_duration:
+        x = x / rate_duration                     # spikes/s
+    return x
 
 
 def select_spike_counts(unit_data, analysis_type):
@@ -843,21 +882,18 @@ def process_unit(neuron_id, proc_unit_table, analysis_type, results_path):
 
     return res_dict
 
-# Module-level worker state — set once per process via initializer, never re-pickled
-_worker_unit_table = None
-
-def _worker_init(unit_table):
-    """Store the unit table in each worker process once at pool creation."""
-    global _worker_unit_table
-    _worker_unit_table = unit_table
-
-
 def _process_unit_task(args):
-    """Unpack args and call process_unit using the pre-loaded worker-local table."""
-    neuron_id, analysis_type, results_path = args
+    """
+    Unpack args and call process_unit. `unit_table_slice` is already
+    filtered down to this one neuron_id in the parent process before being
+    handed to the worker — no shared full-table state, so memory per task
+    is bounded by one neuron's data regardless of n_workers or how many
+    other mice/processes are running concurrently at an outer level.
+    """
+    neuron_id, unit_table_slice, analysis_type, results_path = args
     return process_unit(
         neuron_id,
-        proc_unit_table=_worker_unit_table,
+        proc_unit_table=unit_table_slice,
         analysis_type=analysis_type,
         results_path=results_path,
     )
@@ -1161,7 +1197,7 @@ def diagnose_whisker_artifact(nwb_file, half_range=0.030, bin_ms=1.0):
     return bin_edges, raw_counts, corrected_counts
 
 
-def extract_psth_spike_times(nwb_file):
+def extract_psth_spike_times(nwb_file, n_workers=None):
     """
     Extract, for every neuron and every (event, context) combo used by the
     PSTH sanity-check plots, the raw per-trial spike times relative to event
@@ -1172,10 +1208,14 @@ def extract_psth_spike_times(nwb_file):
     every whisker trial in the session — no extra correction step happens
     here.
 
+    :param n_workers: worker processes for this pool; defaults to module-level
+        N_WORKERS. Pass explicitly if you're already parallelizing across
+        mice/sessions at an outer level (see compute_unit_roc's n_workers doc).
     :return: (psth_data, unit_table) where
         psth_data  = {neuron_id: {(event, context): [per-trial relative spike arrays]}}
         unit_table = processed unit metadata DataFrame (as in extract_spike_data)
     """
+    n_workers = n_workers or N_WORKERS
     nwb_file_path = pathlib.Path(nwb_file)
     mouse_name = nwb_file_path.name[:5]
     session_id = nwb_file_path.stem
@@ -1202,9 +1242,10 @@ def extract_psth_spike_times(nwb_file):
     print(f'Extracting PSTH data: {len(unit_rows)} units x {len(combo_data)} combos')
 
     with multiprocessing.Pool(
-        processes=N_WORKERS,
+        processes=n_workers,
         initializer=_psth_worker_init,
         initargs=(combo_data,),
+        maxtasksperchild=N_WORKER_MAX_TASKS,
     ) as pool:
         results = pool.map(_process_unit_psth, unit_rows)
 
@@ -1461,7 +1502,7 @@ def _plot_panel(ax, psth_data, panel, results_table, cache):
     ax.set_box_aspect(1)
 
 
-def plot_psth_sanity_check(nwb_file, results_table, results_path, n_cols=6, panels_per_page=None, dpi=150, panel_size=2.4):
+def plot_psth_sanity_check(nwb_file, results_table, results_path, n_cols=6, panels_per_page=None, dpi=150, panel_size=2.4, n_workers=None):
     """
     Build a single-page PDF of PSTH sanity-check plots for one NWB file
     (all neurons pooled into population averages per group):
@@ -1515,7 +1556,7 @@ def plot_psth_sanity_check(nwb_file, results_table, results_path, n_cols=6, pane
     Saved to {results_path}/figures/{mouse_id}_psth_sanity_check.pdf
     """
     print('Extracting PSTH data for sanity-check plots:', nwb_file)
-    psth_data, unit_table = extract_psth_spike_times(nwb_file)
+    psth_data, unit_table = extract_psth_spike_times(nwb_file, n_workers=n_workers)
     mouse_id = unit_table['mouse_id'].values[0]
 
     all_panels = list(PSTH_PANELS_BY_ANALYSIS) + list(PSTH_PANELS_BY_LABEL) + list(PSTH_PANELS_DECISION)
@@ -1589,7 +1630,7 @@ def _build_run_config(nwb_file, mouse_id, analyses_to_do):
     }
 
 
-def compute_unit_roc(nwb_file, results_path, make_psth_plots=False):
+def compute_unit_roc(nwb_file, results_path, make_psth_plots=False, n_workers=None):
     """
     Perform ROC roc_analysis on spike data from a NWB file.
     :param nwb_file: path to NWB file
@@ -1598,10 +1639,22 @@ def compute_unit_roc(nwb_file, results_path, make_psth_plots=False):
         (see plot_psth_sanity_check). Off by default: it re-extracts raw
         spike times across all neurons/events, which is slower than the
         count-based ROC pipeline.
+    :param n_workers: worker processes for this mouse's task pool. Defaults
+        to the module-level N_WORKERS, which is sized from os.cpu_count()
+        and knows nothing about any outer-level parallelism (e.g. multiple
+        mice being processed concurrently on the same machine). If you're
+        dispatching mice across cores yourself, pass n_workers explicitly
+        (e.g. total_cores // n_concurrent_mice) rather than relying on the
+        default. Tasks are dispatched with each neuron's data pre-sliced
+        in the parent process (see _process_unit_task) rather than
+        broadcasting the full proc_unit_table to every worker, so memory
+        use scales with in-flight task size, not with n_workers or how
+        many mice are running in parallel.
     """
     print('Starting ROC roc_analysis for file:', nwb_file)
+    n_workers = n_workers or N_WORKERS
 
-    proc_unit_table = extract_spike_data(nwb_file)
+    proc_unit_table = extract_spike_data(nwb_file, n_workers=n_workers)
     mouse_id = proc_unit_table['mouse_id'].values[0]
 
     if int(mouse_id[2:5]) < 115 and mouse_id[:2] == 'AB': #TODO: add data_utils for passive mcie
@@ -1634,21 +1687,24 @@ def compute_unit_roc(nwb_file, results_path, make_psth_plots=False):
 
     neuron_ids = proc_unit_table['neuron_id'].unique()
 
+    # Pre-slice once per neuron in the parent process. Each task then
+    # carries only its own neuron's rows — not a reference into a shared
+    # full table — so nothing forces a full-table pickle transfer per
+    # worker (which is what a Pool initializer does under 'forkserver').
+    neuron_slices = {nid: proc_unit_table[proc_unit_table['neuron_id'] == nid] for nid in neuron_ids}
+
     # Build the full task list across ALL roc_analysis types and neurons at once
     tasks = [
-        (neuron_id, analysis_type, results_path)
+        (neuron_id, neuron_slices[neuron_id], analysis_type, results_path)
         for analysis_type in analyses_to_do
         for neuron_id in neuron_ids
     ]
-    print(f'Dispatching {len(tasks)} tasks ({len(neuron_ids)} neurons × {len(analyses_to_do)} analyses) across {N_WORKERS} workers')
+    print(f'Dispatching {len(tasks)} tasks ({len(neuron_ids)} neurons × {len(analyses_to_do)} analyses) across {n_workers} workers')
 
-    # Single pool: proc_unit_table is loaded once per worker via the initializer,
-    # never re-pickled across individual tasks
-    chunksize = max(1, len(tasks) // (N_WORKERS * 4))
+    chunksize = max(1, len(tasks) // (n_workers * 4))
     with multiprocessing.Pool(
-            processes=N_WORKERS,
-            initializer=_worker_init,
-            initargs=(proc_unit_table,),
+            processes=n_workers,
+            maxtasksperchild=N_WORKER_MAX_TASKS,
     ) as pool:
         results = list(tqdm.tqdm(
             pool.imap(_process_unit_task, tasks, chunksize=chunksize),
@@ -1677,7 +1733,7 @@ def compute_unit_roc(nwb_file, results_path, make_psth_plots=False):
     print('Saving run config to:', config_path)
 
     if make_psth_plots:
-        plot_psth_sanity_check(nwb_file, results_table, results_path)
+        plot_psth_sanity_check(nwb_file, results_table, results_path, n_workers=n_workers)
 
 def roc_analysis_old(nwb_file, results_path):
     """
@@ -1726,7 +1782,7 @@ def roc_analysis_old(nwb_file, results_path):
         # Use multiprocessing to process each neuron_id in parallel
         neuron_ids = proc_unit_table['neuron_id'].unique()
 
-        with multiprocessing.Pool(N_WORKERS) as pool:
+        with multiprocessing.Pool(N_WORKERS, maxtasksperchild=N_WORKER_MAX_TASKS) as pool:
             func = partial(process_unit, proc_unit_table=proc_unit_table, analysis_type=analysis_type, results_path=results_path)
             analysis_results = pool.map(func, neuron_ids)
             results.extend(analysis_results)

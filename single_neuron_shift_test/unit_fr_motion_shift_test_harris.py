@@ -1059,7 +1059,9 @@ def run_motion_shift_test_analysis(unit_table, trial_table, output_path,
 
     if "session_day" not in unit_table.columns:
         unit_table = unit_table.copy()
-        unit_table["session_day"] = "whisker_0"
+        beh = unit_table['behaviour'].unique()[0]
+        day = unit_table['day'].unique()[0]
+        unit_table["session_day"] = f"{beh}_{day}"
 
     session_keys = unit_table[["session_id", "mouse_id", "session_day"]].drop_duplicates()
     if mouse_ids is not None:

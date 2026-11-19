@@ -24,31 +24,34 @@ session_id_col:  "session_id"
 context_col:     "context"
 trial_type_col:  "trial_type"
 reward_group_col: "reward_group"
-area_col:        "area_custom_acronym"
+area_col:        "area_acronym_custom"
 
 
 # ── experiment / condition selection ─────────────────────────────────────────
 period:    "passive_active"          # "passive" | "active" | "both"
+merge_passive:    false                   # "passive" | "active" | "both"
 modality:  "whisker_auditory"   # "whisker" | "auditory" | "whisker_auditory"
 reward_filter: "combined"  # "R+" | "R-" | "combined"
-unit_quality_label: ["good"]  # "good" | "both" for good+mua
+unit_quality_label: ["good", "mua"]  # "good" | "both" for good+mua
 
 
 # ── PSTH time windows ─────────────────────────────────────────────────────────
-t_pre_passive:  0.2    # pre-stimulus window for passive conditions (s)
-t_post_passive: 0.5    # post-stimulus window for passive conditions (s)
-t_pre_active:   0.2    # pre-stimulus window for active conditions (s)
-t_post_active:  0.5    # post-stimulus window for active conditions (s)
-t_pre_jaw:      0.35   # pre-jaw-onset window (s)
-t_post_jaw:     0.35   # post-jaw-onset window (s)
-t_pre_lick:      0.5   # pre-jaw-onset window (s)
-t_post_lick:     0.2   # post-jaw-onset window (s)
+t_pre_passive:  0.1    # pre-stimulus window for passive conditions (s)
+t_post_passive: 0.2    # post-stimulus window for passive conditions (s)
+t_pre_active:   0.1    # pre-stimulus window for active conditions (s)
+t_post_active:  0.4    # post-stimulus window for active conditions (s)
+t_pre_jaw:      0.25   # pre-jaw-onset window (s)
+t_post_jaw:     0.15   # post-jaw-onset window (s)
+t_pre_lick:      0.3   # pre-lick-time window (s)
+t_post_lick:     0.2   # post-lick-time window (s)
+t_pre_reward:      0.35   # pre-reward-time window (s)
+t_post_reward:     0.05   # post-reward-time window (s)
 
 
 # ── binning / smoothing ───────────────────────────────────────────────────────
 bin_ms:    10
 stride_ms: 5
-sigma_ms:  5
+sigma_ms:  2
 
 
 # ── trial type labels ─────────────────────────────────────────────────────────
@@ -58,7 +61,7 @@ artifact_win_s: [-0.010, 0.005]
 
 # ── lick conditions ───────────────────────────────────────────────────────────
 include_lick_conditions: true
-lick_quiet_window_s: 0.2   # quiet baseline window before nearest trial start_time (s)
+lick_quiet_window_s: 0.1   # quiet baseline window before nearest trial start_time (s)
 
 
 # ── normalisation ─────────────────────────────────────────────────────────────
@@ -88,11 +91,11 @@ vmax_pct:        75
 # FEATURE MATRIX SCRIPT (build_feature_matrix.py)
 # ══════════════════════════════════════════════════════════════════════════════
 
-recompute_feature_matrix: false
+recompute_feature_matrix: true
 global_fr_hz:              0.01   # session-level FR pre-filter (Hz)
 fr_threshold_hz:           0.1    # per-condition FR threshold (Hz)
 n_min_trial_per_condition: 3      # minimum odd-trial count per mouse×condition
-min_odd_even_r:            0.2    # minimum Pearson r between odd/even PSTH vectors (reliability filter)
+min_odd_even_r:            0.1    # minimum Pearson r between odd/even PSTH vectors (reliability filter)
 waveform_type:             both    # compute on rsu only
 
 
@@ -116,8 +119,8 @@ k_elbow_min:   2     # range(k_elbow_min, k_elbow_max) for elbow plot
 k_elbow_max:   250
 
 # UMAP
-umap_n_neighbors: 20
-umap_min_dist:    0.15
+umap_n_neighbors: 15
+umap_min_dist:    0.11
 
 # sample neurons figure
 n_sample_neurons: 24

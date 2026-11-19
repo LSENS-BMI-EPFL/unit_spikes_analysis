@@ -18,6 +18,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless-safe (HPC/no display)
 import matplotlib.pyplot as plt
 import NWB_reader_functions as nwb_reader
+import ephys_utilities.helpers.data_utils as data_utils
 
 # Dead-zone around whisker_trial start_time to exclude from spike counting (e.g. stim artifact)
 DEAD_ZONE_PRE = 0.010   # 10 ms before start_time
@@ -490,7 +491,7 @@ def _print_fraction(mouse_id, label, n_num, n_total, stage):
     print(f"Mouse {mouse_id}: {n_num}/{n_total} neurons are {label} {stage} ({frac:.2f}%)")
 
 
-def task_modulation_analysis(nwb_file, results_path, make_debug_plots=False):
+def task_modulation_analysis(nwb_file, results_path, make_debug_plots=True):
     print("Starting statistical tests task-modulation for:", nwb_file)
     SIG_LEVEL = 0.05
     BASELINE_LENGTH = 0.05  # 50 ms baseline, [start_time - BASELINE_LENGTH, start_time)
@@ -504,6 +505,8 @@ def task_modulation_analysis(nwb_file, results_path, make_debug_plots=False):
     mouse_id = nwb_reader.get_mouse_id(nwb_file)
     session_id = nwb_reader.get_session_id(nwb_file)
     unit_table = nwb_reader.get_unit_table(nwb_file)
+    unit_table = data_utils.convert_electrode_group_object_to_columns(unit_table)
+
     unit_table = unit_table[unit_table.columns.intersection(
         ["neuron_id", "spike_times", "electrode_group", "cluster_id"]
     )]
@@ -540,7 +543,7 @@ def task_modulation_analysis(nwb_file, results_path, make_debug_plots=False):
     sensory_whisker_is_whisker = np.ones(sensory_whisker_starts.shape, dtype=bool)
     sensory_auditory_is_whisker = np.zeros(sensory_auditory_starts.shape, dtype=bool)
 
-    num_workers = get_num_workers()
+    num_workers = 110#get_num_workers()
     n_total = len(neuron_ids)
 
     # ------------------------------------------------------

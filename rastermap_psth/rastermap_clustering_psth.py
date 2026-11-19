@@ -67,6 +67,7 @@ import matplotlib
 import yaml
 import cmasher as cmr
 
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from joblib import Parallel, delayed
@@ -80,6 +81,7 @@ import matplotlib.colors as mcolors
 import matplotlib.patches as mpatches
 
 import ephys_utilities.plotting_utils.plotting_utils as plotting_utils
+import ephys_utilities.allen_utils.allen_utils as allen_utils
 
 # ── config ─────────────────────────────────────────────────────────────────────
 # TODO: Implement trad spectral emb/GMM approach and compare clustering / have it in different script for all the methods
@@ -1636,11 +1638,7 @@ def order_area_groups(area_group_arr):
     (primary), then by descending population frequency within any unrecognised groups
     (secondary).
     """
-    try:
-        from allen_utils import get_custom_area_groups
-        canonical_order = list(get_custom_area_groups().keys())
-    except Exception:
-        canonical_order = []
+    canonical_order = allen_utils.get_area_group_custom_order()
 
     # count population frequency per group
     groups, counts = np.unique(area_group_arr, return_counts=True)
@@ -2736,15 +2734,9 @@ def run_rastermap_psth(units: pd.DataFrame,
     layer_arr  = np.array([str(layer_map.get(uid, "unknown")) for uid in unit_ids])
 
     # Brain region groups (allen_utils)
-    try:
-        from allen_utils import get_custom_area_groups, get_custom_area_groups_colors
-        _area_groups   = get_custom_area_groups()   # {group: [area_list]}
-        _area_to_group = {a: grp for grp, areas in _area_groups.items() for a in areas}
-        group_colors_map = get_custom_area_groups_colors()   # {group: color}
-    except Exception as e:
-        print(f"  allen_utils not available ({e}); using area_acronym_custom as group")
-        _area_to_group   = {}
-        group_colors_map = {}
+    _area_groups   = allen_utils.get_custom_area_groups()   # {group: [area_list]}
+    _area_to_group = {a: grp for grp, areas in _area_groups.items() for a in areas}
+    group_colors_map = allen_utils.get_custom_area_groups_colors()   # {group: color}
     area_group_arr = np.array([_area_to_group.get(a, "Other") for a in area_arr])
 
 

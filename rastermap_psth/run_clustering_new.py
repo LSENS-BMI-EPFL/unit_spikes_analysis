@@ -64,13 +64,7 @@ from rastermap_psth.rastermap_utils import (
     build_anatomy_cmaps,
     run_reward_group_stats, _bh_correction
 )
-
-try:
-    from allen_utils import get_custom_area_groups, get_custom_area_groups_colors
-    _HAS_ALLEN = True
-except Exception:
-    _HAS_ALLEN = False
-
+import ephys_utilities.allen_utils.allen_utils as allen_utils
 from rastermap_psth.gmm_utils_new import * #(
         #GMM_CFG_DEFAULTS,
         #fit_spectral_gmm,
@@ -99,6 +93,7 @@ from rastermap_psth.rastermap_utils import (
     COND_LABELS_MATRIX as COND_LABELS_MATRIX,
     COND_ALIGN_COLS as COND_ALIGN_COLS,
 )
+
 
 
 # ── figure functions (fig5-fig13, figCV) extracted from original script ───────
@@ -208,7 +203,7 @@ def fig5b_kmeans_matrix(X, n_bins_list, km_labels, k, vmax, cfg,
 
     _draw_prop_column(axes[-1], reward_s,
                       ["R+", "R-"],
-                      {"R+": "forestgreen", "R-": "crimson"},
+                      {"R+": plotting_utils.GROUP_COLORS['rplus'], "R-": plotting_utils.GROUP_COLORS['rminus']},
                       edges, n_neurons, "Group")
 
     _save(fig, out_dir / fig_name, dpi=400)
@@ -222,6 +217,7 @@ def fig6_cluster_profiles(X, t_ctrs, n_bins_list, isort, boundaries, out_dir, pr
     fig, axes  = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows),
                                sharey=True, sharex=False)
     axes = np.atleast_1d(axes).ravel()
+    label_txt = 'Firing rate (z-score)' if DEFAULT_CFG['normalize']=='zscore' else 'Firing rate (spks/s)'
     for k in range(n_clusters):
         ax       = axes[k]
         idx      = isort[edges[k]:edges[k + 1]]
@@ -246,21 +242,22 @@ def fig6_cluster_profiles(X, t_ctrs, n_bins_list, isort, boundaries, out_dir, pr
             ax.set_title(f"C{k + 1}  (n={len(idx)}, all-NaN)", fontsize=8)
             ax.set_visible(False)
             continue
-        for c, (label, color, t_ctr_c) in enumerate(zip(COND_LABELS, COND_COLORS, t_ctrs)):
+        for c, (label, color, acol, t_ctr_c) in enumerate(zip(COND_LABELS, COND_COLORS, COND_ALIGN_COLS, t_ctrs)):
             sl = slice(offsets[c] + 1, offsets[c + 1] - 1)
-            ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.5, label=label)
+            if acol in ['lick_time','jaw_onset_time']:
+                ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.2, label=label, ls='--')
+            else:
+                ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.2, label=label)
             ax.fill_between(t_ctr_c[1:-1], mean_vec[sl] - sem_vec[sl],
                              mean_vec[sl] + sem_vec[sl], color=color, alpha=0.3)
         ax.axvline(0, color="k", lw=0.5, ls="--")
         ax.axhline(0, color="k", lw=0.5, ls="--")
         ax.set_title(f"C{k+1}  (n={len(idx)})", fontsize=8)
-        #if k % ncols == 0:
-        #    ax.set_ylabel(label_txt)
-        label_txt = 'Firing rate (z-score)' if DEFAULT_CFG['normalize']=='zscore' else 'Firing rate (spks/s)'
-        #if k >= (nrows - 1) * ncols:
         ax.set_xlabel("Time (s)")
         ax.set_ylabel(label_txt)
-        ax.legend(fontsize=5, loc="upper right", frameon=False)
+        ax.yaxis.set_tick_params(labelleft=True)
+        ax.tick_params(axis="both", which="major", labelsize=6)
+        ax.legend(fontsize=4, loc="upper right", frameon=False)
     for ax in axes[n_clusters:]:
         ax.set_visible(False)   # BUG FIX: was True
     fig.tight_layout()
@@ -286,9 +283,9 @@ def fig6b_cluster_profiles_reward_groups(X, t_ctrs, n_bins_list, isort, boundari
     fig, axes  = plt.subplots(nrows, ncols, figsize=(3 * ncols, 3 * nrows),
                                sharey=True, sharex=False)
     axes = np.atleast_1d(axes).ravel()
+    label_txt = 'Firing rate (z-score)' if DEFAULT_CFG['normalize'] == 'zscore' else 'Firing rate (spks/s)'
 
-    reward_groups = [("R+", "forestgreen"), ("R-", "crimson")]
-
+    reward_groups = [("R+", plotting_utils.GROUP_COLORS['rplus']), ("R-", plotting_utils.GROUP_COLORS['rminus'])]
     for k in range(n_clusters):
         ax  = axes[k]
         idx = isort[edges[k]:edges[k + 1]]
@@ -309,8 +306,11 @@ def fig6b_cluster_profiles_reward_groups(X, t_ctrs, n_bins_list, isort, boundari
                 sl = slice(offsets[c] + 1, offsets[c + 1] - 1)
                 label = f"{cond_labels[c]} {rg}"
                 color = plotting_utils.adjust_lightness(rg_color, 1.5) if "pre" in cond_labels[c].lower() else rg_color
-                ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.5, label=label)
-                ax.fill_between(t_ctr_c[1:-1], mean_vec[sl] - sem_vec[sl],
+                if 'lick' in label.lower() or 'jaw' in label.lower():
+                    ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.2, label=label, ls='--')
+                else:
+                    ax.plot(t_ctr_c[1:-1], mean_vec[sl], color=color, lw=1.2, label=label)
+                    ax.fill_between(t_ctr_c[1:-1], mean_vec[sl] - sem_vec[sl],
                                 mean_vec[sl] + sem_vec[sl], color=rg_color, alpha=0.2)
 
         ax.axvline(0, color="k", lw=0.5, ls="--")
@@ -318,14 +318,11 @@ def fig6b_cluster_profiles_reward_groups(X, t_ctrs, n_bins_list, isort, boundari
         n_rp = (reward_arr[idx] == "R+").sum()
         n_rm = (reward_arr[idx] == "R-").sum()
         ax.set_title(f"C{k+1}  (R+={n_rp}, R−={n_rm})", fontsize=8)
-        #if k % ncols == 0:
-        #    ax.set_ylabel("z-score")
-        label_txt = 'Firing rate (z-score)' if DEFAULT_CFG['normalize']=='zscore' else 'Firing rate (spks/s)'
-        #if k >= (nrows - 1) * ncols:
         ax.set_ylabel(label_txt)
         ax.set_xlabel("Time (s)")
-        ax.legend(fontsize=5, loc="upper right", frameon=False)
-
+        ax.yaxis.set_tick_params(labelleft=True)
+        ax.tick_params(axis="both", which="major", labelsize=6)
+        ax.legend(fontsize=4, loc="upper right", frameon=False)
     for ax in axes[n_clusters:]:
         ax.set_visible(False)
     fig.tight_layout()
@@ -335,6 +332,8 @@ def fig6b_cluster_profiles_reward_groups(X, t_ctrs, n_bins_list, isort, boundari
         figname = "fig6b_cluster_profiles_reward_groups"
 
     _save(fig, out_dir / figname, dpi=400)
+
+
 def fig7_pca_variance(X, n_pca, out_dir): # TODO: keep
     pca    = PCA(n_components=n_pca).fit(X)
     cumvar = np.cumsum(pca.explained_variance_ratio_) * 100
@@ -382,6 +381,347 @@ def fig8_umap(emb, cluster_labels, n_clusters, out_dir, prefix=None):
         figname = "fig8_umap"
     _save(fig, out_dir / figname, dpi=400)
     return
+
+def fig8_flow_umap(X, n_bins_list, t_ctrs, cond_labels, cond_colors, cfg, out_dir,
+                   cluster_labels=None, active_only=True, prefix=None,
+                   umap_seed=42, edge_trim=1, time_shade_floor=0.15):
+    """Population-average PSTH + time-bin-resolved UMAP and PCA ("flow") embeddings.
+
+    Each *time bin* of the population activity is one embedding sample (row =
+    time bin, cols = neurons), so nearby points are similar population states
+    and consecutive bins within a condition trace a trajectory through state
+    space. UMAP and PCA are fit on the identical (trimmed) bin set so the two
+    rows are directly comparable.
+
+    Layout (4 rows total)
+    ----------------------
+    Row 1 (UMAP), Row 2 (PCA) — each has:
+      A) population-average PSTH (drawn once, spanning both rows, col 0)
+      B) colored by normalized time-within-condition (0 -> 1)
+      C) colored by trial-type/condition, with per-point shade encoding time
+         within that condition (light tint near onset -> fully saturated
+         color near the end) so direction of travel is visible without a
+         separate colorbar
+      D) colored by activity-weighted rastermap cluster index (only if
+         cluster_labels given)
+    Row 3 (UMAP small multiples), Row 4 (PCA small multiples) — one square
+      panel per trial type: that condition's bins drawn with the same
+      time-shaded gradient as panel C, all other bins drawn as flat light
+      grey/translucent background for spatial context. Same axis limits as
+      the corresponding row-1/row-2 embedding for direct comparison.
+
+    Border-artifact handling
+    -------------------------
+    Bins at each condition's start/end can carry convolution edge artifacts
+    from upstream PSTH smoothing (e.g. gaussian_filter1d with zero-padding).
+    `edge_trim` bins are dropped from each end of every condition's window
+    before anything is embedded or averaged — this function applies no
+    smoothing of its own anywhere (PSTH trace, UMAP, or PCA), so trimming is
+    the only artifact-removal step; widen `edge_trim` if artifacts persist.
+
+    Parameters
+    ----------
+    X, n_bins_list, t_ctrs, cond_labels, cond_colors, cfg : as before.
+    cluster_labels : optional (n_neurons,) int array; adds panel D/D'.
+    active_only : restrict to non-"passive" conditions (default True).
+    prefix : optional filename suffix (e.g. "cv").
+    edge_trim : int, bins dropped from each end of every condition's window.
+    time_shade_floor : float in [0, 1), the minimum color saturation used at
+        a condition's first bin (frac=0); 0 would fade all the way to white
+        at onset, which can make early points invisible — default 0.15 keeps
+        them faintly visible while still darkening clearly over time.
+
+    Saves
+    -----
+    fig_flow_umap[_<prefix>].png/.pdf/.svg
+
+    Returns
+    -------
+    dict(umap_embedding, pca_embedding, pca_var_ratio, bin_cond_idx, bin_frac,
+         global_cols, include_idx, weighted_cluster_idx)
+    """
+    from matplotlib import colors as mcolors
+
+    n_bins_list = np.asarray(n_bins_list, dtype=int)
+    offsets     = np.concatenate([[0], np.cumsum(n_bins_list)])
+    n_conds     = len(cond_labels)
+    if not (len(t_ctrs) == n_conds and len(cond_colors) == n_conds and len(n_bins_list) == n_conds):
+        raise ValueError(
+            "fig_flow_umap: cond_labels / cond_colors / t_ctrs / n_bins_list "
+            f"must all have the same length (got {n_conds}, {len(cond_colors)}, "
+            f"{len(t_ctrs)}, {len(n_bins_list)}).")
+    if edge_trim < 0:
+        raise ValueError(f"fig_flow_umap: edge_trim must be >= 0, got {edge_trim}.")
+    if not (0.0 <= time_shade_floor < 1.0):
+        raise ValueError(f"fig_flow_umap: time_shade_floor must be in [0, 1), got {time_shade_floor}.")
+
+    if cluster_labels is not None:
+        cluster_labels = np.asarray(cluster_labels)
+        if len(cluster_labels) != X.shape[0]:
+            raise ValueError(
+                f"fig_flow_umap: cluster_labels has {len(cluster_labels)} entries "
+                f"but X has {X.shape[0]} neurons (rows) — must match 1:1.")
+        n_clusters = int(cluster_labels.max()) + 1
+
+    # ── select conditions ────────────────────────────────────────────────────
+    if active_only:
+        include_idx = [c for c, lbl in enumerate(cond_labels)
+                       if "passive" not in lbl.lower() and 'lick' not in lbl.lower()]
+    else:
+        include_idx = list(range(n_conds))
+    if not include_idx:
+        raise ValueError(
+            "fig_flow_umap: no conditions left after active_only filtering — "
+            "check that cond_labels actually distinguish active/passive.")
+    n_trial = len(include_idx)
+
+    # ── population-average PSTH (panel A) + per-bin metadata ─────────────────
+    global_cols  = []
+    bin_cond_idx = []
+    bin_frac     = []
+    pop_mean     = {}
+
+    for c in include_idx:
+        t_ctr_c  = np.asarray(t_ctrs[c])
+        n_bins_c = int(n_bins_list[c])
+        lo, hi = edge_trim, n_bins_c - edge_trim
+        if hi - lo < 1:
+            print(f"[fig_flow_umap] warning: condition '{cond_labels[c]}' has "
+                  f"only {n_bins_c} bins and edge_trim={edge_trim} would remove "
+                  f"all of them — falling back to no trimming for this condition.")
+            lo, hi = 0, n_bins_c
+        t_plot    = t_ctr_c[lo:hi]
+        sl_global = slice(offsets[c] + lo, offsets[c] + hi)
+
+        block    = X[:, sl_global]
+        mean_vec = block.mean(axis=0)
+        sem_vec  = block.std(axis=0) / np.sqrt(block.shape[0])
+        pop_mean[c] = (t_plot, mean_vec, sem_vec)
+
+        n_sel = block.shape[1]
+        global_cols.extend(range(sl_global.start, sl_global.stop))
+        bin_cond_idx.extend([c] * n_sel)
+        bin_frac.extend(np.linspace(0.0, 1.0, n_sel) if n_sel > 1 else [0.0])
+
+    global_cols  = np.array(global_cols, dtype=int)
+    bin_cond_idx = np.array(bin_cond_idx, dtype=int)
+    bin_frac     = np.array(bin_frac, dtype=float)
+
+    X_bins     = X[:, global_cols].T
+    n_nan_rows = np.isnan(X_bins).any(axis=1).sum()
+    if n_nan_rows:
+        print(f"[fig_flow_umap] warning: {n_nan_rows}/{len(X_bins)} time bins contain "
+              f"NaN neuron values — filling with 0 before embedding.")
+        X_bins = np.nan_to_num(X_bins, nan=0.0)
+
+    # ── UMAP embedding ────────────────────────────────────────────────────────
+    n_neighbors = min(cfg.get("umap_n_neighbors", 15), len(X_bins) - 1)
+    if n_neighbors < 2:
+        raise ValueError(
+            f"fig_flow_umap: only {len(X_bins)} time bins selected — too few to "
+            "embed (need >= 3). Check active_only / n_bins_list / edge_trim.")
+    umap_emb = umap.UMAP(n_neighbors=n_neighbors,
+                         min_dist=cfg.get("umap_min_dist", 0.1),
+                         n_components=2, random_state=umap_seed).fit_transform(X_bins)
+
+    # ── PCA embedding (same trimmed bin set) ─────────────────────────────────
+    n_pca_comp = min(2, X_bins.shape[0] - 1, X_bins.shape[1])
+    pca = PCA(n_components=n_pca_comp)
+    pca_emb = pca.fit_transform(X_bins)
+    if n_pca_comp < 2:
+        pca_emb = np.column_stack([pca_emb, np.zeros(len(pca_emb))])
+        pca_var_ratio = np.concatenate([pca.explained_variance_ratio_, [0.0]])
+    else:
+        pca_var_ratio = pca.explained_variance_ratio_
+
+    # ── activity-weighted cluster index per bin ──────────────────────────────
+    weighted_cluster_idx = None
+    if cluster_labels is not None:
+        cluster_means = np.stack(
+            [X_bins[:, cluster_labels == k].mean(axis=1) if np.any(cluster_labels == k)
+             else np.zeros(X_bins.shape[0])
+             for k in range(n_clusters)],
+            axis=1)
+        weights = np.clip(cluster_means, a_min=0.0, a_max=None)
+        weight_sum = weights.sum(axis=1)
+        cluster_idx_vec = np.arange(n_clusters)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            weighted_cluster_idx = (weights @ cluster_idx_vec) / weight_sum
+        n_flat = int(np.sum(weight_sum == 0))
+        if n_flat:
+            print(f"[fig_flow_umap] note: {n_flat}/{len(weight_sum)} bins had no "
+                  f"cluster above baseline (all weights zero) — colored at the "
+                  f"midpoint cluster index.")
+            weighted_cluster_idx = np.where(weight_sum == 0,
+                                            (n_clusters - 1) / 2.0,
+                                            weighted_cluster_idx)
+
+    # ── helper: time-shaded color gradient for one condition ────────────────
+    def _time_shaded_colors(base_color, frac_arr):
+        """frac=0 -> light tint of base_color (still visible, not pure white),
+        frac=1 -> fully saturated base_color. Returns (N, 3) RGB array."""
+        base_rgb = np.array(mcolors.to_rgb(base_color))
+        white    = np.ones(3)
+        frac_arr = np.clip(np.asarray(frac_arr), 0.0, 1.0)[:, None]
+        blend    = time_shade_floor + (1.0 - time_shade_floor) * frac_arr
+        return white * (1 - blend) + base_rgb * blend
+
+    # precompute per-bin shaded colors once (reused by panel C and small multiples)
+    shaded_colors = np.zeros((len(bin_frac), 3))
+    for c in include_idx:
+        seg = np.where(bin_cond_idx == c)[0]
+        if len(seg):
+            shaded_colors[seg] = _time_shaded_colors(cond_colors[c], bin_frac[seg])
+
+    def _axis_limits(emb, pad_frac=0.08):
+        x_lo, x_hi = emb[:, 0].min(), emb[:, 0].max()
+        y_lo, y_hi = emb[:, 1].min(), emb[:, 1].max()
+        x_pad = (x_hi - x_lo) * pad_frac or 1.0
+        y_pad = (y_hi - y_lo) * pad_frac or 1.0
+        return (x_lo - x_pad, x_hi + x_pad), (y_lo - y_pad, y_hi + y_pad)
+
+    umap_xlim, umap_ylim = _axis_limits(umap_emb)
+    pca_xlim,  pca_ylim  = _axis_limits(pca_emb)
+
+    # ── figure: outer 2-block layout (main rows sized bigger, small multiples smaller) ──
+    n_side_panels = 3 if cluster_labels is not None else 2
+    top_panel_w, top_panel_h   = 4.2, 4.2
+    small_panel_w, small_panel_h = 2.3, 2.3
+
+    top_width    = top_panel_w * (1 + n_side_panels)
+    bottom_width = small_panel_w * n_trial
+    fig_width    = max(top_width, bottom_width)
+    top_height    = top_panel_h * 2
+    bottom_height = small_panel_h * 2
+    fig_height    = top_height + bottom_height + 0.6
+
+    fig = plt.figure(figsize=(fig_width, fig_height), constrained_layout=False)
+    outer_gs = fig.add_gridspec(2, 1, height_ratios=[top_height, bottom_height], hspace=0.08)
+    top_gs = outer_gs[0].subgridspec(2, 1 + n_side_panels, hspace=0.4, wspace=0.32)
+    bot_gs = outer_gs[1].subgridspec(2, n_trial, hspace=0.5, wspace=0.3)
+
+    # -- population PSTH, spans both top rows, col 0 --
+    axA = fig.add_subplot(top_gs[0, 0])
+    for c in include_idx:
+        t_plot, mean_vec, sem_vec = pop_mean[c]
+        axA.plot(t_plot, mean_vec, color=cond_colors[c], lw=1.3, label=cond_labels[c])
+        axA.fill_between(t_plot, mean_vec - sem_vec, mean_vec + sem_vec,
+                         color=cond_colors[c], alpha=0.25)
+    axA.axvline(0, color="k", lw=0.5, ls="--")
+    axA.axhline(0, color="k", lw=0.5, ls="--")
+    label_txt = 'Firing rate (z-score)' if cfg.get('normalize') == 'zscore' else 'Firing rate (spks/s)'
+    axA.set_xlabel("Time (s)")
+    axA.set_ylabel(label_txt)
+    axA.set_title(f"Population average (n={X.shape[0]} neurons)")
+    axA.legend(fontsize=5, loc="upper right", frameon=False, ncol=1)
+
+    # -- shared row-of-3/4-panels drawer for UMAP / PCA ──────────────────────
+    def _draw_main_row(top_row_idx, emb, xlim, ylim, x_lbl, y_lbl, row_name):
+        axes_row = [fig.add_subplot(top_gs[top_row_idx, i + 1]) for i in range(n_side_panels)]
+
+        # B — time-within-condition
+        ax_time = axes_row[0]
+        sc = ax_time.scatter(emb[:, 0], emb[:, 1], s=10, c=bin_frac, cmap="viridis",
+                             alpha=0.85, linewidths=0)
+        for c in include_idx:
+            seg = np.where(bin_cond_idx == c)[0]
+            if len(seg) > 1:
+                ax_time.plot(emb[seg, 0], emb[seg, 1], color="grey", lw=0.6, alpha=0.5, zorder=0)
+        ax_time.set_title(f"{row_name} — time-within-condition")
+        ax_time.set_xlabel(x_lbl); ax_time.set_ylabel(y_lbl)
+        ax_time.set_xlim(xlim); ax_time.set_ylim(ylim)
+        cb = fig.colorbar(sc, ax=ax_time, shrink=0.8, pad=0.02)
+        cb.set_label("Normalized time", fontsize=8)
+        cb.ax.tick_params(labelsize=7)
+
+        # C — trial type, shade encodes time-within-condition
+        ax_cond = axes_row[1]
+        for c in include_idx:
+            seg = np.where(bin_cond_idx == c)[0]
+            if len(seg) == 0:
+                continue
+            ax_cond.plot(emb[seg, 0], emb[seg, 1], color=cond_colors[c], lw=0.8, alpha=0.5, zorder=1)
+            ax_cond.scatter(emb[seg, 0], emb[seg, 1], s=10, color=shaded_colors[seg],
+                           alpha=0.9, linewidths=0, zorder=2)
+            end_pt = emb[seg[-1]]
+            ax_cond.annotate(cond_labels[c], xy=end_pt, xycoords="data",
+                            xytext=(8, 8), textcoords="offset points",
+                            fontsize=6, color="k",
+                            bbox=dict(boxstyle="round,pad=0.2", fc="white",
+                                      ec=cond_colors[c], lw=1.0),
+                            arrowprops=dict(arrowstyle="-", color=cond_colors[c], lw=0.6))
+        ax_cond.set_title(f"{row_name} — trial type (shade = time)")
+        ax_cond.set_xlabel(x_lbl); ax_cond.set_ylabel(y_lbl)
+        ax_cond.set_xlim(xlim); ax_cond.set_ylim(ylim)
+
+        # D — activity-weighted cluster index
+        if cluster_labels is not None:
+            ax_clu = axes_row[2]
+            sc2 = ax_clu.scatter(emb[:, 0], emb[:, 1], s=10, c=weighted_cluster_idx,
+                                 cmap="turbo", alpha=0.85, linewidths=0,
+                                 vmin=0, vmax=n_clusters - 1)
+            for c in include_idx:
+                seg = np.where(bin_cond_idx == c)[0]
+                if len(seg) > 1:
+                    ax_clu.plot(emb[seg, 0], emb[seg, 1], color="grey", lw=0.6, alpha=0.4, zorder=0)
+            ax_clu.set_title(f"{row_name} — weighted cluster index")
+            ax_clu.set_xlabel(x_lbl); ax_clu.set_ylabel(y_lbl)
+            ax_clu.set_xlim(xlim); ax_clu.set_ylim(ylim)
+            cb2 = fig.colorbar(sc2, ax=ax_clu, shrink=0.8, pad=0.02)
+            ticks = np.linspace(0, n_clusters - 1, min(6, n_clusters))
+            cb2.set_ticks(ticks)
+            cb2.set_ticklabels([f"{int(round(t))}" for t in ticks])
+            cb2.set_label("Rastermap cluster", fontsize=8)
+            cb2.ax.tick_params(labelsize=7)
+
+    _draw_main_row(0, umap_emb, umap_xlim, umap_ylim, "UMAP 1", "UMAP 2", "UMAP")
+    _draw_main_row(1, pca_emb,  pca_xlim,  pca_ylim,  "PC 1",   "PC 2",   "PCA")
+
+    fig.text(0.5, 1 - (top_height / fig_height) * 0.02,
+             f"PC1: {pca_var_ratio[0]*100:.1f}% var   PC2: {pca_var_ratio[1]*100:.1f}% var",
+             ha="center", va="top", fontsize=7, style="italic")
+
+    # -- small-multiples row drawer: one square panel per trial type ────────
+    def _draw_small_multiples(bot_row_idx, emb, xlim, ylim, row_name):
+        for j, c in enumerate(include_idx):
+            ax = fig.add_subplot(bot_gs[bot_row_idx, j])
+            other_mask = bin_cond_idx != c
+            seg        = np.where(bin_cond_idx == c)[0]
+
+            # background: every other trial type, flat grey, low alpha
+            ax.scatter(emb[other_mask, 0], emb[other_mask, 1], s=6,
+                      color="lightgrey", alpha=0.25, linewidths=0, zorder=0)
+
+            # foreground: this trial type, time-shaded gradient + trajectory
+            if len(seg) > 1:
+                ax.plot(emb[seg, 0], emb[seg, 1], color=cond_colors[c], lw=1.0, alpha=0.7, zorder=1)
+            ax.scatter(emb[seg, 0], emb[seg, 1], s=12, color=shaded_colors[seg],
+                      alpha=0.95, linewidths=0, zorder=2)
+
+            ax.set_title(cond_labels[c], fontsize=7)
+            ax.set_xlim(xlim); ax.set_ylim(ylim)
+            ax.set_aspect("equal", adjustable="box")
+            ax.tick_params(axis="both", which="major", labelsize=5)
+            if j == 0:
+                ax.set_ylabel(f"{row_name} 2", fontsize=7)
+            ax.set_xlabel(f"{row_name} 1", fontsize=7)
+
+    _draw_small_multiples(0, umap_emb, umap_xlim, umap_ylim, "UMAP")
+    _draw_small_multiples(1, pca_emb,  pca_xlim,  pca_ylim,  "PC")
+
+    fig.suptitle(f"Population state-space flow across time bins "
+                f"(edge_trim={edge_trim} bin{'s' if edge_trim != 1 else ''} per condition)",
+                fontsize=11)
+
+    figname = "fig8_flow_umap" if prefix is None else f"fig_flow_umap_{prefix}"
+
+
+    return dict(umap_embedding=umap_emb, pca_embedding=pca_emb,
+                pca_var_ratio=pca_var_ratio,
+                bin_cond_idx=bin_cond_idx, bin_frac=bin_frac,
+                global_cols=global_cols, include_idx=include_idx,
+                weighted_cluster_idx=weighted_cluster_idx)
+
 
 
 def fig9_kmeans(emb, km_labels, k, k_range, inertias, out_dir):
@@ -545,7 +885,7 @@ def fig5_population_matrix(X, n_bins_list, isort, boundaries, vmax, cfg,
     # ── Reward group ──────────────────────────────────────────────────────────
     _draw_prop_column(axes[-1], reward_s,
                       ["R+", "R-"],
-                      {"R+": "forestgreen", "R-": "crimson"},
+                      {"R+": plotting_utils.GROUP_COLORS['rplus'], "R-": plotting_utils.GROUP_COLORS['rminus']},
                       edges, n_neurons, "Group")
 
     if prefix is not None:
@@ -629,9 +969,9 @@ def fig12_reward_per_cluster(unit_ids, cluster_labels, reward_arr, n_clusters, o
 
     x   = np.arange(n_clusters)
     fig, ax = plt.subplots(figsize=(max(6, n_clusters * 0.7), 4))
-    ax.bar(x, props_rp, color="forestgreen", label="R+", edgecolor="none")
-    ax.bar(x, props_rm, bottom=props_rp, color="crimson", label="R−", edgecolor="none")
-    ax.axhline(overall_prop, color="forestgreen", ls="--", lw=1.2, alpha=0.7,
+    ax.bar(x, props_rp, color=plotting_utils.GROUP_COLORS['rplus'], label="R+", edgecolor="none")
+    ax.bar(x, props_rm, bottom=props_rp, color=plotting_utils.GROUP_COLORS['rminus'], label="R−", edgecolor="none")
+    ax.axhline(overall_prop, color="k", ls="--", lw=1.2, alpha=0.7,
                label=f"R+ overall ({overall_prop:.2f})")
 
     for k in range(n_clusters):
@@ -946,10 +1286,11 @@ def _resolve_dirs(data_folder: Path, cfg: dict, method_name: str):
     norm_tag   = cfg.get("normalize", "zscore")
     period_tag = cfg["period"]
     mod_tag    = cfg["modality"]
+    merge_tag  = "merge" if cfg.get("merge_passive") else "unmerge"
     rw_tag     = cfg.get("reward_filter", "combined").replace("+","plus").replace("-","minus")
     bl_tag     = "nobl" if cfg.get("baseline_removal", False) else "bl"
     out_folder = (data_folder.parent /
-                  f"clustering/n{n_k}_{period_tag}_{norm_tag}_{mod_tag}_{rw_tag}_{bl_tag}")
+                  f"clustering/n{n_k}_{period_tag}_{merge_tag}_{norm_tag}_{mod_tag}_{rw_tag}_{bl_tag}")
     method_dir = out_folder / method_name
     out_folder.mkdir(parents=True, exist_ok=True)
     method_dir.mkdir(parents=True, exist_ok=True)
@@ -1062,8 +1403,8 @@ def _save_psth_npz(out_folder, X, unit_ids, n_bins_list, t_ctrs, cond_labels):
 
 def _base_meta(meta_df):
     """Extract scalar metadata columns available in neuron_metadata.csv."""
-    cols = ["mouse_id", "session_id", "cluster_id", "electrode_group",
-            "reward_group", "area_acronym", "waveform_type", "layer_number"]
+    cols = ["mouse_id", "session_id", "electrode_group", "neuron_id", "cluster_id",
+            "reward_group", "area_acronym_custom", "waveform_type", "layer_number"]
     return {c: meta_df[c].values for c in cols if c in meta_df.columns}
 
 
@@ -1129,7 +1470,7 @@ def run_rastermap(
     axon_arr, harris_arr, gao_arr = fm["axon_arr"], fm["harris_arr"], fm["gao_arr"]
     meta_df                   = fm["meta_df"]
 
-    group_colors_map = get_custom_area_groups_colors() if _HAS_ALLEN else {}
+    group_colors_map = allen_utils.get_custom_area_groups_allen_colors()
     anatomy_cmaps    = build_anatomy_cmaps(axon_arr, harris_arr, gao_arr) if axon_arr is not None else None
     vmax    = np.nanpercentile(np.abs(X),     cfg["vmax_pct"])
     vmax_cv = np.nanpercentile(np.abs(X_odd), cfg["vmax_pct"])
@@ -1193,6 +1534,8 @@ def run_rastermap(
             X_even, t_ctrs, n_bins_list, isort_cv, boundaries_cv,
             COND_LABELS, COND_COLORS, reward_arr, method_dir, prefix="cv")
         fig8_umap(emb_cv, cluster_labels_cv, n_k, method_dir, prefix="cv")
+        fig8_flow_umap(X_even, n_bins_list, t_ctrs, COND_LABELS, COND_COLORS, cfg, method_dir,
+                                     cluster_labels=cluster_labels_cv, edge_trim=1, prefix='cv')
         fig11_area_per_cluster(unit_ids, cluster_labels_cv, area_arr, n_k, method_dir)
         fig12_reward_per_cluster(unit_ids, cluster_labels_cv, reward_arr, n_k, method_dir)
         _anatomy_figures(cluster_labels_cv, axon_arr, harris_arr, gao_arr, n_k, method_dir)
@@ -1208,7 +1551,7 @@ def run_rastermap(
         _save_meta_csv(method_dir / "neuron_cluster_labels_cv.csv",
                        unit_ids, cluster_labels_cv, bm)
     _save_psth_npz(out_folder, X, unit_ids, n_bins_list, t_ctrs, COND_LABELS)
-    run_reward_group_stats(method_dir)
+    #run_reward_group_stats(method_dir)
 
     print(f"\n[rastermap] Done.  Output → {method_dir}")
     return dict(out_folder=out_folder, method_dir=method_dir,
@@ -1266,7 +1609,7 @@ def run_kmeans(
     meta_df                   = fm["meta_df"]
 
     k = cfg["k_means_k"]
-    group_colors_map = get_custom_area_groups_colors() if _HAS_ALLEN else {}
+    group_colors_map = allen_utils.get_custom_area_groups_colors()
     anatomy_cmaps    = build_anatomy_cmaps(axon_arr, harris_arr, gao_arr) if axon_arr is not None else None
     vmax    = np.nanpercentile(np.abs(X),     cfg["vmax_pct"])
     vmax_cv = np.nanpercentile(np.abs(X_odd), cfg["vmax_pct"])
@@ -1341,7 +1684,7 @@ def run_kmeans(
         _save_meta_csv(method_dir / "neuron_cluster_labels_cv.csv",
                        unit_ids, km_labels_cv, bm)
     _save_psth_npz(out_folder, X, unit_ids, n_bins_list, t_ctrs, COND_LABELS)
-    run_reward_group_stats(method_dir)
+    #run_reward_group_stats(method_dir)
 
     print(f"\n[kmeans] Done.  Output → {method_dir}")
     return dict(out_folder=out_folder, method_dir=method_dir,
@@ -1351,6 +1694,7 @@ def run_kmeans(
 # ── entry point: GMM (Spectral Embedding + Gaussian Mixture Model) ────────────
 def run_gmm(
         data_folder: str | Path,
+        unit_table,
         config_path: str | Path = "config.yaml",
         **cfg_overrides,
 ) -> dict:
@@ -1415,7 +1759,7 @@ def run_gmm(
     axon_arr, harris_arr, gao_arr = fm["axon_arr"], fm["harris_arr"], fm["gao_arr"]
     meta_df = fm["meta_df"]
 
-    group_colors_map = get_custom_area_groups_colors() if _HAS_ALLEN else {}
+    group_colors_map = allen_utils.get_custom_area_groups_colors()
     anatomy_cmaps = build_anatomy_cmaps(axon_arr, harris_arr, gao_arr) \
         if axon_arr is not None else None
     vmax = np.nanpercentile(np.abs(X), cfg["vmax_pct"])
@@ -1431,7 +1775,7 @@ def run_gmm(
     # Shared spectral pipeline (computed once, reused by both variants)
     # ═══════════════════════════════════════════════════════════════════
 
-    print(f"\n[gmm] Building global spectral pipeline ...")
+    print(f"\n[spectral] Building global spectral pipeline ...")
     n_pca = determine_n_pca(X, gmm_cfg)
     X_c = _row_center(X)
     PCA_data_global, _ = _fit_pca(X_c, n_pca)
@@ -1443,7 +1787,7 @@ def run_gmm(
     PCA_data_odd = sigma_cv = None
 
     if do_cv:
-        print(f"\n[gmm] Building CV spectral pipeline (Nystrom) ...")
+        print(f"\n[spectral] Building CV spectral pipeline (Nystrom) ...")
         X_odd_c = _row_center(X_odd)
         X_even_c = _row_center(X_even)
         PCA_data_odd, pca_cv = _fit_pca(X_odd_c, n_pca)
@@ -1460,17 +1804,19 @@ def run_gmm(
     # ═══════════════════════════════════════════════════════════════════
 
     std_labels_g = std_labels_cv = None
-
     if do_std:
         print(f"\n[gmm] Standard GMM ...")
 
         # global
+        # Find optimal number of clusters
         if gmm_cfg.get("gmm_k") is None:
             best_k, k_arr, bic_vals = select_k_bic(spectral_g, gmm_cfg)
         else:
             best_k, k_arr, bic_vals = int(gmm_cfg["gmm_k"]), None, None
 
-        best_k = cfg['n_rastermap_clusters']
+        # Or, set number of clusters like rastermap
+        #best_k = cfg['n_rastermap_clusters']
+
         gmm_g = fit_gmm(spectral_g, best_k, gmm_cfg)
         std_labels_g = gmm_g.predict(spectral_g)
         std_probs_g = gmm_g.predict_proba(spectral_g)
@@ -1545,7 +1891,7 @@ def run_gmm(
         if do_cv and std_labels_cv is not None:
             _save_meta_csv(gmm_dir / "neuron_cluster_labels_cv.csv",
                            unit_ids, std_labels_cv, bm)
-        run_reward_group_stats(gmm_dir)
+        run_reward_group_stats(gmm_bayes_dir, cfg, unit_table)
         print(f"  [gmm] Standard GMM done. K={best_k}  Output -> {gmm_dir}")
 
     # ═══════════════════════════════════════════════════════════════════
@@ -1635,7 +1981,7 @@ def run_gmm(
         if do_cv and bay_labels_cv is not None:
             _save_meta_csv(gmm_bayes_dir / "neuron_cluster_labels_cv.csv",
                            unit_ids, bay_labels_cv, bm)
-        run_reward_group_stats(gmm_bayes_dir)
+        run_reward_group_stats(gmm_bayes_dir, cfg, unit_table)
         print(f"  [gmm] Bayesian GMM done. K_active={k_act}  Output -> {gmm_bayes_dir}")
 
     # shared
@@ -1704,7 +2050,7 @@ def run_gmm_old(
     axon_arr, harris_arr, gao_arr = fm["axon_arr"], fm["harris_arr"], fm["gao_arr"]
     meta_df                   = fm["meta_df"]
 
-    group_colors_map = get_custom_area_groups_colors() if _HAS_ALLEN else {}
+    group_colors_map = allen_utils.get_custom_area_groups_colors()
     anatomy_cmaps    = build_anatomy_cmaps(axon_arr, harris_arr, gao_arr) if axon_arr is not None else None
     vmax             = np.nanpercentile(np.abs(X), cfg["vmax_pct"])
 

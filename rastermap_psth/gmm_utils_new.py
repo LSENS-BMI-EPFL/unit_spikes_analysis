@@ -59,18 +59,18 @@ GMM_CFG_DEFAULTS: dict = dict(
     gmm_n_spectral               = 13,
     # Standard GMM
     gmm_do_standard              = True,
-    gmm_k                        = 100,
-    gmm_k_range                  = list(range(30, 200)),
+    gmm_k                        = None,
+    gmm_k_range                  = list(range(5, 100)),
     gmm_n_init                   = 50,
     gmm_covariance_type          = "diag",
     gmm_max_iter                 = 1000,
     # Bayesian (DP-GMM)
     gmm_do_bayesian              = True,
     gmm_bayesian_n_components    = 200,
-    gmm_bayesian_concentration   = 100.0,
+    gmm_bayesian_concentration   = 1,
     gmm_bayesian_covariance_type = "diag",
     gmm_bayesian_max_iter        = 2000,
-    gmm_bayesian_n_init          = 3,
+    gmm_bayesian_n_init          = 10,
     gmm_bayesian_weight_threshold= None,
 )
 
